@@ -1,21 +1,20 @@
+# Usamos una imagen ligera de Node.js
+FROM node:20-slim
 
-# Usar la imagen oficial de Node.js
-FROM node:18-slim
-
-# Crear el directorio de trabajo en el contenedor
+# Creamos el directorio de la app
 WORKDIR /usr/src/app
 
-# Copiar los archivos de dependencias
+# Copiamos los archivos de dependencias
 COPY package*.json ./
 
-# Instalar las dependencias del proyecto
-RUN npm install --only=production
+# Instalamos las dependencias del proyecto
+RUN npm install
 
-# Copiar el resto del código de la aplicación
+# Copiamos el resto del código de la aplicación (incluyendo la carpeta src)
 COPY . .
 
-# Exponer el puerto por defecto de Cloud Run
+# Exponemos el puerto que pide Cloud Run
 EXPOSE 8080
 
-# Comando para iniciar la aplicación
+# Comando para arrancar la aplicación
 CMD [ "npm", "start" ]
