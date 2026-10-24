@@ -1,5 +1,4 @@
-import React, { useState, useEffect } from 'react';
-import { onAuthStateChanged, User } from 'firebase/auth';
+import React, { useState, useEffect, useRef } from 'react';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import {
   getStoredCompanies,
@@ -38,16 +37,17 @@ import {
   toggleAssignmentDateLock,
 } from './utils/assignmentLock';
 import {
-  auth,
-  BOOTSTRAPPED_ADMIN_EMAIL,
   db,
+  FIRESTORE_MIN_CREATED_AT,
   handleFirestoreError,
   OperationType,
 } from './firebase';
 import {
+  deleteAssignmentFromFirestore,
   deleteCompanyAndSedesFromFirestore,
   deleteSedeFromFirestore,
   deleteTrainerFromFirestore,
+  saveAssignmentToFirestore,
   saveCompanyToFirestore,
   saveSedeToFirestore,
   saveTrainerToFirestore,
@@ -77,14 +77,7 @@ export default function App() {
   const [currentView, setCurrentView] = useState<'trainer' | 'personnel' | 'admin'>('trainer');
   const [selectedTrainerId, setSelectedTrainerId] = useState<string>('');
   const [nowTick, setNowTick] = useState<number>(() => Date.now());
-  const [authUser, setAuthUser] = useState<User | null>(() => auth.currentUser);
-
-  useEffect(() => {
-    const unsub = onAuthStateChanged(auth, (user) => {
-      setAuthUser(user);
-    });
-    return () => unsub();
-  }, []);
+  const autoSeedTriggeredRef = useRef<boolean>(false);
 
   useEffect(() => {
     const timer = setInterval(() => setNowTick(Date.now()), 5000);
@@ -138,25 +131,30 @@ export default function App() {
     }
   }, []);
 
-  const isBootstrappedAdmin =
-    Boolean(authUser?.emailVerified) &&
-    authUser?.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
-
-  // Live Firestore sync for Trainers (/trainers), Companies (/companies), and Sedes (/sedes)
+  // Automatic real-time Firestore connection from any device without login
   useEffect(() => {
-    if (!authUser || !authUser.emailVerified) {
-      return;
-    }
-
-    const mkQuery = (colName: string) => {
-      const ref = collection(db, colName);
-      return isBootstrappedAdmin
-        ? query(ref)
-        : query(ref, where('createdByUid', '==', authUser.uid));
-    };
+    const mkQuery = (colName: string) =>
+      query(collection(db, colName), where('createdAt', '>=', FIRESTORE_MIN_CREATED_AT));
 
     let latestFsCompanies: Omit<Company, 'sedes'>[] | null = null;
     let latestFsSedes: Sede[] = [];
+    let trainersServerSeen = false;
+    let companiesServerSeen = false;
+    let trainersEmptyOnServer = false;
+    let companiesEmptyOnServer = false;
+
+    const maybeTriggerAutoSeed = () => {
+      if (
+        !autoSeedTriggeredRef.current &&
+        trainersServerSeen &&
+        companiesServerSeen &&
+        trainersEmptyOnServer &&
+        companiesEmptyOnServer
+      ) {
+        autoSeedTriggeredRef.current = true;
+        seedDemoDataToFirestore().catch(console.error);
+      }
+    };
 
     const syncCombinedCompanies = () => {
       if (!latestFsCompanies || latestFsCompanies.length === 0) {
@@ -173,6 +171,11 @@ export default function App() {
     const unsubTrainers = onSnapshot(
       mkQuery('trainers'),
       (snap) => {
+        if (!snap.metadata.fromCache) {
+          trainersServerSeen = true;
+          trainersEmptyOnServer = snap.empty;
+          maybeTriggerAutoSeed();
+        }
         if (snap.empty) return;
         const fsTrainers: Trainer[] = snap.docs.map((docSnap) => {
           const d = docSnap.data();
@@ -207,6 +210,11 @@ export default function App() {
     const unsubCompanies = onSnapshot(
       mkQuery('companies'),
       (snap) => {
+        if (!snap.metadata.fromCache) {
+          companiesServerSeen = true;
+          companiesEmptyOnServer = snap.empty;
+          maybeTriggerAutoSeed();
+        }
         if (snap.empty) {
           latestFsCompanies = [];
           return;
@@ -268,12 +276,87 @@ export default function App() {
       }
     );
 
+    const unsubAssignments = onSnapshot(
+      mkQuery('assignments'),
+      (snap) => {
+        if (snap.empty) {
+          if (
+            !snap.metadata.fromCache &&
+            !autoSeedTriggeredRef.current &&
+            latestFsCompanies &&
+            latestFsCompanies.length > 0 &&
+            latestFsSedes.length > 0
+          ) {
+            autoSeedTriggeredRef.current = true;
+            seedDemoDataToFirestore().catch(console.error);
+          }
+          return;
+        }
+        const fsAssignments: ClassAssignment[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          return {
+            id: docSnap.id,
+            trainerId: String(d.trainerId || ''),
+            trainerName: String(d.trainerName || ''),
+            companyId: String(d.companyId || ''),
+            companyName: String(d.companyName || ''),
+            sedeId: String(d.sedeId || ''),
+            sedeName: String(d.sedeName || ''),
+            sedeAddress: String(d.sedeAddress || ''),
+            frequency:
+              d.frequency === 'semanal' || d.frequency === 'mensual' || d.frequency === 'fecha_unica'
+                ? d.frequency
+                : 'semanal',
+            ...(typeof d.dayOfWeek === 'number' ? { dayOfWeek: d.dayOfWeek } : {}),
+            ...(typeof d.date === 'string' ? { date: d.date } : {}),
+            ...(typeof d.dayOfMonth === 'number' ? { dayOfMonth: d.dayOfMonth } : {}),
+            time: String(d.time || '09:00'),
+            ...(typeof d.durationMinutes === 'number' ? { durationMinutes: d.durationMinutes } : {}),
+            activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
+            activityName: String(d.activityName || ''),
+            locationArea: String(d.locationArea || ''),
+            ...(typeof d.expectedAttendees === 'number'
+              ? { expectedAttendees: d.expectedAttendees }
+              : {}),
+            ...(typeof d.notes === 'string' ? { notes: d.notes } : {}),
+            active: d.active !== false,
+            ...(typeof d.closed === 'boolean' ? { closed: d.closed } : {}),
+            ...(typeof d.closedAt === 'string' ? { closedAt: d.closedAt } : {}),
+            ...(Array.isArray(d.completedDates)
+              ? { completedDates: d.completedDates.map(String) }
+              : {}),
+            ...(typeof d.nonCompliant === 'boolean' ? { nonCompliant: d.nonCompliant } : {}),
+            ...(d.nonCompliantReason === 'fuera_de_horario' ||
+            d.nonCompliantReason === 'sin_cierre_30m' ||
+            d.nonCompliantReason === 'manual_admin'
+              ? { nonCompliantReason: d.nonCompliantReason }
+              : {}),
+            ...(typeof d.nonCompliantAt === 'string' ? { nonCompliantAt: d.nonCompliantAt } : {}),
+            ...(Array.isArray(d.missedDates) ? { missedDates: d.missedDates.map(String) } : {}),
+            ...(Array.isArray(d.reopenedDates)
+              ? { reopenedDates: d.reopenedDates.map(String) }
+              : {}),
+          };
+        });
+        setAssignments(fsAssignments);
+        saveStoredAssignments(fsAssignments);
+      },
+      (err) => {
+        try {
+          handleFirestoreError(err, OperationType.LIST, 'assignments');
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    );
+
     return () => {
       unsubTrainers();
       unsubCompanies();
       unsubSedes();
+      unsubAssignments();
     };
-  }, [authUser, isBootstrappedAdmin]);
+  }, []);
 
   // Automatic compliance sweep
   useEffect(() => {
@@ -364,6 +447,11 @@ export default function App() {
     if (assignmentsChanged) {
       setAssignments(nextAssignments);
       saveStoredAssignments(nextAssignments);
+      nextAssignments.forEach((updatedAsg, idx) => {
+        if (updatedAsg !== assignments[idx]) {
+          void saveAssignmentToFirestore(updatedAsg).catch((err) => console.error(err));
+        }
+      });
     }
   }, [nowTick, records, assignments, activityCatalog]);
 
@@ -406,6 +494,7 @@ export default function App() {
       const updatedAsgs = assignments.map((a) => (a.id === lockedAsg.id ? lockedAsg : a));
       setAssignments(updatedAsgs);
       saveStoredAssignments(updatedAsgs);
+      saveAssignmentToFirestore(lockedAsg).catch(console.error);
     } else if (record.status === 'incumplido') {
       const breachedAsg = markAssignmentDateNonCompliant(
         matchedAsg,
@@ -415,6 +504,7 @@ export default function App() {
       const updatedAsgs = assignments.map((a) => (a.id === breachedAsg.id ? breachedAsg : a));
       setAssignments(updatedAsgs);
       saveStoredAssignments(updatedAsgs);
+      saveAssignmentToFirestore(breachedAsg).catch(console.error);
     }
   };
 
@@ -451,37 +541,29 @@ export default function App() {
     saveStoredRecords(updated);
   };
 
-  // Company CRUD handlers (synced with Firestore /companies when authenticated)
+  // Company CRUD handlers (automatically synced with Firestore /companies)
   const handleAddCompany = (newCompany: Company) => {
     const updated = [...companies, newCompany];
     setCompanies(updated);
     saveStoredCompanies(updated);
-    if (authUser && authUser.emailVerified) {
-      saveCompanyToFirestore(authUser, newCompany).catch(console.error);
-    }
+    saveCompanyToFirestore(newCompany).catch(console.error);
   };
 
   const handleUpdateCompany = (updatedCompany: Company) => {
     const updated = companies.map((c) => (c.id === updatedCompany.id ? updatedCompany : c));
     setCompanies(updated);
     saveStoredCompanies(updated);
-    if (authUser && authUser.emailVerified) {
-      saveCompanyToFirestore(authUser, updatedCompany).catch(console.error);
-    }
+    saveCompanyToFirestore(updatedCompany).catch(console.error);
   };
 
   const handleDeleteCompany = (companyId: string) => {
     const updated = companies.filter((c) => c.id !== companyId);
     setCompanies(updated);
     saveStoredCompanies(updated);
-    if (authUser && authUser.emailVerified) {
-      deleteCompanyAndSedesFromFirestore(authUser, companyId, isBootstrappedAdmin).catch(
-        console.error
-      );
-    }
+    deleteCompanyAndSedesFromFirestore(companyId).catch(console.error);
   };
 
-  // Sede CRUD handlers (synced with Firestore /sedes when authenticated)
+  // Sede CRUD handlers (automatically synced with Firestore /sedes)
   const handleAddSede = (newSede: Sede) => {
     const parentComp = companies.find((c) => c.id === newSede.companyId);
     const updatedCompanies = companies.map((c) => {
@@ -496,14 +578,12 @@ export default function App() {
     setCompanies(updatedCompanies);
     saveStoredCompanies(updatedCompanies);
 
-    if (authUser && authUser.emailVerified) {
-      (async () => {
-        if (parentComp) {
-          await saveCompanyToFirestore(authUser, parentComp);
-        }
-        await saveSedeToFirestore(authUser, newSede);
-      })().catch(console.error);
-    }
+    (async () => {
+      if (parentComp) {
+        await saveCompanyToFirestore(parentComp);
+      }
+      await saveSedeToFirestore(newSede);
+    })().catch(console.error);
   };
 
   const handleUpdateSede = (updatedSede: Sede) => {
@@ -520,14 +600,12 @@ export default function App() {
     setCompanies(updatedCompanies);
     saveStoredCompanies(updatedCompanies);
 
-    if (authUser && authUser.emailVerified) {
-      (async () => {
-        if (parentComp) {
-          await saveCompanyToFirestore(authUser, parentComp);
-        }
-        await saveSedeToFirestore(authUser, updatedSede);
-      })().catch(console.error);
-    }
+    (async () => {
+      if (parentComp) {
+        await saveCompanyToFirestore(parentComp);
+      }
+      await saveSedeToFirestore(updatedSede);
+    })().catch(console.error);
   };
 
   const handleDeleteSede = (sedeId: string, companyId: string) => {
@@ -542,29 +620,22 @@ export default function App() {
     });
     setCompanies(updatedCompanies);
     saveStoredCompanies(updatedCompanies);
-
-    if (authUser && authUser.emailVerified) {
-      deleteSedeFromFirestore(sedeId).catch(console.error);
-    }
+    deleteSedeFromFirestore(sedeId).catch(console.error);
   };
 
-  // Trainer CRUD handlers (synced with Firestore /trainers when authenticated)
+  // Trainer CRUD handlers (automatically synced with Firestore /trainers)
   const handleAddTrainer = (newTrainer: Trainer) => {
     const updated = [...trainers, newTrainer];
     setTrainers(updated);
     saveStoredTrainers(updated);
-    if (authUser && authUser.emailVerified) {
-      saveTrainerToFirestore(authUser, newTrainer).catch(console.error);
-    }
+    saveTrainerToFirestore(newTrainer).catch(console.error);
   };
 
   const handleUpdateTrainer = (updatedTrainer: Trainer) => {
     const updated = trainers.map((t) => (t.id === updatedTrainer.id ? updatedTrainer : t));
     setTrainers(updated);
     saveStoredTrainers(updated);
-    if (authUser && authUser.emailVerified) {
-      saveTrainerToFirestore(authUser, updatedTrainer).catch(console.error);
-    }
+    saveTrainerToFirestore(updatedTrainer).catch(console.error);
   };
 
   const handleDeleteTrainer = (trainerId: string) => {
@@ -574,16 +645,15 @@ export default function App() {
     if (selectedTrainerId === trainerId && updated.length > 0) {
       setSelectedTrainerId(updated[0].id);
     }
-    if (authUser && authUser.emailVerified) {
-      deleteTrainerFromFirestore(trainerId).catch(console.error);
-    }
+    deleteTrainerFromFirestore(trainerId).catch(console.error);
   };
 
-  // Assignment CRUD handlers
+  // Assignment CRUD handlers (automatically synced with Firestore /assignments)
   const handleAddAssignment = (newAssignment: ClassAssignment) => {
     const updated = [newAssignment, ...assignments];
     setAssignments(updated);
     saveStoredAssignments(updated);
+    saveAssignmentToFirestore(newAssignment).catch(console.error);
   };
 
   const handleUpdateAssignment = (updatedAssignment: ClassAssignment) => {
@@ -592,12 +662,14 @@ export default function App() {
     );
     setAssignments(updated);
     saveStoredAssignments(updated);
+    saveAssignmentToFirestore(updatedAssignment).catch(console.error);
   };
 
   const handleDeleteAssignment = (assignmentId: string) => {
     const updated = assignments.filter((a) => a.id !== assignmentId);
     setAssignments(updated);
     saveStoredAssignments(updated);
+    deleteAssignmentFromFirestore(assignmentId).catch(console.error);
   };
 
   // Activity Catalog CRUD handlers
@@ -626,6 +698,11 @@ export default function App() {
       );
       setAssignments(syncedAssignments);
       saveStoredAssignments(syncedAssignments);
+      syncedAssignments
+        .filter((asg) => asg.activityName === updatedItem.name)
+        .forEach((asg) => {
+          saveAssignmentToFirestore(asg).catch(console.error);
+        });
     }
   };
 
@@ -635,7 +712,7 @@ export default function App() {
     saveStoredActivityCatalog(updated);
   };
 
-  // Global reset (also seeds demo data into Firestore if signed in)
+  // Global reset (also re-seeds demo data into Firestore automatically)
   const handleResetData = () => {
     resetAllDataToDefault();
     setRecords(getStoredRecords());
@@ -643,9 +720,7 @@ export default function App() {
     setTrainers(getStoredTrainers());
     setAssignments(getStoredAssignments());
     setActivityCatalog(getStoredActivityCatalog());
-    if (authUser && authUser.emailVerified) {
-      seedDemoDataToFirestore(authUser).catch(console.error);
-    }
+    seedDemoDataToFirestore().catch(console.error);
   };
 
   const currentTrainer = trainers.find((t) => t.id === selectedTrainerId) || trainers[0];

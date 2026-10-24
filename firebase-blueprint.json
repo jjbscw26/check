@@ -45,7 +45,7 @@
     },
     "Trainer": {
       "title": "Trainer",
-      "description": "Entrenador / Coach corporativo con todos los campos del demo: nombre, correo, teléfono, avatar (URL o DataURL), especialidades y estado activo.",
+      "description": "Entrenador / Coach corporativo con conexión automática multi-dispositivo: nombre, correo, teléfono, avatar (URL o DataURL), especialidades y estado activo.",
       "type": "object",
       "properties": {
         "name": {
@@ -90,7 +90,7 @@
         },
         "createdByUid": {
           "type": "string",
-          "description": "UID de Firebase Auth del usuario verificado que creó el registro.",
+          "description": "Identificador persistente del dispositivo o cliente origen que creó el registro.",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
@@ -98,7 +98,7 @@
         "createdByEmail": {
           "type": "string",
           "format": "email",
-          "description": "Correo electrónico verificado del usuario que creó el registro.",
+          "description": "Correo técnico o corporativo de auditoría del registro.",
           "minLength": 5,
           "maxLength": 254,
           "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
@@ -129,12 +129,12 @@
     },
     "Company": {
       "title": "Company",
-      "description": "Empresa cliente con todos los campos del demo (name, taxId, industry, logoText) y compatibilidad opcional con datos fiscales adicionales.",
+      "description": "Empresa cliente con conexión automática multi-dispositivo (name, taxId, industry, logoText) y compatibilidad opcional con datos fiscales adicionales.",
       "type": "object",
       "properties": {
         "name": {
           "type": "string",
-          "description": "Razón social o nombre comercial de la empresa (campo demo).",
+          "description": "Razón social o nombre comercial de la empresa.",
           "minLength": 2,
           "maxLength": 150,
           "pattern": "^\\S(.*\\S)?$"
@@ -155,7 +155,7 @@
         },
         "logoText": {
           "type": "string",
-          "description": "Siglas o badge corto de la empresa (1 a 4 caracteres).",
+          "description": "Siglas o identificador corto de la empresa (1 a 4 caracteres).",
           "minLength": 1,
           "maxLength": 4,
           "pattern": "^[A-Za-z0-9&Ññ]{1,4}$"
@@ -186,7 +186,7 @@
         },
         "createdByUid": {
           "type": "string",
-          "description": "UID de Firebase Auth del usuario verificado que creó el registro.",
+          "description": "Identificador persistente del dispositivo o cliente origen que creó el registro.",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
@@ -194,7 +194,7 @@
         "createdByEmail": {
           "type": "string",
           "format": "email",
-          "description": "Correo electrónico verificado del usuario que creó el registro.",
+          "description": "Correo técnico o corporativo de auditoría del registro.",
           "minLength": 5,
           "maxLength": 254,
           "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
@@ -223,7 +223,7 @@
     },
     "Sede": {
       "title": "Sede",
-      "description": "Sede / Campus / Planta autorizada de una empresa cliente con todos los campos del demo: empresa vinculada, dirección, ciudad, coordenadas GPS (lat, lng), radio de geocerca, contacto, cargo, teléfono y etiqueta de color.",
+      "description": "Sede / Campus / Planta autorizada de una empresa cliente con coordenadas GPS, geocerca y contacto.",
       "type": "object",
       "properties": {
         "companyId": {
@@ -263,21 +263,15 @@
         },
         "lat": {
           "type": "number",
-          "description": "Latitud GPS oficial de la sede (-90 a 90).",
-          "minimum": -90,
-          "maximum": 90
+          "description": "Latitud GPS oficial de la sede (-90 a 90)."
         },
         "lng": {
           "type": "number",
-          "description": "Longitud GPS oficial de la sede (-180 a 180).",
-          "minimum": -180,
-          "maximum": 180
+          "description": "Longitud GPS oficial de la sede (-180 a 180)."
         },
         "geofenceRadiusMeters": {
           "type": "number",
-          "description": "Radio de geocerca permitido en metros (10 a 10000).",
-          "minimum": 10,
-          "maximum": 10000
+          "description": "Radio de geocerca permitido en metros (10 a 10000)."
         },
         "contactPerson": {
           "type": "string",
@@ -302,14 +296,14 @@
         },
         "colorTag": {
           "type": "string",
-          "description": "Clase o identificador visual de color para la sede (ej. bg-red-500).",
+          "description": "Clase o identificador visual de color para la sede.",
           "minLength": 0,
           "maxLength": 40,
           "pattern": "^([a-zA-Z0-9_\\-]+)?$"
         },
         "createdByUid": {
           "type": "string",
-          "description": "UID de Firebase Auth del usuario verificado que creó el registro.",
+          "description": "Identificador persistente del dispositivo o cliente origen que creó el registro.",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
@@ -317,7 +311,7 @@
         "createdByEmail": {
           "type": "string",
           "format": "email",
-          "description": "Correo electrónico verificado del usuario que creó el registro.",
+          "description": "Correo técnico o corporativo de auditoría del registro.",
           "minLength": 5,
           "maxLength": 254,
           "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
@@ -351,41 +345,136 @@
         "updatedAt"
       ]
     },
-    "Personnel": {
-      "title": "Personnel",
-      "description": "Expediente de personal con nombre completo, teléfono, correo electrónico y dirección completa.",
+    "ClassAssignment": {
+      "title": "ClassAssignment",
+      "description": "Asignación programada de pausa activa o clase fitness sincronizada automáticamente entre dispositivos.",
       "type": "object",
       "properties": {
-        "fullName": {
+        "trainerId": {
           "type": "string",
-          "description": "Nombre completo del integrante del personal.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "trainerName": {
+          "type": "string",
           "minLength": 2,
           "maxLength": 120,
           "pattern": "^\\S(.*\\S)?$"
         },
-        "phone": {
+        "companyId": {
           "type": "string",
-          "description": "Número telefónico de contacto del personal.",
-          "minLength": 7,
-          "maxLength": 25,
-          "pattern": "^[0-9+(][0-9+()\\- ]{5,23}[0-9)]$"
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
         },
-        "email": {
+        "companyName": {
           "type": "string",
-          "format": "email",
-          "description": "Correo electrónico del personal.",
+          "minLength": 2,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "sedeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "sedeName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "sedeAddress": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 250,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "frequency": {
+          "type": "string",
+          "enum": ["semanal", "mensual", "fecha_unica"],
+          "maxLength": 20
+        },
+        "dayOfWeek": {
+          "type": "number"
+        },
+        "date": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "dayOfMonth": {
+          "type": "number"
+        },
+        "time": {
+          "type": "string",
           "minLength": 5,
-          "maxLength": 254,
-          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
+          "maxLength": 5,
+          "pattern": "^[0-2][0-9]:[0-5][0-9]$"
         },
-        "address": {
-          "type": "object",
-          "$ref": "#/entities/StructuredAddress",
-          "description": "Dirección física del personal."
+        "durationMinutes": {
+          "type": "number"
+        },
+        "activityType": {
+          "type": "string",
+          "enum": ["pausa_activa", "clase_fitness"],
+          "maxLength": 20
+        },
+        "activityName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "locationArea": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "expectedAttendees": {
+          "type": "number"
+        },
+        "notes": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "closed": {
+          "type": "boolean"
+        },
+        "closedAt": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "completedDates": {
+          "type": "array"
+        },
+        "nonCompliant": {
+          "type": "boolean"
+        },
+        "nonCompliantReason": {
+          "type": "string",
+          "enum": ["fuera_de_horario", "sin_cierre_30m", "manual_admin"],
+          "maxLength": 30
+        },
+        "nonCompliantAt": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "missedDates": {
+          "type": "array"
+        },
+        "reopenedDates": {
+          "type": "array"
         },
         "createdByUid": {
           "type": "string",
-          "description": "UID de Firebase Auth del usuario verificado que creó el registro.",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
@@ -393,20 +482,87 @@
         "createdByEmail": {
           "type": "string",
           "format": "email",
-          "description": "Correo electrónico verificado del usuario que creó el registro.",
           "minLength": 5,
           "maxLength": 254,
           "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
         },
         "createdAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Marca de tiempo generada por el servidor al crear el documento."
+          "format": "date-time"
         },
         "updatedAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Marca de tiempo generada por el servidor en la última actualización."
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "trainerId",
+        "trainerName",
+        "companyId",
+        "companyName",
+        "sedeId",
+        "sedeName",
+        "sedeAddress",
+        "frequency",
+        "time",
+        "activityType",
+        "activityName",
+        "locationArea",
+        "active",
+        "createdByUid",
+        "createdByEmail",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Personnel": {
+      "title": "Personnel",
+      "description": "Expediente de personal con nombre completo, teléfono, correo electrónico y dirección completa.",
+      "type": "object",
+      "properties": {
+        "fullName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "phone": {
+          "type": "string",
+          "minLength": 7,
+          "maxLength": 25,
+          "pattern": "^[0-9+(][0-9+()\\- ]{5,23}[0-9)]$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "minLength": 5,
+          "maxLength": 254,
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
+        },
+        "address": {
+          "type": "object",
+          "$ref": "#/entities/StructuredAddress"
+        },
+        "createdByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 5,
+          "maxLength": 254,
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
         }
       },
       "required": [
@@ -427,14 +583,12 @@
       "properties": {
         "fullName": {
           "type": "string",
-          "description": "Nombre completo del cliente.",
           "minLength": 2,
           "maxLength": 120,
           "pattern": "^\\S(.*\\S)?$"
         },
         "phone": {
           "type": "string",
-          "description": "Número telefónico del cliente.",
           "minLength": 7,
           "maxLength": 25,
           "pattern": "^[0-9+(][0-9+()\\- ]{5,23}[0-9)]$"
@@ -442,26 +596,22 @@
         "email": {
           "type": "string",
           "format": "email",
-          "description": "Correo electrónico del cliente.",
           "minLength": 5,
           "maxLength": 254,
           "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
         },
         "address": {
           "type": "object",
-          "$ref": "#/entities/StructuredAddress",
-          "description": "Dirección residencial del cliente."
+          "$ref": "#/entities/StructuredAddress"
         },
         "company": {
           "type": "string",
-          "description": "Empresa a la que pertenece el cliente (opcional).",
           "minLength": 0,
           "maxLength": 150,
           "pattern": "^(\\S(.*\\S)?)?$"
         },
         "createdByUid": {
           "type": "string",
-          "description": "UID de Firebase Auth del usuario verificado que creó el registro.",
           "minLength": 1,
           "maxLength": 128,
           "pattern": "^[a-zA-Z0-9_\\-]+$"
@@ -469,20 +619,17 @@
         "createdByEmail": {
           "type": "string",
           "format": "email",
-          "description": "Correo electrónico verificado del usuario que creó el registro.",
           "minLength": 5,
           "maxLength": 254,
           "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
         },
         "createdAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Marca de tiempo generada por el servidor al crear el documento."
+          "format": "date-time"
         },
         "updatedAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Marca de tiempo generada por el servidor en la última actualización."
+          "format": "date-time"
         }
       },
       "required": [
@@ -498,21 +645,19 @@
     },
     "AdminRole": {
       "title": "AdminRole",
-      "description": "Documento de privilegio administrativo verificado por UID.",
+      "description": "Documento reservado de privilegio administrativo verificado por UID.",
       "type": "object",
       "properties": {
         "email": {
           "type": "string",
           "format": "email",
-          "description": "Correo electrónico verificado del administrador.",
           "minLength": 5,
           "maxLength": 254,
           "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
         },
         "grantedAt": {
           "type": "string",
-          "format": "date-time",
-          "description": "Marca de tiempo del servidor al otorgar rol administrativo."
+          "format": "date-time"
         }
       },
       "required": ["email", "grantedAt"]
@@ -523,37 +668,43 @@
       "schema": {
         "$ref": "#/entities/Trainer"
       },
-      "description": "Colección de entrenadores corporativos con todos los campos del demo (name, email, phone, avatar, specialties, active)."
+      "description": "Colección compartida de entrenadores corporativos conectada automáticamente desde cualquier dispositivo."
     },
     "/companies/{companyId}": {
       "schema": {
         "$ref": "#/entities/Company"
       },
-      "description": "Colección de empresas cliente con todos los campos del demo (name, taxId, industry, logoText)."
+      "description": "Colección compartida de empresas cliente conectada automáticamente desde cualquier dispositivo."
     },
     "/sedes/{sedeId}": {
       "schema": {
         "$ref": "#/entities/Sede"
       },
-      "description": "Colección de sedes / sucursales corporativas con todos los campos del demo (companyId, companyName, name, address, city, lat, lng, geofenceRadiusMeters, contactPerson, contactRole, contactPhone, colorTag)."
+      "description": "Colección compartida de sedes / sucursales corporativas con coordenadas GPS y radio de geocerca."
+    },
+    "/assignments/{assignmentId}": {
+      "schema": {
+        "$ref": "#/entities/ClassAssignment"
+      },
+      "description": "Colección compartida de asignaciones programadas de clases y pausas activas sincronizada entre escritorio, tablets y celulares."
     },
     "/personnel/{personnelId}": {
       "schema": {
         "$ref": "#/entities/Personnel"
       },
-      "description": "Colección de expedientes de personal con PII protegido."
+      "description": "Colección compartida de expedientes de personal."
     },
     "/clients/{clientId}": {
       "schema": {
         "$ref": "#/entities/Client"
       },
-      "description": "Colección de expedientes de clientes con dirección residencial y empresa opcional."
+      "description": "Colección compartida de expedientes de clientes con dirección residencial y empresa opcional."
     },
     "/admins/{adminUid}": {
       "schema": {
         "$ref": "#/entities/AdminRole"
       },
-      "description": "Colección de administradores autorizados por UID."
+      "description": "Colección bloqueada de roles administrativos."
     }
   }
 }

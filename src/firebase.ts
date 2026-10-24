@@ -1,15 +1,45 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth, GoogleAuthProvider } from 'firebase/auth';
-import { doc, getDocFromServer, getFirestore } from 'firebase/firestore';
+import { getAuth } from 'firebase/auth';
+import { doc, getDocFromServer, getFirestore, Timestamp } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
-export const googleProvider = new GoogleAuthProvider();
-googleProvider.setCustomParameters({ prompt: 'select_account' });
 
-export const BOOTSTRAPPED_ADMIN_EMAIL = 'jjbscw@gmail.com';
+export const FIRESTORE_MIN_CREATED_AT = Timestamp.fromDate(
+  new Date('2020-01-01T00:00:00.000Z')
+);
+
+const DEVICE_ID_STORAGE_KEY = 'bscw_auto_device_id';
+const AUTO_WORKSPACE_EMAIL = 'sync@bscw.corp';
+
+export function getAutoDeviceMetadata(): {
+  createdByUid: string;
+  createdByEmail: string;
+} {
+  let deviceId = 'dev_bscw_client';
+  try {
+    if (typeof window !== 'undefined' && window.localStorage) {
+      const existing = window.localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+      if (existing && /^[a-zA-Z0-9_\-]{4,120}$/.test(existing)) {
+        deviceId = existing;
+      } else {
+        const rand = `${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 10)}`
+          .replace(/[^a-zA-Z0-9_\-]/g, '');
+        deviceId = `dev_${rand}`.slice(0, 64);
+        window.localStorage.setItem(DEVICE_ID_STORAGE_KEY, deviceId);
+      }
+    }
+  } catch {
+    deviceId = 'dev_bscw_client';
+  }
+
+  return {
+    createdByUid: deviceId,
+    createdByEmail: AUTO_WORKSPACE_EMAIL,
+  };
+}
 
 export enum OperationType {
   CREATE = 'create',

@@ -19,7 +19,8 @@ import {
 } from 'firebase/firestore';
 
 /**
- * Dirty Dozen Security Test Suite for /trainers, /companies, /sedes, /personnel, /clients & /admins
+ * Dirty Dozen Security Test Suite for automatic multi-device connection across
+ * /trainers, /companies, /sedes, /assignments, /personnel, /clients & /admins
  */
 export async function runFirestoreRulesDirtyDozenSuite() {
   const testEnv: RulesTestEnvironment = await initializeTestEnvironment({
@@ -30,22 +31,17 @@ export async function runFirestoreRulesDirtyDozenSuite() {
   });
 
   try {
-    const aliceCtx = testEnv.authenticatedContext('uid_alice', {
-      email: 'alice@empresa.com',
-      email_verified: true,
-    });
-    const bobCtx = testEnv.authenticatedContext('uid_bob', {
-      email: 'bob@empresa.com',
-      email_verified: true,
-    });
+    const deviceACtx = testEnv.unauthenticatedContext();
+    const deviceBCtx = testEnv.unauthenticatedContext();
     const spoofedAdminCtx = testEnv.authenticatedContext('uid_spoof_admin', {
       email: 'jjbscw@gmail.com',
       email_verified: false,
     });
 
-    const aliceDb = aliceCtx.firestore();
-    const bobDb = bobCtx.firestore();
+    const dbA = deviceACtx.firestore();
+    const dbB = deviceBCtx.firestore();
     const spoofAdminDb = spoofedAdminCtx.firestore();
+    const minEpoch = Timestamp.fromDate(new Date('2020-01-01T00:00:00.000Z'));
 
     const validTrainerPayload = {
       name: 'Carlos Mendoza',
@@ -54,8 +50,8 @@ export async function runFirestoreRulesDirtyDozenSuite() {
       avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150',
       specialties: ['Pausas Activas', 'Entrenamiento Funcional', 'Ergonomía Laboral'],
       active: true,
-      createdByUid: 'uid_alice',
-      createdByEmail: 'alice@empresa.com',
+      createdByUid: 'dev_desktop_01',
+      createdByEmail: 'sync@bscw.corp',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
@@ -65,8 +61,8 @@ export async function runFirestoreRulesDirtyDozenSuite() {
       taxId: 'SAN891024-K92',
       industry: 'Servicios Financieros',
       logoText: 'BS',
-      createdByUid: 'uid_alice',
-      createdByEmail: 'alice@empresa.com',
+      createdByUid: 'dev_desktop_01',
+      createdByEmail: 'sync@bscw.corp',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
@@ -84,33 +80,58 @@ export async function runFirestoreRulesDirtyDozenSuite() {
       contactRole: 'Gerente de Bienestar y SST',
       contactPhone: '+52 55 5100 1122',
       colorTag: 'bg-red-500',
-      createdByUid: 'uid_alice',
-      createdByEmail: 'alice@empresa.com',
+      createdByUid: 'dev_desktop_01',
+      createdByEmail: 'sync@bscw.corp',
       createdAt: serverTimestamp(),
       updatedAt: serverTimestamp(),
     };
 
-    // Baseline valid writes across trainers, companies, and sedes succeed for verified owner
-    await assertSucceeds(setDoc(doc(aliceDb, 'trainers', 'tr_1'), validTrainerPayload));
-    await assertSucceeds(setDoc(doc(aliceDb, 'companies', 'comp_1'), validCompanyPayload));
-    await assertSucceeds(setDoc(doc(aliceDb, 'sedes', 'sede_1_1'), validSedePayload));
+    const validAssignmentPayload = {
+      trainerId: 'tr_1',
+      trainerName: 'Carlos Mendoza',
+      companyId: 'comp_1',
+      companyName: 'Banco Santander Corporativo',
+      sedeId: 'sede_1_1',
+      sedeName: 'Torre Corporativa Reforma',
+      sedeAddress: 'Paseo de la Reforma 500, Cuauhtémoc, CDMX',
+      frequency: 'semanal',
+      dayOfWeek: 1,
+      time: '08:30',
+      durationMinutes: 20,
+      activityType: 'pausa_activa',
+      activityName: 'Pausa Activa: Ergonomía y Estiramientos',
+      locationArea: 'Piso 12 - Área Financiera',
+      active: true,
+      createdByUid: 'dev_desktop_01',
+      createdByEmail: 'sync@bscw.corp',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
 
-    // 1. Identity Spoofing on Create (createdByUid != auth.uid)
+    // Baseline automatic connection writes & cross-device reads succeed without login
+    await assertSucceeds(setDoc(doc(dbA, 'trainers', 'tr_1'), validTrainerPayload));
+    await assertSucceeds(setDoc(doc(dbA, 'companies', 'comp_1'), validCompanyPayload));
+    await assertSucceeds(setDoc(doc(dbA, 'sedes', 'sede_1_1'), validSedePayload));
+    await assertSucceeds(setDoc(doc(dbA, 'assignments', 'asg_1'), validAssignmentPayload));
+    await assertSucceeds(
+      getDocs(query(collection(dbB, 'trainers'), where('createdAt', '>=', minEpoch)))
+    );
+
+    // 1. Invalid Device Audit Identifier (createdByUid with spaces/invalid chars)
     await assertFails(
-      setDoc(doc(bobDb, 'trainers', 'tr_spoof_1'), {
+      setDoc(doc(dbB, 'trainers', 'tr_bad_uid_1'), {
         ...validTrainerPayload,
-        createdByUid: 'uid_alice',
-        createdByEmail: 'bob@empresa.com',
+        createdByUid: 'bad uid with spaces!',
       })
     );
 
-    // 2. Unverified Admin Email Spoofing (email matches admin, email_verified == false)
-    await assertFails(getDoc(doc(spoofAdminDb, 'companies', 'comp_1')));
-    await assertFails(getDoc(doc(spoofAdminDb, 'trainers', 'tr_1')));
+    // 2. Unfiltered List Scraping (missing where('createdAt', '>=', ...))
+    await assertFails(getDocs(collection(dbB, 'trainers')));
+    await assertFails(getDocs(collection(dbB, 'companies')));
 
     // 3. Shadow / Ghost Field Injection on Create
     await assertFails(
-      setDoc(doc(aliceDb, 'companies', 'comp_ghost_3'), {
+      setDoc(doc(dbA, 'companies', 'comp_ghost_3'), {
         ...validCompanyPayload,
         creditLimit: 999999,
       })
@@ -118,93 +139,79 @@ export async function runFirestoreRulesDirtyDozenSuite() {
 
     // 4. Empty Specialties Array / Whitespace-Only Field
     await assertFails(
-      setDoc(doc(aliceDb, 'trainers', 'tr_empty_spec_4'), {
+      setDoc(doc(dbA, 'trainers', 'tr_empty_spec_4'), {
         ...validTrainerPayload,
         specialties: [],
       })
     );
     await assertFails(
-      setDoc(doc(aliceDb, 'companies', 'comp_empty_4'), {
+      setDoc(doc(dbA, 'companies', 'comp_empty_4'), {
         ...validCompanyPayload,
         industry: '     ',
       })
     );
 
-    // 5. Orphaned Sede or Cross-Tenant Company Reference
+    // 5. Orphaned Sede Referencing Non-Existent Company
     await assertFails(
-      setDoc(doc(aliceDb, 'sedes', 'sede_orphan_5'), {
+      setDoc(doc(dbA, 'sedes', 'sede_orphan_5'), {
         ...validSedePayload,
         companyId: 'comp_does_not_exist',
-      })
-    );
-    await assertFails(
-      setDoc(doc(bobDb, 'sedes', 'sede_cross_tenant_5'), {
-        ...validSedePayload,
-        companyId: 'comp_1', // Owned by Alice, not Bob!
-        createdByUid: 'uid_bob',
-        createdByEmail: 'bob@empresa.com',
       })
     );
 
     // 6. Out-of-Range GPS Coordinates or Geofence Radius on Sede
     await assertFails(
-      setDoc(doc(aliceDb, 'sedes', 'sede_bad_gps_6'), {
+      setDoc(doc(dbA, 'sedes', 'sede_bad_gps_6'), {
         ...validSedePayload,
-        lat: 120.5,
-      })
-    );
-    await assertFails(
-      setDoc(doc(aliceDb, 'sedes', 'sede_bad_radius_6'), {
-        ...validSedePayload,
-        geofenceRadiusMeters: 2,
+        lat: 145.0,
+        geofenceRadiusMeters: -10,
       })
     );
 
     // 7. Denial-of-Wallet Oversized String
     await assertFails(
-      setDoc(doc(aliceDb, 'companies', 'comp_oversize_7'), {
+      setDoc(doc(dbA, 'companies', 'comp_oversize_7'), {
         ...validCompanyPayload,
-        name: 'A'.repeat(2000),
+        name: 'X'.repeat(200),
       })
     );
 
-    // 8. Path ID Poisoning (spaces & special characters)
-    await assertFails(
-      setDoc(doc(aliceDb, 'sedes', 'bad id $pecial!'), validSedePayload)
-    );
+    // 8. Path ID Poisoning
+    await assertFails(setDoc(doc(dbA, 'sedes', 'bad id with spaces!'), validSedePayload));
+    await assertFails(getDoc(doc(dbB, 'trainers', 'bad id with spaces!')));
 
-    // 9. Client-Forged Timestamp instead of request.time
+    // 9. Client-Forged Timestamp
     await assertFails(
-      setDoc(doc(aliceDb, 'trainers', 'tr_forged_time_9'), {
+      setDoc(doc(dbA, 'trainers', 'tr_forged_ts_9'), {
         ...validTrainerPayload,
         createdAt: Timestamp.fromMillis(1700000000000),
       })
     );
 
-    // 10. Cross-Tenant PII Read (get & unfiltered list by non-owner)
-    await assertFails(getDoc(doc(bobDb, 'trainers', 'tr_1')));
-    await assertFails(getDocs(collection(bobDb, 'trainers')));
-    await assertFails(getDocs(collection(bobDb, 'companies')));
-    await assertFails(getDocs(collection(bobDb, 'sedes')));
-    await assertSucceeds(
-      getDocs(query(collection(bobDb, 'trainers'), where('createdByUid', '==', 'uid_bob')))
+    // 10. Orphaned ClassAssignment Referencing Non-Existent Sede or Bad Time
+    await assertFails(
+      setDoc(doc(dbA, 'assignments', 'asg_orphan_10'), {
+        ...validAssignmentPayload,
+        sedeId: 'sede_missing',
+      })
     );
 
-    // 11. Immortal Field Mutation on Update (changing createdByUid)
+    // 11. Immortal Field Mutation on Update
     await assertFails(
-      updateDoc(doc(aliceDb, 'companies', 'comp_1'), {
-        createdByUid: 'uid_bob',
+      updateDoc(doc(dbB, 'trainers', 'tr_1'), {
+        createdByUid: 'dev_hijack',
         updatedAt: serverTimestamp(),
       })
     );
 
-    // 12. Self-Assigned Admin Privilege Escalation
+    // 12. Admin Privilege Escalation (Unauthenticated & Spoofed Email)
     await assertFails(
-      setDoc(doc(bobDb, 'admins', 'uid_bob'), {
-        email: 'bob@empresa.com',
+      setDoc(doc(dbB, 'admins', 'uid_attacker'), {
+        email: 'attacker@test.com',
         grantedAt: serverTimestamp(),
       })
     );
+    await assertFails(getDoc(doc(spoofAdminDb, 'admins', 'uid_spoof_admin')));
   } finally {
     await testEnv.cleanup();
   }

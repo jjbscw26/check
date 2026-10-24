@@ -1,11 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
-  onAuthStateChanged,
-  signInWithPopup,
-  signOut,
-  User,
-} from 'firebase/auth';
-import {
   collection,
   deleteDoc,
   doc,
@@ -28,10 +22,6 @@ import {
   Database,
   DownloadCloud,
   Edit3,
-  FileBadge,
-  Image as ImageIcon,
-  LogIn,
-  LogOut,
   Mail,
   MapPin,
   Navigation,
@@ -47,10 +37,9 @@ import {
   Users,
 } from 'lucide-react';
 import {
-  auth,
-  BOOTSTRAPPED_ADMIN_EMAIL,
   db,
-  googleProvider,
+  FIRESTORE_MIN_CREATED_AT,
+  getAutoDeviceMetadata,
   handleFirestoreError,
   OperationType,
 } from '../firebase';
@@ -330,12 +319,6 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
 }) => {
   const [activeCategory, setActiveCategory] = useState<FirestoreDirectoryCategory>('trainers');
 
-  // Firebase Auth state
-  const [currentUser, setCurrentUser] = useState<User | null>(() => auth.currentUser);
-  const [authReady, setAuthReady] = useState<boolean>(false);
-  const [authBusy, setAuthBusy] = useState<boolean>(false);
-  const [authNotice, setAuthNotice] = useState<string | null>(null);
-
   // Form states per collection
   const [trainerForm, setTrainerForm] = useState<TrainerFormInput>(EMPTY_TRAINER_FORM);
   const [customSpecialty, setCustomSpecialty] = useState<string>('');
@@ -414,36 +397,8 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     throw fatalFirestoreError;
   }
 
+  // Real-time automatic listeners for all 5 collections (no login required)
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setCurrentUser(user);
-      setAuthReady(true);
-    });
-    return () => unsubscribe();
-  }, []);
-
-  const isBootstrappedAdmin =
-    Boolean(currentUser?.emailVerified) &&
-    currentUser?.email?.toLowerCase() === BOOTSTRAPPED_ADMIN_EMAIL.toLowerCase();
-
-  // Real-time listeners for all 5 collections
-  useEffect(() => {
-    if (!authReady || !currentUser || !currentUser.emailVerified) {
-      setTrainersList([]);
-      setCompaniesList([]);
-      setSedesList([]);
-      setPersonnelList([]);
-      setClientsList([]);
-      setLoadingByCat({
-        trainers: false,
-        companies: false,
-        sedes: false,
-        personnel: false,
-        clients: false,
-      });
-      return;
-    }
-
     setLoadingByCat({
       trainers: true,
       companies: true,
@@ -452,12 +407,8 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
       clients: true,
     });
 
-    const mkQuery = (colName: string) => {
-      const ref = collection(db, colName);
-      return isBootstrappedAdmin
-        ? query(ref)
-        : query(ref, where('createdByUid', '==', currentUser.uid));
-    };
+    const mkQuery = (colName: string) =>
+      query(collection(db, colName), where('createdAt', '>=', FIRESTORE_MIN_CREATED_AT));
 
     const unsubTrainers = onSnapshot(
       mkQuery('trainers'),
@@ -656,7 +607,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
       unsubPersonnel();
       unsubClients();
     };
-  }, [authReady, currentUser, isBootstrappedAdmin]);
+  }, []);
 
   // Keep default selected company in Sede form synchronized when companiesList updates
   useEffect(() => {
@@ -698,82 +649,20 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     personnelList.length +
     clientsList.length;
 
-  const handleGoogleSignIn = async (): Promise<User | null> => {
-    setAuthNotice(null);
-    setAuthBusy(true);
-    try {
-      const result = await signInWithPopup(auth, googleProvider);
-      return result.user;
-    } catch (err: unknown) {
-      const code =
-        typeof err === 'object' && err !== null && 'code' in err
-          ? String((err as { code?: string }).code)
-          : '';
-      if (code === 'auth/popup-closed-by-user') {
-        setAuthNotice('Cerraste la ventana de Google antes de completar el inicio de sesión.');
-      } else if (code === 'auth/popup-blocked') {
-        setAuthNotice('El navegador bloqueó la ventana emergente. Permite popups para continuar.');
-      } else {
-        setAuthNotice('No fue posible iniciar sesión con Google. Intenta nuevamente.');
-      }
-      return null;
-    } finally {
-      setAuthBusy(false);
-    }
-  };
-
-  const handleGoogleSignOut = async () => {
-    setAuthNotice(null);
-    await signOut(auth);
-    setEditingIdByCat({
-      trainers: null,
-      companies: null,
-      sedes: null,
-      personnel: null,
-      clients: null,
-    });
-  };
-
-  const ensureAuthenticatedUser = async (): Promise<User | null> => {
-    let activeUser = currentUser;
-    if (!activeUser) {
-      activeUser = await handleGoogleSignIn();
-      if (!activeUser) {
-        setSaveFeedback({
-          category: activeCategory,
-          type: 'error',
-          message: 'Debes iniciar sesión con Google para guardar registros en Firestore.',
-        });
-        return null;
-      }
-    }
-    if (!activeUser.emailVerified || !activeUser.email) {
-      setSaveFeedback({
-        category: activeCategory,
-        type: 'error',
-        message: 'Se requiere una cuenta de Google con correo electrónico verificado.',
-      });
-      return null;
-    }
-    return activeUser;
-  };
-
   const handleSeedDemoData = async () => {
-    const activeUser = await ensureAuthenticatedUser();
-    if (!activeUser) return;
-
     setIsSeedingDemo(true);
     setSaveFeedback(null);
     try {
-      const res = await seedDemoDataToFirestore(activeUser);
-      const totalAdded = res.trainersCount + res.companiesCount + res.sedesCount;
+      const res = await seedDemoDataToFirestore();
+      const totalAdded =
+        res.trainersCount + res.companiesCount + res.sedesCount + res.assignmentsCount;
       setSaveFeedback({
         category: activeCategory,
         type: 'success',
         message:
           totalAdded > 0
-            ? `Datos demo cargados en Firestore: ${res.trainersCount} entrenadores, ${res.companiesCount} empresas y ${res.sedesCount} sedes con todos sus campos.`
-            : 'Todos los entrenadores, empresas y sedes del demo ya se encuentran sincronizados en Firestore.',
+            ? `Datos demo sincronizados en Firestore: ${res.trainersCount} entrenadores, ${res.companiesCount} empresas, ${res.sedesCount} sedes y ${res.assignmentsCount} asignaciones.`
+            : 'Todos los entrenadores, empresas, sedes y asignaciones del demo ya están sincronizados en Firestore.',
       });
     } catch (err) {
       setFatalFirestoreError(err as Error);
@@ -829,8 +718,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
       return;
     }
 
-    const activeUser = await ensureAuthenticatedUser();
-    if (!activeUser) return;
+    const meta = getAutoDeviceMetadata();
 
     setIsSaving(true);
     const { sanitized } = check;
@@ -862,8 +750,8 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
           avatar: sanitized.avatar,
           specialties: sanitized.specialties,
           active: sanitized.active,
-          createdByUid: activeUser.uid,
-          createdByEmail: activeUser.email!,
+          createdByUid: meta.createdByUid,
+          createdByEmail: meta.createdByEmail,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
@@ -871,7 +759,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
         setSaveFeedback({
           category: 'trainers',
           type: 'success',
-          message: `Entrenador "${sanitized.name}" guardado en /trainers con todos los campos del demo.`,
+          message: `Entrenador "${sanitized.name}" guardado en /trainers.`,
         });
       }
     } catch (error) {
@@ -905,8 +793,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
       return;
     }
 
-    const activeUser = await ensureAuthenticatedUser();
-    if (!activeUser) return;
+    const meta = getAutoDeviceMetadata();
 
     setIsSaving(true);
     const { sanitized } = check;
@@ -934,8 +821,8 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
           taxId: sanitized.taxId,
           industry: sanitized.industry,
           logoText: sanitized.logoText,
-          createdByUid: activeUser.uid,
-          createdByEmail: activeUser.email!,
+          createdByUid: meta.createdByUid,
+          createdByEmail: meta.createdByEmail,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
@@ -977,8 +864,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
       return;
     }
 
-    const activeUser = await ensureAuthenticatedUser();
-    if (!activeUser) return;
+    const meta = getAutoDeviceMetadata();
 
     setIsSaving(true);
     const { sanitized } = check;
@@ -1015,8 +901,8 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
         const newRef = doc(collection(db, 'sedes'));
         await setDoc(newRef, {
           ...basePayload,
-          createdByUid: activeUser.uid,
-          createdByEmail: activeUser.email!,
+          createdByUid: meta.createdByUid,
+          createdByEmail: meta.createdByEmail,
           createdAt: serverTimestamp(),
         });
         resetCategoryForm('sedes');
@@ -1057,8 +943,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
       return;
     }
 
-    const activeUser = await ensureAuthenticatedUser();
-    if (!activeUser) return;
+    const meta = getAutoDeviceMetadata();
 
     setIsSaving(true);
     const { sanitized } = check;
@@ -1086,8 +971,8 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
           phone: sanitized.phone,
           email: sanitized.email,
           address: { ...sanitized.address },
-          createdByUid: activeUser.uid,
-          createdByEmail: activeUser.email!,
+          createdByUid: meta.createdByUid,
+          createdByEmail: meta.createdByEmail,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
@@ -1129,8 +1014,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
       return;
     }
 
-    const activeUser = await ensureAuthenticatedUser();
-    if (!activeUser) return;
+    const meta = getAutoDeviceMetadata();
 
     setIsSaving(true);
     const { sanitized } = check;
@@ -1158,8 +1042,8 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
         const newRef = doc(collection(db, 'clients'));
         await setDoc(newRef, {
           ...basePayload,
-          createdByUid: activeUser.uid,
-          createdByEmail: activeUser.email!,
+          createdByUid: meta.createdByUid,
+          createdByEmail: meta.createdByEmail,
           createdAt: serverTimestamp(),
         });
         resetCategoryForm('clients');
@@ -1185,11 +1069,10 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
   };
 
   const handleDeleteDocument = async (cat: FirestoreDirectoryCategory, id: string) => {
-    if (!currentUser) return;
     const path = `${cat}/${id}`;
     try {
       if (cat === 'companies') {
-        await deleteCompanyAndSedesFromFirestore(currentUser, id, isBootstrappedAdmin);
+        await deleteCompanyAndSedesFromFirestore(id);
       } else {
         await deleteDoc(doc(db, cat, id));
       }
@@ -1348,59 +1231,24 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
-          {currentUser && currentUser.emailVerified && (
-            <button
-              type="button"
-              onClick={handleSeedDemoData}
-              disabled={isSeedingDemo}
-              className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap"
-              title="Importar los entrenadores, empresas y sedes iniciales del demo con todos sus campos a Cloud Firestore"
-            >
-              <DownloadCloud className="w-4 h-4 text-red-400" />
-              <span>{isSeedingDemo ? 'Importando demo...' : 'Importar Datos del Demo'}</span>
-            </button>
-          )}
+        <div className="flex flex-wrap items-center gap-3 shrink-0">
+          <div className="flex items-center gap-1.5 text-xs text-slate-600">
+            <span className="w-2 h-2 rounded-full bg-emerald-500" aria-hidden="true" />
+            <span>Conexión automática · Multi-dispositivo</span>
+          </div>
 
-          {currentUser ? (
-            <div className="flex items-center gap-2 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5">
-              <div className="text-right">
-                <div className="text-xs font-bold text-slate-900 truncate max-w-[180px]">
-                  {currentUser.displayName || currentUser.email}
-                </div>
-                <div className="text-[10px] text-emerald-700 font-semibold">
-                  {isBootstrappedAdmin ? 'Admin global verificado' : 'Sesión Google verificada'}
-                </div>
-              </div>
-              <button
-                type="button"
-                onClick={handleGoogleSignOut}
-                className="p-1.5 rounded-lg bg-white hover:bg-rose-50 text-slate-600 hover:text-rose-600 border border-slate-200 transition cursor-pointer"
-                title="Cerrar sesión de Google"
-              >
-                <LogOut className="w-4 h-4" />
-              </button>
-            </div>
-          ) : (
-            <button
-              type="button"
-              onClick={handleGoogleSignIn}
-              disabled={authBusy}
-              className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap"
-            >
-              <LogIn className="w-4 h-4" />
-              <span>{authBusy ? 'Conectando...' : 'Iniciar sesión con Google'}</span>
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={handleSeedDemoData}
+            disabled={isSeedingDemo}
+            className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+            title="Sincronizar los entrenadores, empresas, sedes y asignaciones iniciales del demo en Cloud Firestore"
+          >
+            <DownloadCloud className="w-4 h-4 text-red-400" />
+            <span>{isSeedingDemo ? 'Sincronizando demo...' : 'Sincronizar Datos del Demo'}</span>
+          </button>
         </div>
       </div>
-
-      {authNotice && (
-        <div className="bg-amber-50 border border-amber-300 text-amber-900 rounded-xl px-4 py-3 text-xs font-medium flex items-center gap-2">
-          <AlertCircle className="w-4 h-4 text-amber-700 shrink-0" />
-          <span>{authNotice}</span>
-        </div>
-      )}
 
       {/* Main Layout: Sidebar Navigation + Form & List Workspace */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
@@ -2723,21 +2571,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
               </div>
             </div>
 
-            {!currentUser ? (
-              <div className="py-10 text-center space-y-3">
-                <p className="text-xs font-semibold text-slate-600">
-                  Inicia sesión con tu cuenta de Google para consultar, sincronizar o importar los datos del demo en Cloud Firestore.
-                </p>
-                <button
-                  type="button"
-                  onClick={handleGoogleSignIn}
-                  className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold inline-flex items-center gap-1.5"
-                >
-                  <LogIn className="w-4 h-4" />
-                  <span>Iniciar sesión con Google</span>
-                </button>
-              </div>
-            ) : loadingByCat[activeCategory] ? (
+            {loadingByCat[activeCategory] ? (
               <div className="space-y-2 py-4">
                 {[1, 2, 3].map((k) => (
                   <div
