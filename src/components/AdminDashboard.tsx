@@ -1,0 +1,1711 @@
+import React, { useState, useMemo } from 'react';
+import { 
+  BarChart3, 
+  Calendar, 
+  Download, 
+  Printer, 
+  FileSpreadsheet, 
+  Search, 
+  Filter, 
+  CheckCircle2, 
+  AlertTriangle, 
+  Clock, 
+  Building2, 
+  Users, 
+  MapPin, 
+  ShieldCheck, 
+  Plus, 
+  Eye, 
+  Trash2, 
+  Edit3, 
+  CalendarDays,
+  FileText,
+  BellRing,
+  Ban,
+  Lock
+} from 'lucide-react';
+import { AttendanceRecord, Company, Sede, Trainer, ClassAssignment, ActivityCatalogItem } from '../types';
+import { formatDistance } from '../utils/geo';
+import { getSessionAlarmStatus, formatSecondsClock } from '../utils/sessionAlarm';
+import {
+  formatLocalYYYYMMDD,
+  doesAssignmentApplyToDate,
+  getAssignmentOccurrenceStatus,
+} from '../utils/assignmentLock';
+import { RecordDetailModal } from './RecordDetailModal';
+import { AdminTrainerModal } from './AdminTrainerModal';
+import { AdminCompanyModal } from './AdminCompanyModal';
+import { AdminSedeModal } from './AdminSedeModal';
+import { AdminAssignmentModal, AssignmentPreset } from './AdminAssignmentModal';
+import { AdminScheduleView } from './AdminScheduleView';
+import { AdminAssignmentTypesView } from './AdminAssignmentTypesView';
+import { PdfReportModal } from './PdfReportModal';
+import { PdfAssignmentsModal } from './PdfAssignmentsModal';
+import { PersonnelRegistryView } from './PersonnelRegistryView';
+import { FirestoreErrorBoundary } from './FirestoreErrorBoundary';
+
+interface AdminDashboardProps {
+  records: AttendanceRecord[];
+  companies: Company[];
+  trainers: Trainer[];
+  assignments: ClassAssignment[];
+  activityCatalog: ActivityCatalogItem[];
+  onUpdateRecord: (updated: AttendanceRecord) => void;
+  onDeleteRecord: (id: string) => void;
+  onAddCompany: (comp: Company) => void;
+  onUpdateCompany: (comp: Company) => void;
+  onDeleteCompany: (id: string) => void;
+  onAddSede: (sede: Sede) => void;
+  onUpdateSede: (sede: Sede) => void;
+  onDeleteSede: (sedeId: string, companyId: string) => void;
+  onAddTrainer: (trainer: Trainer) => void;
+  onUpdateTrainer: (trainer: Trainer) => void;
+  onDeleteTrainer: (id: string) => void;
+  onAddAssignment: (asg: ClassAssignment) => void;
+  onUpdateAssignment: (asg: ClassAssignment) => void;
+  onDeleteAssignment: (id: string) => void;
+  onAddCatalogItem: (item: ActivityCatalogItem) => void;
+  onUpdateCatalogItem: (item: ActivityCatalogItem, previousName?: string) => void;
+  onDeleteCatalogItem: (id: string) => void;
+  onResetData: () => void;
+}
+
+export const AdminDashboard: React.FC<AdminDashboardProps> = ({
+  records,
+  companies,
+  trainers,
+  assignments,
+  activityCatalog,
+  onUpdateRecord,
+  onDeleteRecord,
+  onAddCompany,
+  onUpdateCompany,
+  onDeleteCompany,
+  onAddSede,
+  onUpdateSede,
+  onDeleteSede,
+  onAddTrainer,
+  onUpdateTrainer,
+  onDeleteTrainer,
+  onAddAssignment,
+  onUpdateAssignment,
+  onDeleteAssignment,
+  onAddCatalogItem,
+  onUpdateCatalogItem,
+  onDeleteCatalogItem,
+  onResetData,
+}) => {
+  const [activeTab, setActiveTab] = useState<'reports' | 'schedule' | 'activity_types' | 'log' | 'sedes' | 'trainers' | 'personnel'>('reports');
+  const [selectedRecordForDetail, setSelectedRecordForDetail] = useState<AttendanceRecord | null>(null);
+
+  // Modals state
+  const [isTrainerModalOpen, setIsTrainerModalOpen] = useState(false);
+  const [editingTrainer, setEditingTrainer] = useState<Trainer | null>(null);
+
+  const [isCompanyModalOpen, setIsCompanyModalOpen] = useState(false);
+  const [editingCompany, setEditingCompany] = useState<Company | null>(null);
+
+  const [isSedeModalOpen, setIsSedeModalOpen] = useState(false);
+  const [editingSede, setEditingSede] = useState<Sede | null>(null);
+  const [targetCompanyIdForSede, setTargetCompanyIdForSede] = useState<string | undefined>(undefined);
+
+  const [isAssignmentModalOpen, setIsAssignmentModalOpen] = useState(false);
+  const [editingAssignment, setEditingAssignment] = useState<ClassAssignment | null>(null);
+  const [assignmentInitialPreset, setAssignmentInitialPreset] = useState<AssignmentPreset | null>(null);
+
+  const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
+  const [isPdfAssignmentsModalOpen, setIsPdfAssignmentsModalOpen] = useState(false);
+  const [pdfAssignmentsTrainerTarget, setPdfAssignmentsTrainerTarget] = useState<string>('all');
+
+  // Report Period Filter
+  const [reportType, setReportType] = useState<'daily' | 'monthly' | 'all'>('monthly');
+  const todayStr = formatLocalYYYYMMDD(new Date());
+  const [selectedDate, setSelectedDate] = useState<string>(todayStr);
+  const currentMonthStr = todayStr.substring(0, 7); // YYYY-MM
+  const [selectedMonth, setSelectedMonth] = useState<string>(currentMonthStr);
+
+  // Inline confirmation states (avoiding window.confirm)
+  const [confirmDeleteRecordId, setConfirmDeleteRecordId] = useState<string | null>(null);
+  const [confirmDeleteCompanyId, setConfirmDeleteCompanyId] = useState<string | null>(null);
+  const [confirmDeleteSedeKey, setConfirmDeleteSedeKey] = useState<string | null>(null);
+  const [confirmDeleteTrainerId, setConfirmDeleteTrainerId] = useState<string | null>(null);
+  const [confirmResetDemo, setConfirmResetDemo] = useState(false);
+
+  // Table Log Filters
+  const [searchTerm, setSearchTerm] = useState('');
+  const [filterTrainerId, setFilterTrainerId] = useState<string>('all');
+  const [filterCompanyId, setFilterCompanyId] = useState<string>('all');
+  const [filterActivityType, setFilterActivityType] = useState<string>('all');
+  const [filterPunctuality, setFilterPunctuality] = useState<string>('all');
+
+  // Filter records based on report period
+  const periodRecords = useMemo(() => {
+    return records.filter((r) => {
+      if (reportType === 'daily') {
+        return r.date === selectedDate;
+      }
+      if (reportType === 'monthly') {
+        return r.date.startsWith(selectedMonth);
+      }
+      return true;
+    });
+  }, [records, reportType, selectedDate, selectedMonth]);
+
+  // Live check for active sessions that exceeded planned duration without checkout
+  const [adminNowMs, setAdminNowMs] = useState<number>(() => Date.now());
+  React.useEffect(() => {
+    const timer = setInterval(() => setAdminNowMs(Date.now()), 5000);
+    return () => clearInterval(timer);
+  }, []);
+
+  const overdueSessions = useMemo(() => {
+    return records
+      .filter((r) => r.status === 'en_curso')
+      .map((record) => ({
+        record,
+        alarm: getSessionAlarmStatus(record, activityCatalog, adminNowMs),
+      }))
+      .filter((item) => item.alarm.isOverdue && !item.alarm.hasExceededUnclosedGrace);
+  }, [records, activityCatalog, adminNowMs]);
+
+  // Summary of blocked & non-compliant assignments and sessions
+  const nonCompliantSummary = useMemo(() => {
+    const unclosedRecordsCount = records.filter((r) => r.status === 'incumplido').length;
+    const lockedNonCompliantAssignments = assignments.filter((asg) => {
+      if (asg.active === false) return false;
+      const targetDate = asg.frequency === 'fecha_unica' && asg.date ? asg.date : todayStr;
+      if (asg.frequency !== 'fecha_unica' && !doesAssignmentApplyToDate(asg, targetDate)) {
+        return Boolean(asg.nonCompliant || (asg.missedDates && asg.missedDates.length > 0));
+      }
+      const st = getAssignmentOccurrenceStatus(
+        asg,
+        targetDate,
+        records,
+        activityCatalog,
+        adminNowMs
+      );
+      return (
+        st.isNonCompliant ||
+        Boolean(asg.nonCompliant || (asg.missedDates && asg.missedDates.length > 0))
+      );
+    });
+
+    const outOfScheduleUnreportedCount = lockedNonCompliantAssignments.filter((asg) => {
+      const targetDate = asg.frequency === 'fecha_unica' && asg.date ? asg.date : todayStr;
+      const st = getAssignmentOccurrenceStatus(
+        asg,
+        targetDate,
+        records,
+        activityCatalog,
+        adminNowMs
+      );
+      return st.nonComplianceReason === 'fuera_de_horario' || asg.nonCompliantReason === 'fuera_de_horario';
+    }).length;
+
+    return {
+      unclosedRecordsCount,
+      lockedAssignmentsCount: lockedNonCompliantAssignments.length,
+      outOfScheduleUnreportedCount,
+      hasAny: unclosedRecordsCount > 0 || lockedNonCompliantAssignments.length > 0,
+    };
+  }, [records, assignments, activityCatalog, adminNowMs, todayStr]);
+
+  // Overall Statistics for the period
+  const stats = useMemo(() => {
+    const total = periodRecords.length;
+    const completed = periodRecords.filter((r) => r.status === 'completado').length;
+    const nonCompliant = periodRecords.filter((r) => r.status === 'incumplido').length;
+    const onTime = periodRecords.filter((r) => r.punctualityStatus === 'a_tiempo').length;
+    const late = periodRecords.filter((r) => r.punctualityStatus === 'con_retraso').length;
+    const early = periodRecords.filter((r) => r.punctualityStatus === 'adelantado').length;
+
+    const punctualityRate = total > 0 ? Math.round(((onTime + early) / total) * 100) : 100;
+
+    const totalAttendees = periodRecords.reduce((acc, r) => acc + (r.attendeesCount || 0), 0);
+    const totalMinutes = periodRecords.reduce((acc, r) => acc + (r.durationMinutes || 45), 0);
+    const totalHours = (totalMinutes / 60).toFixed(1);
+
+    const pausasCount = periodRecords.filter((r) => r.activityType === 'pausa_activa').length;
+    const fitnessCount = periodRecords.filter((r) => r.activityType === 'clase_fitness').length;
+
+    return {
+      total,
+      completed,
+      nonCompliant,
+      onTime,
+      late,
+      early,
+      punctualityRate,
+      totalAttendees,
+      totalHours,
+      pausasCount,
+      fitnessCount,
+    };
+  }, [periodRecords]);
+
+  // Consolidated trainer punctuality ranking
+  const trainerSummaries = useMemo(() => {
+    return trainers.map((tr) => {
+      const trRecords = periodRecords.filter((r) => r.trainerId === tr.id);
+      const total = trRecords.length;
+      const onTime = trRecords.filter((r) => r.punctualityStatus === 'a_tiempo').length;
+      const early = trRecords.filter((r) => r.punctualityStatus === 'adelantado').length;
+      const late = trRecords.filter((r) => r.punctualityStatus === 'con_retraso').length;
+      const nonCompliant = trRecords.filter((r) => r.status === 'incumplido').length;
+      const punctualityRate = total > 0 ? Math.round(((onTime + early) / total) * 100) : 100;
+      const attendees = trRecords.reduce((acc, r) => acc + (r.attendeesCount || 0), 0);
+      const hours = (trRecords.reduce((acc, r) => acc + (r.durationMinutes || 45), 0) / 60).toFixed(1);
+
+      return {
+        trainer: tr,
+        total,
+        onTime,
+        early,
+        late,
+        nonCompliant,
+        punctualityRate,
+        attendees,
+        hours,
+      };
+    });
+  }, [trainers, periodRecords]);
+
+  // Consolidated company summary
+  const companySummaries = useMemo(() => {
+    return companies.map((comp) => {
+      const compRecords = periodRecords.filter((r) => r.companyId === comp.id);
+      const totalSessions = compRecords.length;
+      const pausas = compRecords.filter((r) => r.activityType === 'pausa_activa').length;
+      const fitness = compRecords.filter((r) => r.activityType === 'clase_fitness').length;
+      const attendees = compRecords.reduce((acc, r) => acc + (r.attendeesCount || 0), 0);
+
+      return {
+        company: comp,
+        totalSessions,
+        pausas,
+        fitness,
+        attendees,
+      };
+    });
+  }, [companies, periodRecords]);
+
+  // Filtered log table records
+  const filteredLogRecords = useMemo(() => {
+    return records.filter((r) => {
+      if (filterTrainerId !== 'all' && r.trainerId !== filterTrainerId) return false;
+      if (filterCompanyId !== 'all' && r.companyId !== filterCompanyId) return false;
+      if (filterActivityType !== 'all' && r.activityType !== filterActivityType) return false;
+      if (filterPunctuality !== 'all') {
+        if (filterPunctuality === 'incumplido') {
+          if (r.status !== 'incumplido') return false;
+        } else if (filterPunctuality === 'en_curso') {
+          if (r.status !== 'en_curso') return false;
+        } else if (r.punctualityStatus !== filterPunctuality) {
+          return false;
+        }
+      }
+
+      if (searchTerm.trim() !== '') {
+        const query = searchTerm.toLowerCase();
+        const match =
+          r.trainerName.toLowerCase().includes(query) ||
+          r.companyName.toLowerCase().includes(query) ||
+          r.sedeName.toLowerCase().includes(query) ||
+          r.activityName.toLowerCase().includes(query) ||
+          r.locationArea.toLowerCase().includes(query);
+        if (!match) return false;
+      }
+
+      return true;
+    });
+  }, [records, filterTrainerId, filterCompanyId, filterActivityType, filterPunctuality, searchTerm]);
+
+  // Export to CSV / Excel
+  const exportToCsv = () => {
+    const headers = [
+      'ID Registro',
+      'Fecha',
+      'Entrenador',
+      'Empresa',
+      'Sede',
+      'Direccion',
+      'Hora Programada',
+      'Hora Entrada Real',
+      'Hora Salida Real',
+      'Estado Sesion',
+      'Duracion (Minutos)',
+      'Estado Puntualidad',
+      'Minutos Desviacion',
+      'Tipo Actividad',
+      'Nombre Actividad',
+      'Colaboradores Asistentes',
+      'Salon o Area',
+      'GPS Latitud',
+      'GPS Longitud',
+      'Distancia a Sede (m)',
+      'En Geocerca',
+      'Validacion Facial Biometria',
+      'Auditado Admin',
+      'Observaciones',
+    ];
+
+    const rows = periodRecords.map((r) => [
+      `"${r.id}"`,
+      `"${r.date}"`,
+      `"${r.trainerName}"`,
+      `"${r.companyName}"`,
+      `"${r.sedeName}"`,
+      `"${r.sedeAddress}"`,
+      `"${r.scheduledTime}"`,
+      `"${r.checkInTime}"`,
+      `"${
+        r.checkOutTime
+          ? r.checkOutTime
+          : r.status === 'incumplido'
+          ? 'SIN CIERRE (+30m)'
+          : 'En curso'
+      }"`,
+      `"${
+        r.status === 'incumplido'
+          ? 'Incumplida (+30m sin cierre)'
+          : r.status === 'completado'
+          ? 'Completada y Cerrada'
+          : 'En curso'
+      }"`,
+      r.durationMinutes || '',
+      `"${r.punctualityStatus}"`,
+      r.punctualityDiffMinutes,
+      `"${r.activityType}"`,
+      `"${r.activityName}"`,
+      r.attendeesCount,
+      `"${r.locationArea}"`,
+      r.checkInGps.lat,
+      r.checkInGps.lng,
+      r.checkInGps.distanceToSedeMeters,
+      r.checkInGps.isWithinGeofence ? 'SI' : 'NO',
+      r.facialVerification ? `"${r.facialVerification.confidenceScore}% (Verificado)"` : '"N/A"',
+      r.adminVerified ? 'SI' : 'NO',
+      `"${(r.observations || '').replace(/"/g, '""')}"`,
+    ]);
+
+    const csvContent =
+      '\uFEFF' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.setAttribute('href', url);
+    link.setAttribute(
+      'download',
+      `Reporte_BSCW_Puntualidad_${reportType}_${
+        reportType === 'daily' ? selectedDate : selectedMonth
+      }.csv`
+    );
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  };
+
+  return (
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-6">
+      {/* Top Banner & Tab Navigation in Light Theme */}
+      <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-6 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
+        <div>
+          <div className="flex items-center space-x-3">
+            <span className="p-2.5 rounded-xl bg-red-50 text-red-600 border border-red-200/80 shadow-sm">
+              <BarChart3 className="w-5 h-5" />
+            </span>
+            <div>
+              <h2 className="text-xl font-bold text-slate-900">Panel Administrativo BSCW Check</h2>
+              <p className="text-xs text-slate-500 font-medium">
+                Control de gestión, asignación de clases, reportes y configuración de empresas y sedes
+              </p>
+            </div>
+          </div>
+        </div>
+
+        {/* Tab Buttons */}
+        <div className="flex flex-wrap items-center gap-1.5 bg-slate-100 p-1.5 rounded-xl border border-slate-200 text-xs font-semibold">
+          <button
+            type="button"
+            onClick={() => setActiveTab('reports')}
+            className={`px-3.5 py-1.5 rounded-lg transition ${
+              activeTab === 'reports'
+                ? 'bg-red-600 text-white shadow-sm font-bold'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+            }`}
+          >
+            📊 Reportes de Puntualidad
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('schedule')}
+            className={`px-3.5 py-1.5 rounded-lg transition ${
+              activeTab === 'schedule'
+                ? 'bg-red-600 text-white shadow-sm font-bold'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+            }`}
+          >
+            🗓️ Asignación de Clases
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('activity_types')}
+            className={`px-3.5 py-1.5 rounded-lg transition ${
+              activeTab === 'activity_types'
+                ? 'bg-red-600 text-white shadow-sm font-bold'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+            }`}
+          >
+            ⚡ Tipos de Asignación
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('log')}
+            className={`px-3.5 py-1.5 rounded-lg transition ${
+              activeTab === 'log'
+                ? 'bg-red-600 text-white shadow-sm font-bold'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+            }`}
+          >
+            📋 Bitácora & Evidencias
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('sedes')}
+            className={`px-3.5 py-1.5 rounded-lg transition ${
+              activeTab === 'sedes'
+                ? 'bg-red-600 text-white shadow-sm font-bold'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+            }`}
+          >
+            🏢 Empresas & Sedes
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('trainers')}
+            className={`px-3.5 py-1.5 rounded-lg transition ${
+              activeTab === 'trainers'
+                ? 'bg-red-600 text-white shadow-sm font-bold'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+            }`}
+          >
+            🏃 Entrenadores
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('personnel')}
+            className={`px-3.5 py-1.5 rounded-lg transition ${
+              activeTab === 'personnel'
+                ? 'bg-red-600 text-white shadow-sm font-bold'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+            }`}
+          >
+            🗂️ Directorio (Firestore)
+          </button>
+        </div>
+      </div>
+
+      {/* Admin Overdue Checkout Alert Banner */}
+      {overdueSessions.length > 0 && (
+        <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="flex items-start space-x-3">
+            <div className="w-10 h-10 rounded-xl bg-red-600 text-white flex items-center justify-center shrink-0 shadow-xs">
+              <BellRing className="w-5 h-5 animate-bounce" />
+            </div>
+            <div>
+              <p className="text-[11px] font-extrabold uppercase tracking-wide text-red-700">
+                Alerta de Salida No Registrada ({overdueSessions.length})
+              </p>
+              <p className="text-xs font-bold text-slate-900 mt-0.5">
+                {overdueSessions
+                  .map(
+                    ({ record, alarm }) =>
+                      `${record.trainerName} en ${record.companyName} (${record.sedeName}) · +${formatSecondsClock(
+                        alarm.overdueSeconds
+                      )} excedidos · Bloqueo por incumplimiento en ${formatSecondsClock(
+                        alarm.remainingBeforeNonComplianceSeconds
+                      )} (${alarm.autoLockDeadlineFormatted} hrs)`
+                  )
+                  .join(' • ')}
+              </p>
+              <p className="text-[11px] text-slate-600 mt-0.5">
+                Si no se registra la salida dentro de los 30 minutos posteriores al término, la sesión y la asignación se bloquearán automáticamente como incumplidas.
+              </p>
+            </div>
+          </div>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('log')}
+            className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold shrink-0 transition self-start md:self-center"
+          >
+            Ver en Bitácora
+          </button>
+        </div>
+      )}
+
+      {/* Admin Blocked & Non-Compliant Assignments Summary Banner */}
+      {nonCompliantSummary.hasAny && (
+        <div className="bg-rose-50/80 border border-rose-200 rounded-2xl p-4 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3">
+          <div className="flex items-start space-x-3">
+            <div className="w-10 h-10 rounded-xl bg-rose-700 text-white flex items-center justify-center shrink-0 shadow-xs">
+              <Ban className="w-5 h-5" />
+            </div>
+            <div>
+              <p className="text-[11px] font-extrabold uppercase tracking-wide text-rose-800">
+                Control de Asignaciones Bloqueadas por Incumplimiento
+              </p>
+              <p className="text-xs font-bold text-slate-900 mt-0.5">
+                {nonCompliantSummary.lockedAssignmentsCount} asignación(es) bloqueada(s) como incumplida(s)
+                {' · '}
+                {nonCompliantSummary.outOfScheduleUnreportedCount} fuera de horario sin reporte
+                {' · '}
+                {nonCompliantSummary.unclosedRecordsCount} sesión(es) sin cierre tras +30 min
+              </p>
+              <p className="text-[11px] text-slate-600 mt-0.5">
+                Estas asignaciones están bloqueadas para el entrenador. Desde Asignación de Clases puedes auditar o rehabilitar una fecha si procede justificación.
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0 self-start md:self-center">
+            <button
+              type="button"
+              onClick={() => setActiveTab('schedule')}
+              className="px-3.5 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold transition"
+            >
+              Revisar Asignaciones
+            </button>
+            {nonCompliantSummary.unclosedRecordsCount > 0 && (
+              <button
+                type="button"
+                onClick={() => {
+                  setFilterPunctuality('incumplido');
+                  setActiveTab('log');
+                }}
+                className="px-3.5 py-2 rounded-xl bg-white hover:bg-rose-100 text-rose-800 border border-rose-300 text-xs font-bold transition"
+              >
+                Ver Sin Cierre (+30m)
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 1: REPORTES DIARIOS Y MENSUALES */}
+      {activeTab === 'reports' && (
+        <div className="space-y-6">
+          {/* Filter Bar for Daily / Monthly Mode */}
+          <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-xs font-bold text-slate-700 flex items-center">
+                <Calendar className="w-4 h-4 mr-1.5 text-red-600" />
+                Periodo del Reporte:
+              </span>
+
+              {/* Mode Switcher */}
+              <div className="bg-slate-100 p-1 rounded-lg border border-slate-200 flex text-xs">
+                <button
+                  type="button"
+                  onClick={() => setReportType('daily')}
+                  className={`px-3 py-1 rounded-md font-semibold transition ${
+                    reportType === 'daily'
+                      ? 'bg-red-600 text-white shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Diario
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReportType('monthly')}
+                  className={`px-3 py-1 rounded-md font-semibold transition ${
+                    reportType === 'monthly'
+                      ? 'bg-red-600 text-white shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Mensual
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setReportType('all')}
+                  className={`px-3 py-1 rounded-md font-semibold transition ${
+                    reportType === 'all'
+                      ? 'bg-red-600 text-white shadow-sm'
+                      : 'text-slate-600 hover:text-slate-900'
+                  }`}
+                >
+                  Histórico Completo
+                </button>
+              </div>
+
+              {/* Date pickers */}
+              {reportType === 'daily' && (
+                <input
+                  type="date"
+                  value={selectedDate}
+                  onChange={(e) => setSelectedDate(e.target.value)}
+                  className="bg-white border border-slate-300 text-slate-900 text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:border-red-500 font-mono shadow-sm"
+                />
+              )}
+
+              {reportType === 'monthly' && (
+                <input
+                  type="month"
+                  value={selectedMonth}
+                  onChange={(e) => setSelectedMonth(e.target.value)}
+                  className="bg-white border border-slate-300 text-slate-900 text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:border-red-500 font-mono shadow-sm"
+                />
+              )}
+            </div>
+
+            {/* Action buttons with PDF and Excel */}
+            <div className="flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={() => setIsPdfModalOpen(true)}
+                className="flex items-center text-xs font-bold px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white shadow-sm transition"
+              >
+                <FileText className="w-3.5 h-3.5 mr-1.5" />
+                Generar Reporte en PDF
+              </button>
+
+              <button
+                type="button"
+                onClick={exportToCsv}
+                className="flex items-center text-xs font-semibold px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 shadow-sm transition"
+              >
+                <FileSpreadsheet className="w-3.5 h-3.5 mr-1.5 text-emerald-700" />
+                Excel / CSV
+              </button>
+            </div>
+          </div>
+
+          {/* KPI Summary Cards */}
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-3 sm:gap-4">
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm flex flex-col justify-between">
+              <span className="text-xs font-semibold text-slate-500">Visitas en el Periodo</span>
+              <div className="mt-2 flex items-baseline justify-between gap-2">
+                <span className="text-2xl font-black font-mono text-slate-900">{stats.total}</span>
+                <span className="text-xs font-semibold text-right">
+                  <span className="text-emerald-700">{stats.completed} cerradas</span>
+                  {stats.nonCompliant > 0 && (
+                    <span className="text-rose-700"> · {stats.nonCompliant} incumplidas</span>
+                  )}
+                </span>
+              </div>
+            </div>
+
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm flex flex-col justify-between">
+              <span className="text-xs font-semibold text-slate-500">Tasa de Puntualidad</span>
+              <div className="mt-2 flex items-baseline justify-between">
+                <span className="text-2xl font-black font-mono text-red-600">
+                  {stats.punctualityRate}%
+                </span>
+                <span className="text-xs text-slate-500 font-medium">
+                  {stats.onTime} a tiempo • {stats.late} retrasos
+                </span>
+              </div>
+            </div>
+
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm flex flex-col justify-between">
+              <span className="text-xs font-semibold text-slate-500">Horas Impartidas</span>
+              <div className="mt-2 flex items-baseline justify-between">
+                <span className="text-2xl font-black font-mono text-slate-900">{stats.totalHours} hrs</span>
+                <span className="text-xs text-slate-500 font-medium">efectivas</span>
+              </div>
+            </div>
+
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm flex flex-col justify-between">
+              <span className="text-xs font-semibold text-slate-500">Colaboradores Beneficiados</span>
+              <div className="mt-2 flex items-baseline justify-between">
+                <span className="text-2xl font-black font-mono text-slate-900">{stats.totalAttendees}</span>
+                <Users className="w-4 h-4 text-red-600" />
+              </div>
+            </div>
+
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm flex flex-col justify-between col-span-2 lg:col-span-1">
+              <span className="text-xs font-semibold text-slate-500">Pausas vs Clases</span>
+              <div className="mt-2 flex items-center justify-between text-xs font-bold">
+                <span className="text-red-600">{stats.pausasCount} Pausas</span>
+                <span className="text-slate-300">/</span>
+                <span className="text-slate-800">{stats.fitnessCount} Fitness</span>
+              </div>
+            </div>
+          </div>
+
+          {/* Section: Resumen de Puntualidad y Cumplimiento por Entrenador */}
+          <div className="bg-white border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
+            <div className="p-4 sm:p-5 border-b border-slate-200 flex items-center justify-between">
+              <h3 className="font-bold text-slate-900 text-sm sm:text-base flex items-center">
+                <Clock className="w-4 h-4 mr-2 text-red-600" />
+                Reporte de Puntualidad y Rendimiento por Entrenador
+              </h3>
+              <span className="text-xs text-slate-500 font-medium">
+                {reportType === 'daily'
+                  ? `Día: ${selectedDate}`
+                  : reportType === 'monthly'
+                  ? `Mes: ${selectedMonth}`
+                  : 'Total Acumulado'}
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-slate-700">
+                <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] font-bold tracking-wider border-b border-slate-200">
+                  <tr>
+                    <th className="py-3 px-4">Entrenador</th>
+                    <th className="py-3 px-3 text-center">Sesiones</th>
+                    <th className="py-3 px-3 text-center">% Puntualidad</th>
+                    <th className="py-3 px-3 text-center">A Tiempo</th>
+                    <th className="py-3 px-3 text-center">Con Retraso</th>
+                    <th className="py-3 px-3 text-center">Incumplidas</th>
+                    <th className="py-3 px-3 text-center">Horas Brindadas</th>
+                    <th className="py-3 px-3 text-center">Colaboradores</th>
+                    <th className="py-3 px-4 text-right">Calificación</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {trainerSummaries.map(({ trainer, total, onTime, early, late, nonCompliant, punctualityRate, attendees, hours }) => (
+                    <tr key={trainer.id} className="hover:bg-slate-50 transition">
+                      <td className="py-3.5 px-4 font-semibold text-slate-900 flex items-center space-x-3">
+                        <img
+                          src={trainer.avatar}
+                          alt={trainer.name}
+                          className="w-8 h-8 rounded-full object-cover border border-slate-300 shadow-xs"
+                        />
+                        <div>
+                          <span className="block font-bold text-slate-900">{trainer.name}</span>
+                          <span className="text-[10px] text-slate-500">{trainer.email}</span>
+                        </div>
+                      </td>
+                      <td className="py-3.5 px-3 text-center font-mono font-bold text-slate-900">
+                        {total}
+                      </td>
+                      <td className="py-3.5 px-3 text-center">
+                        <span
+                          className={`font-mono font-bold text-[11px] ${
+                            punctualityRate >= 90
+                              ? 'text-emerald-700'
+                              : punctualityRate >= 75
+                              ? 'text-amber-700'
+                              : 'text-rose-700'
+                          }`}
+                        >
+                          {punctualityRate}%
+                        </span>
+                      </td>
+                      <td className="py-3.5 px-3 text-center font-mono text-emerald-700 font-bold">
+                        {onTime + early}
+                      </td>
+                      <td className="py-3.5 px-3 text-center font-mono text-red-600 font-bold">
+                        {late}
+                      </td>
+                      <td className="py-3.5 px-3 text-center font-mono font-bold">
+                        {nonCompliant > 0 ? (
+                          <span className="text-rose-700">{nonCompliant}</span>
+                        ) : (
+                          <span className="text-slate-400">0</span>
+                        )}
+                      </td>
+                      <td className="py-3.5 px-3 text-center font-mono text-slate-800 font-semibold">
+                        {hours} hrs
+                      </td>
+                      <td className="py-3.5 px-3 text-center font-mono text-slate-900 font-bold">
+                        {attendees}
+                      </td>
+                      <td className="py-3.5 px-4 text-right">
+                        <span
+                          className={`text-[11px] font-bold ${
+                            nonCompliant > 0
+                              ? 'text-rose-700'
+                              : punctualityRate >= 95
+                              ? 'text-emerald-700'
+                              : punctualityRate >= 80
+                              ? 'text-slate-700'
+                              : 'text-amber-700'
+                          }`}
+                        >
+                          {nonCompliant > 0
+                            ? '⚠ Con incumplimiento'
+                            : punctualityRate >= 95
+                            ? '★ Excelente'
+                            : punctualityRate >= 80
+                            ? '✓ Destacado'
+                            : '⚠ Revisar'}
+                        </span>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          {/* Section: Resumen de Visitas por Empresa Cliente */}
+          <div className="bg-white border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
+            <div className="p-4 sm:p-5 border-b border-slate-200 flex items-center justify-between">
+              <h3 className="font-bold text-slate-900 text-sm sm:text-base flex items-center">
+                <Building2 className="w-4 h-4 mr-2 text-red-600" />
+                Resumen de Cobertura por Empresa Cliente
+              </h3>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-slate-700">
+                <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] font-bold tracking-wider border-b border-slate-200">
+                  <tr>
+                    <th className="py-3 px-4">Empresa Cliente</th>
+                    <th className="py-3 px-3">Industria</th>
+                    <th className="py-3 px-3 text-center">Sedes Registradas</th>
+                    <th className="py-3 px-3 text-center">Total Sesiones</th>
+                    <th className="py-3 px-3 text-center">Pausas Activas</th>
+                    <th className="py-3 px-3 text-center">Clases Fitness</th>
+                    <th className="py-3 px-4 text-right">Colaboradores Beneficiados</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {companySummaries.map(({ company, totalSessions, pausas, fitness, attendees }) => (
+                    <tr key={company.id} className="hover:bg-slate-50 transition">
+                      <td className="py-3.5 px-4 font-bold text-slate-900">
+                        {company.name}
+                      </td>
+                      <td className="py-3.5 px-3 text-slate-500">
+                        {company.industry}
+                      </td>
+                      <td className="py-3.5 px-3 text-center font-mono font-semibold text-slate-700">
+                        {company.sedes.length} sedes
+                      </td>
+                      <td className="py-3.5 px-3 text-center font-mono font-black text-red-600">
+                        {totalSessions}
+                      </td>
+                      <td className="py-3.5 px-3 text-center font-mono font-medium text-slate-800">
+                        {pausas}
+                      </td>
+                      <td className="py-3.5 px-3 text-center font-mono font-medium text-slate-800">
+                        {fitness}
+                      </td>
+                      <td className="py-3.5 px-4 text-right font-mono font-bold text-slate-900">
+                        {attendees} personas
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 2: ASIGNACIÓN DE CLASES (CALENDARIO DÍA, SEMANA Y MES) */}
+      {activeTab === 'schedule' && (
+        <AdminScheduleView
+          assignments={assignments}
+          records={records}
+          companies={companies}
+          trainers={trainers}
+          activityCatalog={activityCatalog}
+          onAddAssignment={(preset) => {
+            setEditingAssignment(null);
+            setAssignmentInitialPreset(preset || null);
+            setIsAssignmentModalOpen(true);
+          }}
+          onEditAssignment={(asg) => {
+            setEditingAssignment(asg);
+            setAssignmentInitialPreset(null);
+            setIsAssignmentModalOpen(true);
+          }}
+          onUpdateAssignment={onUpdateAssignment}
+          onDeleteAssignment={onDeleteAssignment}
+          onOpenPdfReport={(trainerId) => {
+            setPdfAssignmentsTrainerTarget(trainerId || 'all');
+            setIsPdfAssignmentsModalOpen(true);
+          }}
+        />
+      )}
+
+      {/* TAB 3: BITÁCORA Y EVIDENCIAS DE ASISTENCIA */}
+      {activeTab === 'log' && (
+        <div className="space-y-4">
+          <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm space-y-3">
+            <div className="flex flex-col md:flex-row gap-3">
+              <div className="relative flex-1">
+                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                <input
+                  type="text"
+                  value={searchTerm}
+                  onChange={(e) => setSearchTerm(e.target.value)}
+                  placeholder="Buscar por entrenador, empresa, sede, salón o actividad..."
+                  className="w-full bg-white border border-slate-300 rounded-xl pl-9 pr-4 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 shadow-sm"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                <select
+                  value={filterTrainerId}
+                  onChange={(e) => setFilterTrainerId(e.target.value)}
+                  className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-red-500 cursor-pointer shadow-sm font-medium"
+                >
+                  <option value="all">Todos los Entrenadores</option>
+                  {trainers.map((t) => (
+                    <option key={t.id} value={t.id}>
+                      {t.name}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  value={filterCompanyId}
+                  onChange={(e) => setFilterCompanyId(e.target.value)}
+                  className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-red-500 cursor-pointer shadow-sm font-medium"
+                >
+                  <option value="all">Todas las Empresas</option>
+                  {companies.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+
+                <select
+                  value={filterActivityType}
+                  onChange={(e) => setFilterActivityType(e.target.value)}
+                  className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-red-500 cursor-pointer shadow-sm font-medium"
+                >
+                  <option value="all">Todas las Actividades</option>
+                  <option value="pausa_activa">Pausa Activa</option>
+                  <option value="clase_fitness">Clase Fitness</option>
+                </select>
+
+                <select
+                  value={filterPunctuality}
+                  onChange={(e) => setFilterPunctuality(e.target.value)}
+                  className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-red-500 cursor-pointer shadow-sm font-medium"
+                >
+                  <option value="all">Todos los Estados</option>
+                  <option value="a_tiempo">A tiempo</option>
+                  <option value="con_retraso">Con retraso</option>
+                  <option value="adelantado">Adelantado</option>
+                  <option value="en_curso">En curso (sin salida)</option>
+                  <option value="incumplido">Incumplida (+30m sin cierre)</option>
+                </select>
+              </div>
+            </div>
+
+            <div className="flex items-center justify-between text-xs text-slate-500 pt-1">
+              <span>
+                Mostrando <strong className="text-slate-900">{filteredLogRecords.length}</strong> de {records.length} registros totales
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  setSearchTerm('');
+                  setFilterTrainerId('all');
+                  setFilterCompanyId('all');
+                  setFilterActivityType('all');
+                  setFilterPunctuality('all');
+                }}
+                className="text-red-600 font-semibold hover:underline"
+              >
+                Limpiar Filtros
+              </button>
+            </div>
+          </div>
+
+          {/* Master Table of Records */}
+          <div className="bg-white border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs text-slate-700">
+                <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] font-bold tracking-wider border-b border-slate-200">
+                  <tr>
+                    <th className="py-3 px-3">Fecha & Horarios</th>
+                    <th className="py-3 px-3">Entrenador</th>
+                    <th className="py-3 px-3">Empresa y Sede</th>
+                    <th className="py-3 px-3">Actividad</th>
+                    <th className="py-3 px-2 text-center">Puntualidad</th>
+                    <th className="py-3 px-2 text-center">GPS</th>
+                    <th className="py-3 px-2 text-center">Evidencias</th>
+                    <th className="py-3 px-3 text-right">Acción</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {filteredLogRecords.map((rec) => {
+                    const isLate = rec.punctualityStatus === 'con_retraso';
+                    const isEarly = rec.punctualityStatus === 'adelantado';
+                    const isNonCompliantRecord = rec.status === 'incumplido';
+
+                    return (
+                      <tr
+                        key={rec.id}
+                        className={`transition ${
+                          isNonCompliantRecord ? 'bg-rose-50/40 hover:bg-rose-50/80' : 'hover:bg-slate-50'
+                        }`}
+                      >
+                        {/* Timestamps */}
+                        <td className="py-3 px-3 whitespace-nowrap">
+                          <span className="font-mono font-bold text-slate-900 block">
+                            {rec.date}
+                          </span>
+                          <span className="text-[11px] text-slate-500">
+                            Prog: <span className="font-mono font-medium">{rec.scheduledTime}</span>
+                          </span>
+                          <div className="text-[10px] font-mono text-emerald-700 font-bold">
+                            Ent: {rec.checkInTime}
+                            {isNonCompliantRecord ? (
+                              <span className="ml-1.5 text-rose-700 font-sans font-extrabold inline-flex items-center gap-1">
+                                <Lock className="w-3 h-3 inline" />
+                                Incumplida (+30m sin cierre)
+                              </span>
+                            ) : rec.checkOutTime ? (
+                              <span className="text-slate-700 ml-1">| Sal: {rec.checkOutTime}</span>
+                            ) : (
+                              (() => {
+                                const st = getSessionAlarmStatus(rec, activityCatalog, adminNowMs);
+                                return st.isOverdue ? (
+                                  <span className="ml-1.5 text-amber-800 font-sans font-extrabold">
+                                    ⚠ Salida vencida (+{formatSecondsClock(st.overdueSeconds)} · bloqueo en {formatSecondsClock(st.remainingBeforeNonComplianceSeconds)})
+                                  </span>
+                                ) : (
+                                  <span className="ml-1 text-amber-700 font-sans font-bold">
+                                    • En curso
+                                  </span>
+                                );
+                              })()
+                            )}
+                          </div>
+                        </td>
+
+                        {/* Trainer */}
+                        <td className="py-3 px-3 whitespace-nowrap">
+                          <span className="font-bold text-slate-900 block">{rec.trainerName}</span>
+                          <span className="text-[10px] text-slate-500">
+                            {rec.locationArea}
+                          </span>
+                        </td>
+
+                        {/* Company & Sede */}
+                        <td className="py-3 px-3">
+                          <span className="font-semibold text-slate-800 block truncate max-w-[180px]">
+                            {rec.companyName}
+                          </span>
+                          <span className="text-[11px] text-slate-500 block truncate max-w-[180px]">
+                            📍 {rec.sedeName}
+                          </span>
+                        </td>
+
+                        {/* Activity */}
+                        <td className="py-3 px-3">
+                          <span className="font-bold text-slate-900 block truncate max-w-[160px]">
+                            {rec.activityName}
+                          </span>
+                          <span className="text-[10px] text-slate-500">
+                            👥 {rec.attendeesCount} participantes
+                          </span>
+                        </td>
+
+                        {/* Punctuality */}
+                        <td className="py-3 px-2 text-center whitespace-nowrap">
+                          <span
+                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold inline-flex items-center ${
+                              isLate
+                                ? 'bg-rose-50 text-rose-800 border border-rose-200'
+                                : isEarly
+                                ? 'bg-blue-50 text-blue-800 border border-blue-200'
+                                : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                            }`}
+                          >
+                            {isLate
+                              ? `Retraso (${Math.abs(rec.punctualityDiffMinutes)}m)`
+                              : isEarly
+                              ? `Anticipado`
+                              : 'A tiempo'}
+                          </span>
+                        </td>
+
+                        {/* GPS */}
+                        <td className="py-3 px-2 text-center whitespace-nowrap">
+                          <span
+                            className={`font-mono text-[10px] px-1.5 py-0.5 rounded font-bold ${
+                              rec.checkInGps.isWithinGeofence
+                                ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
+                                : 'bg-rose-50 text-rose-800 border border-rose-200'
+                            }`}
+                            title={`Distancia a sede: ${formatDistance(rec.checkInGps.distanceToSedeMeters)}`}
+                          >
+                            {formatDistance(rec.checkInGps.distanceToSedeMeters)}
+                          </span>
+                        </td>
+
+                        {/* Evidence thumbnails */}
+                        <td className="py-3 px-2 text-center whitespace-nowrap">
+                          <div className="flex items-center justify-center space-x-1.5">
+                            {rec.facialVerification && (
+                              <img
+                                src={rec.facialVerification.facePhotoUrl}
+                                alt="Rostro"
+                                className="w-7 h-7 rounded-md object-cover border-2 border-emerald-500 cursor-pointer hover:scale-125 transition shadow-xs"
+                                onClick={() => setSelectedRecordForDetail(rec)}
+                                title={`Rostro Verificado: ${rec.facialVerification.confidenceScore}%`}
+                              />
+                            )}
+                            <img
+                              src={rec.photoUrl}
+                              alt="Foto Entrada"
+                              className="w-7 h-7 rounded-md object-cover border border-slate-300 cursor-pointer hover:scale-125 transition shadow-xs"
+                              onClick={() => setSelectedRecordForDetail(rec)}
+                              title="Foto de entrada con sello"
+                            />
+                            {rec.exitPhotoUrl && (
+                              <img
+                                src={rec.exitPhotoUrl}
+                                alt="Foto Salida"
+                                className="w-7 h-7 rounded-md object-cover border-2 border-red-500 cursor-pointer hover:scale-125 transition shadow-xs"
+                                onClick={() => setSelectedRecordForDetail(rec)}
+                                title="Foto de salida con sello"
+                              />
+                            )}
+                          </div>
+                        </td>
+
+                        {/* Action buttons */}
+                        <td className="py-3 px-3 text-right whitespace-nowrap">
+                          <div className="flex items-center justify-end space-x-1">
+                            <button
+                              type="button"
+                              onClick={() => setSelectedRecordForDetail(rec)}
+                              className="p-1.5 rounded-lg bg-slate-100 hover:bg-red-50 text-slate-700 hover:text-red-600 border border-slate-200 transition"
+                              title="Ver Acta Completa de Asistencia"
+                            >
+                              <Eye className="w-3.5 h-3.5" />
+                            </button>
+
+                            {confirmDeleteRecordId === rec.id ? (
+                              <div className="inline-flex items-center gap-1">
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    onDeleteRecord(rec.id);
+                                    setConfirmDeleteRecordId(null);
+                                  }}
+                                  className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-bold transition"
+                                >
+                                  Eliminar
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteRecordId(null)}
+                                  className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold transition"
+                                >
+                                  Cancelar
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteRecordId(rec.id)}
+                                className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-700 hover:text-rose-600 border border-slate-200 transition"
+                                title="Eliminar Registro"
+                              >
+                                <Trash2 className="w-3.5 h-3.5" />
+                              </button>
+                            )}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4: GESTIÓN DE EMPRESAS Y SEDES (CON CRUD COMPLETO) */}
+      {activeTab === 'sedes' && (
+        <div className="space-y-5">
+          <div className="flex items-center justify-between">
+            <h3 className="font-bold text-slate-900 text-base flex items-center">
+              <Building2 className="w-5 h-5 mr-2 text-red-600" />
+              Directorio de Empresas Cliente y Sedes Habilitadas
+            </h3>
+
+            <div className="flex items-center space-x-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingCompany(null);
+                  setIsCompanyModalOpen(true);
+                }}
+                className="text-xs font-bold px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white shadow-sm transition flex items-center"
+              >
+                <Plus className="w-3.5 h-3.5 mr-1" />
+                Nueva Empresa
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setEditingSede(null);
+                  setTargetCompanyIdForSede(companies[0]?.id);
+                  setIsSedeModalOpen(true);
+                }}
+                className="text-xs font-bold px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 shadow-sm transition flex items-center"
+              >
+                <Plus className="w-3.5 h-3.5 mr-1 text-red-600" />
+                Nueva Sede
+              </button>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {companies.map((comp) => (
+              <div
+                key={comp.id}
+                className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-sm space-y-4"
+              >
+                <div className="flex items-start justify-between border-b border-slate-100 pb-3">
+                  <div className="flex items-center space-x-3">
+                    <span className="w-10 h-10 rounded-xl bg-red-50 border border-red-200 flex items-center justify-center font-bold text-sm text-red-600 shadow-xs">
+                      {comp.logoText}
+                    </span>
+                    <div>
+                      <h4 className="font-bold text-slate-900 text-base">{comp.name}</h4>
+                      <p className="text-xs text-slate-500 font-medium">{comp.industry} • RFC: {comp.taxId}</p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center space-x-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingCompany(comp);
+                        setIsCompanyModalOpen(true);
+                      }}
+                      className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 hover:text-slate-900 border border-slate-200"
+                      title="Editar Empresa"
+                    >
+                      <Edit3 className="w-3.5 h-3.5" />
+                    </button>
+
+                    {confirmDeleteCompanyId === comp.id ? (
+                      <div className="inline-flex items-center gap-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            onDeleteCompany(comp.id);
+                            setConfirmDeleteCompanyId(null);
+                          }}
+                          className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-bold transition"
+                        >
+                          Confirmar
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setConfirmDeleteCompanyId(null)}
+                          className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold transition"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        type="button"
+                        onClick={() => setConfirmDeleteCompanyId(comp.id)}
+                        className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 border border-slate-200"
+                        title="Eliminar Empresa"
+                      >
+                        <Trash2 className="w-3.5 h-3.5" />
+                      </button>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-2.5">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-slate-700">
+                      Sedes Autorizadas ({comp.sedes.length}):
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setEditingSede(null);
+                        setTargetCompanyIdForSede(comp.id);
+                        setIsSedeModalOpen(true);
+                      }}
+                      className="text-[11px] text-red-600 font-semibold hover:underline flex items-center"
+                    >
+                      <Plus className="w-3 h-3 mr-0.5" /> Agregar Sede a {comp.name.split(' ')[0]}
+                    </button>
+                  </div>
+
+                  {comp.sedes.map((sede) => (
+                    <div
+                      key={sede.id}
+                      className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 text-xs space-y-1.5 hover:border-slate-300 transition"
+                    >
+                      <div className="flex items-center justify-between">
+                        <span className="font-bold text-slate-900">📍 {sede.name}</span>
+                        <div className="flex items-center space-x-1">
+                          <span className="font-mono text-[10px] font-bold text-red-600 mr-1">
+                            Radio: {sede.geofenceRadiusMeters}m
+                          </span>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setEditingSede(sede);
+                              setTargetCompanyIdForSede(comp.id);
+                              setIsSedeModalOpen(true);
+                            }}
+                            className="p-1 rounded bg-white hover:bg-slate-200 text-slate-600 border border-slate-200"
+                            title="Editar Sede"
+                          >
+                            <Edit3 className="w-3 h-3" />
+                          </button>
+                          {confirmDeleteSedeKey === `${comp.id}:${sede.id}` ? (
+                            <div className="inline-flex items-center gap-1">
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  onDeleteSede(sede.id, comp.id);
+                                  setConfirmDeleteSedeKey(null);
+                                }}
+                                className="px-1.5 py-0.5 rounded bg-rose-600 text-white text-[10px] font-bold"
+                              >
+                                Sí
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => setConfirmDeleteSedeKey(null)}
+                                className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px] font-semibold"
+                              >
+                                No
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteSedeKey(`${comp.id}:${sede.id}`)}
+                              className="p-1 rounded bg-white hover:bg-rose-50 text-slate-600 hover:text-rose-600 border border-slate-200"
+                              title="Eliminar Sede"
+                            >
+                              <Trash2 className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+                      </div>
+                      <p className="text-slate-600 text-[11px]">{sede.address}</p>
+                      <div className="flex items-center justify-between pt-1 border-t border-slate-200 text-[10px] text-slate-500 font-medium">
+                        <span>Contacto: {sede.contactPerson} ({sede.contactRole})</span>
+                        <span className="font-mono">{sede.lat.toFixed(4)}, {sede.lng.toFixed(4)}</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* TAB 5: GESTIÓN DE ENTRENADORES (CON CRUD COMPLETO) */}
+      {activeTab === 'trainers' && (
+        <div className="space-y-5">
+          <div className="flex items-center justify-between">
+            <h3 className="font-bold text-slate-900 text-base flex items-center">
+              <Users className="w-5 h-5 mr-2 text-red-600" />
+              Plantilla de Entrenadores y Coaches Corporativos
+            </h3>
+
+            <button
+              type="button"
+              onClick={() => {
+                setEditingTrainer(null);
+                setIsTrainerModalOpen(true);
+              }}
+              className="text-xs font-bold px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white shadow-sm transition flex items-center"
+            >
+              <Plus className="w-3.5 h-3.5 mr-1" />
+              Nuevo Entrenador
+            </button>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+            {trainers.map((tr) => {
+              const trVisits = records.filter((r) => r.trainerId === tr.id).length;
+              return (
+                <div
+                  key={tr.id}
+                  className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-sm flex flex-col justify-between"
+                >
+                  <div>
+                    <div className="flex items-center justify-between mb-3">
+                      <div className="flex items-center space-x-3">
+                        <img
+                          src={tr.avatar}
+                          alt={tr.name}
+                          className="w-12 h-12 rounded-2xl object-cover border-2 border-red-500 shadow-sm"
+                        />
+                        <div>
+                          <h4 className="font-bold text-slate-900 text-sm">{tr.name}</h4>
+                          <span className={`text-[10px] font-bold ${tr.active !== false ? 'text-emerald-700' : 'text-slate-400'}`}>
+                            {tr.active !== false ? 'Activo BSCW' : 'Inactivo'}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex items-center space-x-1">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setEditingTrainer(tr);
+                            setIsTrainerModalOpen(true);
+                          }}
+                          className="p-1 rounded bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200"
+                          title="Editar Entrenador"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                        {confirmDeleteTrainerId === tr.id ? (
+                          <div className="inline-flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                onDeleteTrainer(tr.id);
+                                setConfirmDeleteTrainerId(null);
+                              }}
+                              className="px-1.5 py-0.5 rounded bg-rose-600 text-white text-[10px] font-bold"
+                            >
+                              Sí
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setConfirmDeleteTrainerId(null)}
+                              className="px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 text-[10px] font-semibold"
+                            >
+                              No
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => setConfirmDeleteTrainerId(tr.id)}
+                            className="p-1 rounded bg-slate-100 hover:bg-rose-50 text-slate-700 hover:text-rose-600 border border-slate-200"
+                            title="Eliminar Entrenador"
+                          >
+                            <Trash2 className="w-3.5 h-3.5" />
+                          </button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="text-xs text-slate-500 space-y-1 mb-3 font-medium">
+                      <p className="truncate">✉ {tr.email}</p>
+                      <p>📞 {tr.phone}</p>
+                    </div>
+
+                    <div className="text-[11px] text-slate-600 mb-4 font-medium">
+                      {tr.specialties.join(' · ')}
+                    </div>
+                  </div>
+
+                  <div className="border-t border-slate-100 pt-3 flex items-center justify-between text-xs">
+                    <span className="text-slate-500 font-medium">Total Visitas:</span>
+                    <span className="font-mono font-bold text-slate-900">{trVisits} sesiones</span>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPdfAssignmentsTrainerTarget(tr.id);
+                      setIsPdfAssignmentsModalOpen(true);
+                    }}
+                    className="mt-2.5 w-full py-1.5 px-2 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-200 text-slate-800 font-bold text-[11px] flex items-center justify-center transition shadow-2xs hover:border-red-300"
+                    title={`Descargar rol mensual en PDF para ${tr.name}`}
+                  >
+                    <Printer className="w-3.5 h-3.5 mr-1.5 text-red-600" />
+                    Descargar Rol en PDF
+                  </button>
+                </div>
+              );
+            })}
+          </div>
+
+          {/* Reset Demo Data button */}
+          <div className="p-4 bg-white border border-slate-200/90 rounded-2xl flex items-center justify-between text-xs text-slate-500 shadow-sm">
+            <div>
+              <span className="font-bold text-slate-900 block">Datos y Configuración de Demostración</span>
+              <span>Puedes restablecer los datos de ejemplo iniciales en cualquier momento.</span>
+            </div>
+            {confirmResetDemo ? (
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    onResetData();
+                    setConfirmResetDemo(false);
+                  }}
+                  className="px-3.5 py-1.5 rounded-xl bg-rose-600 hover:bg-rose-700 text-white font-bold transition"
+                >
+                  Confirmar Restablecimiento
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setConfirmResetDemo(false)}
+                  className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 font-semibold transition"
+                >
+                  Cancelar
+                </button>
+              </div>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setConfirmResetDemo(true)}
+                className="px-3.5 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 font-semibold transition"
+              >
+                Restablecer Demo
+              </button>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* TAB: TIPOS DE ASIGNACIÓN (CLASES FITNESS Y PAUSAS ACTIVAS) */}
+      {activeTab === 'activity_types' && (
+        <AdminAssignmentTypesView
+          activityCatalog={activityCatalog}
+          assignments={assignments}
+          onAddCatalogItem={onAddCatalogItem}
+          onUpdateCatalogItem={onUpdateCatalogItem}
+          onDeleteCatalogItem={onDeleteCatalogItem}
+          onUpdateAssignment={onUpdateAssignment}
+          onEditFullAssignment={(asg) => {
+            setEditingAssignment(asg);
+            setIsAssignmentModalOpen(true);
+          }}
+        />
+      )}
+
+      {/* TAB: REGISTRO DE PERSONAL EN FIRESTORE */}
+      {activeTab === 'personnel' && (
+        <FirestoreErrorBoundary>
+          <PersonnelRegistryView embeddedInAdmin />
+        </FirestoreErrorBoundary>
+      )}
+
+      {/* Record Verification Detail Modal */}
+      {selectedRecordForDetail && (
+        <RecordDetailModal
+          record={selectedRecordForDetail}
+          onClose={() => setSelectedRecordForDetail(null)}
+          onUpdateRecord={(updated) => {
+            onUpdateRecord(updated);
+            setSelectedRecordForDetail(null);
+          }}
+        />
+      )}
+
+      {/* CRUD Modals */}
+      <AdminTrainerModal
+        trainer={editingTrainer}
+        isOpen={isTrainerModalOpen}
+        onClose={() => {
+          setIsTrainerModalOpen(false);
+          setEditingTrainer(null);
+        }}
+        onSave={(savedTr) => {
+          if (editingTrainer) {
+            onUpdateTrainer(savedTr);
+          } else {
+            onAddTrainer(savedTr);
+          }
+        }}
+      />
+
+      <AdminCompanyModal
+        company={editingCompany}
+        isOpen={isCompanyModalOpen}
+        onClose={() => {
+          setIsCompanyModalOpen(false);
+          setEditingCompany(null);
+        }}
+        onSave={(savedComp) => {
+          if (editingCompany) {
+            onUpdateCompany(savedComp);
+          } else {
+            onAddCompany(savedComp);
+          }
+        }}
+      />
+
+      <AdminSedeModal
+        sede={editingSede}
+        companyId={targetCompanyIdForSede}
+        companies={companies}
+        isOpen={isSedeModalOpen}
+        onClose={() => {
+          setIsSedeModalOpen(false);
+          setEditingSede(null);
+        }}
+        onSave={(savedSede) => {
+          if (editingSede) {
+            onUpdateSede(savedSede);
+          } else {
+            onAddSede(savedSede);
+          }
+        }}
+      />
+
+      <AdminAssignmentModal
+        assignment={editingAssignment}
+        trainers={trainers}
+        companies={companies}
+        activityCatalog={activityCatalog}
+        isOpen={isAssignmentModalOpen}
+        initialPreset={assignmentInitialPreset}
+        onManageActivityTypes={() => setActiveTab('activity_types')}
+        onClose={() => {
+          setIsAssignmentModalOpen(false);
+          setEditingAssignment(null);
+          setAssignmentInitialPreset(null);
+        }}
+        onSave={(savedAsg) => {
+          if (editingAssignment) {
+            onUpdateAssignment(savedAsg);
+          } else {
+            onAddAssignment(savedAsg);
+          }
+        }}
+      />
+
+      <PdfReportModal
+        isOpen={isPdfModalOpen}
+        onClose={() => setIsPdfModalOpen(false)}
+        records={periodRecords}
+        companies={companies}
+        trainers={trainers}
+        reportType={reportType}
+        selectedDate={selectedDate}
+        selectedMonth={selectedMonth}
+      />
+
+      <PdfAssignmentsModal
+        isOpen={isPdfAssignmentsModalOpen}
+        onClose={() => setIsPdfAssignmentsModalOpen(false)}
+        assignments={assignments}
+        companies={companies}
+        trainers={trainers}
+        activityCatalog={activityCatalog}
+        initialTrainerId={pdfAssignmentsTrainerTarget}
+        initialMonth={selectedMonth}
+      />
+    </div>
+  );
+};

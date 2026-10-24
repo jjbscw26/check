@@ -1,0 +1,559 @@
+{
+  "entities": {
+    "StructuredAddress": {
+      "title": "StructuredAddress",
+      "description": "Dirección física estructurada (Calle, Número, Ciudad, Estado, Código Postal) utilizada en Personal, Clientes y Empresas.",
+      "type": "object",
+      "properties": {
+        "street": {
+          "type": "string",
+          "description": "Calle del domicilio.",
+          "minLength": 1,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "number": {
+          "type": "string",
+          "description": "Número exterior e interior del domicilio.",
+          "minLength": 1,
+          "maxLength": 30,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "city": {
+          "type": "string",
+          "description": "Ciudad, alcaldía o municipio.",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "state": {
+          "type": "string",
+          "description": "Estado o entidad federativa.",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "postalCode": {
+          "type": "string",
+          "description": "Código postal del domicilio.",
+          "minLength": 4,
+          "maxLength": 10,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9\\- ]{2,8}[A-Za-z0-9]$"
+        }
+      },
+      "required": ["street", "number", "city", "state", "postalCode"]
+    },
+    "Trainer": {
+      "title": "Trainer",
+      "description": "Entrenador / Coach corporativo con todos los campos del demo: nombre, correo, teléfono, avatar (URL o DataURL), especialidades y estado activo.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Nombre completo del entrenador.",
+          "minLength": 2,
+          "maxLength": 120,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Correo electrónico corporativo del entrenador.",
+          "minLength": 5,
+          "maxLength": 254,
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
+        },
+        "phone": {
+          "type": "string",
+          "description": "Número telefónico de contacto del entrenador.",
+          "minLength": 7,
+          "maxLength": 25,
+          "pattern": "^[0-9+(][0-9+()\\- ]{5,23}[0-9)]$"
+        },
+        "avatar": {
+          "type": "string",
+          "description": "Fotografía de referencia o avatar del entrenador (URL HTTPS o imagen DataURL comprimida).",
+          "minLength": 5,
+          "maxLength": 150000,
+          "pattern": "^(https?://\\S+|data:image/[a-zA-Z0-9.+\\-]+;\\S+)$"
+        },
+        "specialties": {
+          "type": "array",
+          "description": "Lista acotada de especialidades y disciplinas del entrenador (1 a 20 elementos).",
+          "items": {
+            "type": "string"
+          }
+        },
+        "active": {
+          "type": "boolean",
+          "description": "Indica si el entrenador está habilitado para visitas y clases."
+        },
+        "createdByUid": {
+          "type": "string",
+          "description": "UID de Firebase Auth del usuario verificado que creó el registro.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Correo electrónico verificado del usuario que creó el registro.",
+          "minLength": 5,
+          "maxLength": 254,
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marca de tiempo generada por el servidor al crear el documento."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marca de tiempo generada por el servidor en la última actualización."
+        }
+      },
+      "required": [
+        "name",
+        "email",
+        "phone",
+        "avatar",
+        "specialties",
+        "active",
+        "createdByUid",
+        "createdByEmail",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Company": {
+      "title": "Company",
+      "description": "Empresa cliente con todos los campos del demo (name, taxId, industry, logoText) y compatibilidad opcional con datos fiscales adicionales.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Razón social o nombre comercial de la empresa (campo demo).",
+          "minLength": 2,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "taxId": {
+          "type": "string",
+          "description": "RFC o NIT de la empresa.",
+          "minLength": 5,
+          "maxLength": 25,
+          "pattern": "^[A-Za-z0-9&Ññ][A-Za-z0-9&Ññ.\\- ]{3,23}[A-Za-z0-9&Ññ]$"
+        },
+        "industry": {
+          "type": "string",
+          "description": "Giro o industria de la empresa.",
+          "minLength": 2,
+          "maxLength": 100,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "logoText": {
+          "type": "string",
+          "description": "Siglas o badge corto de la empresa (1 a 4 caracteres).",
+          "minLength": 1,
+          "maxLength": 4,
+          "pattern": "^[A-Za-z0-9&Ññ]{1,4}$"
+        },
+        "companyName": {
+          "type": "string",
+          "description": "Alias opcional de razón social para compatibilidad de directorio.",
+          "minLength": 2,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "phone": {
+          "type": "string",
+          "description": "Teléfono corporativo opcional de la empresa.",
+          "minLength": 0,
+          "maxLength": 25
+        },
+        "primaryContactName": {
+          "type": "string",
+          "description": "Contacto corporativo principal opcional.",
+          "minLength": 0,
+          "maxLength": 120
+        },
+        "address": {
+          "type": "object",
+          "$ref": "#/entities/StructuredAddress",
+          "description": "Dirección fiscal estructurada opcional de la empresa."
+        },
+        "createdByUid": {
+          "type": "string",
+          "description": "UID de Firebase Auth del usuario verificado que creó el registro.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Correo electrónico verificado del usuario que creó el registro.",
+          "minLength": 5,
+          "maxLength": 254,
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marca de tiempo generada por el servidor al crear el documento."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marca de tiempo generada por el servidor en la última actualización."
+        }
+      },
+      "required": [
+        "name",
+        "taxId",
+        "industry",
+        "logoText",
+        "createdByUid",
+        "createdByEmail",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Sede": {
+      "title": "Sede",
+      "description": "Sede / Campus / Planta autorizada de una empresa cliente con todos los campos del demo: empresa vinculada, dirección, ciudad, coordenadas GPS (lat, lng), radio de geocerca, contacto, cargo, teléfono y etiqueta de color.",
+      "type": "object",
+      "properties": {
+        "companyId": {
+          "type": "string",
+          "description": "Identificador de la empresa propietaria en /companies/{companyId}.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "companyName": {
+          "type": "string",
+          "description": "Nombre comercial de la empresa a la que pertenece la sede.",
+          "minLength": 2,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "name": {
+          "type": "string",
+          "description": "Nombre de la sede, torre, planta o campus.",
+          "minLength": 2,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "address": {
+          "type": "string",
+          "description": "Dirección física completa de la sede.",
+          "minLength": 3,
+          "maxLength": 250,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "city": {
+          "type": "string",
+          "description": "Ciudad o entidad donde se ubica la sede.",
+          "minLength": 2,
+          "maxLength": 100,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "lat": {
+          "type": "number",
+          "description": "Latitud GPS oficial de la sede (-90 a 90).",
+          "minimum": -90,
+          "maximum": 90
+        },
+        "lng": {
+          "type": "number",
+          "description": "Longitud GPS oficial de la sede (-180 a 180).",
+          "minimum": -180,
+          "maximum": 180
+        },
+        "geofenceRadiusMeters": {
+          "type": "number",
+          "description": "Radio de geocerca permitido en metros (10 a 10000).",
+          "minimum": 10,
+          "maximum": 10000
+        },
+        "contactPerson": {
+          "type": "string",
+          "description": "Nombre de la persona de contacto en la sede.",
+          "minLength": 2,
+          "maxLength": 120,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "contactRole": {
+          "type": "string",
+          "description": "Cargo o puesto del contacto en sede.",
+          "minLength": 2,
+          "maxLength": 120,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "contactPhone": {
+          "type": "string",
+          "description": "Teléfono directo del contacto en sede.",
+          "minLength": 7,
+          "maxLength": 25,
+          "pattern": "^[0-9+(][0-9+()\\- ]{5,23}[0-9)]$"
+        },
+        "colorTag": {
+          "type": "string",
+          "description": "Clase o identificador visual de color para la sede (ej. bg-red-500).",
+          "minLength": 0,
+          "maxLength": 40,
+          "pattern": "^([a-zA-Z0-9_\\-]+)?$"
+        },
+        "createdByUid": {
+          "type": "string",
+          "description": "UID de Firebase Auth del usuario verificado que creó el registro.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Correo electrónico verificado del usuario que creó el registro.",
+          "minLength": 5,
+          "maxLength": 254,
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marca de tiempo generada por el servidor al crear el documento."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marca de tiempo generada por el servidor en la última actualización."
+        }
+      },
+      "required": [
+        "companyId",
+        "companyName",
+        "name",
+        "address",
+        "city",
+        "lat",
+        "lng",
+        "geofenceRadiusMeters",
+        "contactPerson",
+        "contactRole",
+        "contactPhone",
+        "createdByUid",
+        "createdByEmail",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Personnel": {
+      "title": "Personnel",
+      "description": "Expediente de personal con nombre completo, teléfono, correo electrónico y dirección completa.",
+      "type": "object",
+      "properties": {
+        "fullName": {
+          "type": "string",
+          "description": "Nombre completo del integrante del personal.",
+          "minLength": 2,
+          "maxLength": 120,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "phone": {
+          "type": "string",
+          "description": "Número telefónico de contacto del personal.",
+          "minLength": 7,
+          "maxLength": 25,
+          "pattern": "^[0-9+(][0-9+()\\- ]{5,23}[0-9)]$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Correo electrónico del personal.",
+          "minLength": 5,
+          "maxLength": 254,
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
+        },
+        "address": {
+          "type": "object",
+          "$ref": "#/entities/StructuredAddress",
+          "description": "Dirección física del personal."
+        },
+        "createdByUid": {
+          "type": "string",
+          "description": "UID de Firebase Auth del usuario verificado que creó el registro.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Correo electrónico verificado del usuario que creó el registro.",
+          "minLength": 5,
+          "maxLength": 254,
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marca de tiempo generada por el servidor al crear el documento."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marca de tiempo generada por el servidor en la última actualización."
+        }
+      },
+      "required": [
+        "fullName",
+        "phone",
+        "email",
+        "address",
+        "createdByUid",
+        "createdByEmail",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "Client": {
+      "title": "Client",
+      "description": "Expediente de cliente con nombre, teléfono, correo electrónico, dirección residencial y empresa opcional.",
+      "type": "object",
+      "properties": {
+        "fullName": {
+          "type": "string",
+          "description": "Nombre completo del cliente.",
+          "minLength": 2,
+          "maxLength": 120,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "phone": {
+          "type": "string",
+          "description": "Número telefónico del cliente.",
+          "minLength": 7,
+          "maxLength": 25,
+          "pattern": "^[0-9+(][0-9+()\\- ]{5,23}[0-9)]$"
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Correo electrónico del cliente.",
+          "minLength": 5,
+          "maxLength": 254,
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
+        },
+        "address": {
+          "type": "object",
+          "$ref": "#/entities/StructuredAddress",
+          "description": "Dirección residencial del cliente."
+        },
+        "company": {
+          "type": "string",
+          "description": "Empresa a la que pertenece el cliente (opcional).",
+          "minLength": 0,
+          "maxLength": 150,
+          "pattern": "^(\\S(.*\\S)?)?$"
+        },
+        "createdByUid": {
+          "type": "string",
+          "description": "UID de Firebase Auth del usuario verificado que creó el registro.",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByEmail": {
+          "type": "string",
+          "format": "email",
+          "description": "Correo electrónico verificado del usuario que creó el registro.",
+          "minLength": 5,
+          "maxLength": 254,
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marca de tiempo generada por el servidor al crear el documento."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marca de tiempo generada por el servidor en la última actualización."
+        }
+      },
+      "required": [
+        "fullName",
+        "phone",
+        "email",
+        "address",
+        "createdByUid",
+        "createdByEmail",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminRole": {
+      "title": "AdminRole",
+      "description": "Documento de privilegio administrativo verificado por UID.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Correo electrónico verificado del administrador.",
+          "minLength": 5,
+          "maxLength": 254,
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
+        },
+        "grantedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marca de tiempo del servidor al otorgar rol administrativo."
+        }
+      },
+      "required": ["email", "grantedAt"]
+    }
+  },
+  "firestore": {
+    "/trainers/{trainerId}": {
+      "schema": {
+        "$ref": "#/entities/Trainer"
+      },
+      "description": "Colección de entrenadores corporativos con todos los campos del demo (name, email, phone, avatar, specialties, active)."
+    },
+    "/companies/{companyId}": {
+      "schema": {
+        "$ref": "#/entities/Company"
+      },
+      "description": "Colección de empresas cliente con todos los campos del demo (name, taxId, industry, logoText)."
+    },
+    "/sedes/{sedeId}": {
+      "schema": {
+        "$ref": "#/entities/Sede"
+      },
+      "description": "Colección de sedes / sucursales corporativas con todos los campos del demo (companyId, companyName, name, address, city, lat, lng, geofenceRadiusMeters, contactPerson, contactRole, contactPhone, colorTag)."
+    },
+    "/personnel/{personnelId}": {
+      "schema": {
+        "$ref": "#/entities/Personnel"
+      },
+      "description": "Colección de expedientes de personal con PII protegido."
+    },
+    "/clients/{clientId}": {
+      "schema": {
+        "$ref": "#/entities/Client"
+      },
+      "description": "Colección de expedientes de clientes con dirección residencial y empresa opcional."
+    },
+    "/admins/{adminUid}": {
+      "schema": {
+        "$ref": "#/entities/AdminRole"
+      },
+      "description": "Colección de administradores autorizados por UID."
+    }
+  }
+}

@@ -1,0 +1,729 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Global Safety Net: Default-deny catch-all
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // Hardened Global Primitives
+    function isValidId(id) {
+      return id is string &&
+        id.size() >= 1 &&
+        id.size() <= 128 &&
+        id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function incoming() {
+      return request.resource.data;
+    }
+
+    function existing() {
+      return resource.data;
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isVerifiedUser() {
+      return isSignedIn() &&
+        request.auth.token.email_verified == true &&
+        request.auth.token.email is string &&
+        request.auth.token.email.size() >= 5 &&
+        request.auth.token.email.size() <= 254;
+    }
+
+    // Bootstrapped Admin (zero DB lookups — safe for list & static checks)
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() &&
+        request.auth.token.email == 'jjbscw@gmail.com';
+    }
+
+    // Full Admin lookup (uses exists() — ONLY for single-document operations, NEVER in list)
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
+    }
+
+    // Shared Audit Metadata Validator
+    function hasValidAuditMetadata(data) {
+      return data.createdByUid is string &&
+        data.createdByUid.size() >= 1 &&
+        data.createdByUid.size() <= 128 &&
+        data.createdByUid.matches('^[a-zA-Z0-9_\\-]+$') &&
+        data.createdByEmail is string &&
+        data.createdByEmail.size() >= 5 &&
+        data.createdByEmail.size() <= 254 &&
+        data.createdByEmail.matches('^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$') &&
+        data.createdAt is timestamp &&
+        data.updatedAt is timestamp &&
+        (data.createdByUid == request.auth.uid || isAdmin());
+    }
+
+    // Blueprint Validation Helpers (synchronized verbatim with firebase-blueprint.json)
+    function isValidStructuredAddress(addr) {
+      return addr is map &&
+        addr.keys().hasAll(['street', 'number', 'city', 'state', 'postalCode']) &&
+        addr.keys().hasOnly(['street', 'number', 'city', 'state', 'postalCode']) &&
+        addr.street is string &&
+        addr.street.size() >= 1 &&
+        addr.street.size() <= 150 &&
+        addr.street.matches('^\\S(.*\\S)?$') &&
+        addr.number is string &&
+        addr.number.size() >= 1 &&
+        addr.number.size() <= 30 &&
+        addr.number.matches('^\\S(.*\\S)?$') &&
+        addr.city is string &&
+        addr.city.size() >= 1 &&
+        addr.city.size() <= 100 &&
+        addr.city.matches('^\\S(.*\\S)?$') &&
+        addr.state is string &&
+        addr.state.size() >= 1 &&
+        addr.state.size() <= 100 &&
+        addr.state.matches('^\\S(.*\\S)?$') &&
+        addr.postalCode is string &&
+        addr.postalCode.size() >= 4 &&
+        addr.postalCode.size() <= 10 &&
+        addr.postalCode.matches('^[A-Za-z0-9][A-Za-z0-9\\- ]{2,8}[A-Za-z0-9]$');
+    }
+
+    // 1. Trainer Schema Validator (/trainers/{trainerId}) — All demo fields
+    function isValidTrainer(data) {
+      return data is map &&
+        data.keys().hasAll([
+          'name',
+          'email',
+          'phone',
+          'avatar',
+          'specialties',
+          'active',
+          'createdByUid',
+          'createdByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'name',
+          'email',
+          'phone',
+          'avatar',
+          'specialties',
+          'active',
+          'createdByUid',
+          'createdByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.name is string &&
+        data.name.size() >= 2 &&
+        data.name.size() <= 120 &&
+        data.name.matches('^\\S(.*\\S)?$') &&
+        data.email is string &&
+        data.email.size() >= 5 &&
+        data.email.size() <= 254 &&
+        data.email.matches('^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$') &&
+        data.phone is string &&
+        data.phone.size() >= 7 &&
+        data.phone.size() <= 25 &&
+        data.phone.matches('^[0-9+(][0-9+()\\- ]{5,23}[0-9)]$') &&
+        data.avatar is string &&
+        data.avatar.size() >= 5 &&
+        data.avatar.size() <= 150000 &&
+        data.avatar.matches('^(https?://\\S+|data:image/[a-zA-Z0-9.+\\-]+;\\S+)$') &&
+        data.specialties is list &&
+        data.specialties.size() >= 1 &&
+        data.specialties.size() <= 20 &&
+        data.specialties[0] is string &&
+        data.specialties[0].size() >= 1 &&
+        data.specialties[0].size() <= 80 &&
+        data.specialties[0].matches('^\\S(.*\\S)?$') &&
+        data.active is bool &&
+        hasValidAuditMetadata(data);
+    }
+
+    // 2. Company Schema Validator (/companies/{companyId}) — All demo fields + optional legacy compatibility
+    function isValidCompany(data) {
+      return data is map &&
+        data.keys().hasAll([
+          'name',
+          'taxId',
+          'industry',
+          'logoText',
+          'createdByUid',
+          'createdByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'name',
+          'taxId',
+          'industry',
+          'logoText',
+          'companyName',
+          'phone',
+          'primaryContactName',
+          'address',
+          'createdByUid',
+          'createdByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.name is string &&
+        data.name.size() >= 2 &&
+        data.name.size() <= 150 &&
+        data.name.matches('^\\S(.*\\S)?$') &&
+        data.taxId is string &&
+        data.taxId.size() >= 5 &&
+        data.taxId.size() <= 25 &&
+        data.taxId.matches('^[A-Za-z0-9&Ññ][A-Za-z0-9&Ññ.\\- ]{3,23}[A-Za-z0-9&Ññ]$') &&
+        data.industry is string &&
+        data.industry.size() >= 2 &&
+        data.industry.size() <= 100 &&
+        data.industry.matches('^\\S(.*\\S)?$') &&
+        data.logoText is string &&
+        data.logoText.size() >= 1 &&
+        data.logoText.size() <= 4 &&
+        data.logoText.matches('^[A-Za-z0-9&Ññ]{1,4}$') &&
+        (
+          !('companyName' in data) || (
+            data.companyName is string &&
+            data.companyName.size() >= 2 &&
+            data.companyName.size() <= 150 &&
+            data.companyName.matches('^\\S(.*\\S)?$')
+          )
+        ) &&
+        (
+          !('phone' in data) || (
+            data.phone is string &&
+            data.phone.size() <= 25 &&
+            (data.phone.size() == 0 || data.phone.matches('^[0-9+(][0-9+()\\- ]{5,23}[0-9)]$'))
+          )
+        ) &&
+        (
+          !('primaryContactName' in data) || (
+            data.primaryContactName is string &&
+            data.primaryContactName.size() <= 120 &&
+            (data.primaryContactName.size() == 0 || data.primaryContactName.matches('^\\S(.*\\S)?$'))
+          )
+        ) &&
+        (
+          !('address' in data) || isValidStructuredAddress(data.address)
+        ) &&
+        hasValidAuditMetadata(data);
+    }
+
+    // 3. Sede Schema Validator (/sedes/{sedeId}) — All demo fields
+    function isValidSede(data) {
+      return data is map &&
+        data.keys().hasAll([
+          'companyId',
+          'companyName',
+          'name',
+          'address',
+          'city',
+          'lat',
+          'lng',
+          'geofenceRadiusMeters',
+          'contactPerson',
+          'contactRole',
+          'contactPhone',
+          'createdByUid',
+          'createdByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'companyId',
+          'companyName',
+          'name',
+          'address',
+          'city',
+          'lat',
+          'lng',
+          'geofenceRadiusMeters',
+          'contactPerson',
+          'contactRole',
+          'contactPhone',
+          'colorTag',
+          'createdByUid',
+          'createdByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isValidId(data.companyId) &&
+        data.companyName is string &&
+        data.companyName.size() >= 2 &&
+        data.companyName.size() <= 150 &&
+        data.companyName.matches('^\\S(.*\\S)?$') &&
+        data.name is string &&
+        data.name.size() >= 2 &&
+        data.name.size() <= 150 &&
+        data.name.matches('^\\S(.*\\S)?$') &&
+        data.address is string &&
+        data.address.size() >= 3 &&
+        data.address.size() <= 250 &&
+        data.address.matches('^\\S(.*\\S)?$') &&
+        data.city is string &&
+        data.city.size() >= 2 &&
+        data.city.size() <= 100 &&
+        data.city.matches('^\\S(.*\\S)?$') &&
+        data.lat is number &&
+        !isNaN(data.lat) &&
+        data.lat >= -90 &&
+        data.lat <= 90 &&
+        data.lng is number &&
+        !isNaN(data.lng) &&
+        data.lng >= -180 &&
+        data.lng <= 180 &&
+        data.geofenceRadiusMeters is number &&
+        !isNaN(data.geofenceRadiusMeters) &&
+        data.geofenceRadiusMeters >= 10 &&
+        data.geofenceRadiusMeters <= 10000 &&
+        data.contactPerson is string &&
+        data.contactPerson.size() >= 2 &&
+        data.contactPerson.size() <= 120 &&
+        data.contactPerson.matches('^\\S(.*\\S)?$') &&
+        data.contactRole is string &&
+        data.contactRole.size() >= 2 &&
+        data.contactRole.size() <= 120 &&
+        data.contactRole.matches('^\\S(.*\\S)?$') &&
+        data.contactPhone is string &&
+        data.contactPhone.size() >= 7 &&
+        data.contactPhone.size() <= 25 &&
+        data.contactPhone.matches('^[0-9+(][0-9+()\\- ]{5,23}[0-9)]$') &&
+        (
+          !('colorTag' in data) || (
+            data.colorTag is string &&
+            data.colorTag.size() <= 40 &&
+            (data.colorTag.size() == 0 || data.colorTag.matches('^[a-zA-Z0-9_\\-]+$'))
+          )
+        ) &&
+        hasValidAuditMetadata(data);
+    }
+
+    // Relational parent check for Sede -> Company (evaluated AFTER static validation)
+    function ownsOrAdminsParentCompany(companyId) {
+      return exists(/databases/$(database)/documents/companies/$(companyId)) && (
+        get(/databases/$(database)/documents/companies/$(companyId)).data.createdByUid == request.auth.uid ||
+        isAdmin()
+      );
+    }
+
+    // 4. Personnel Schema Validator (/personnel/{personnelId})
+    function isValidPersonnel(data) {
+      return data is map &&
+        data.keys().hasAll([
+          'fullName',
+          'phone',
+          'email',
+          'address',
+          'createdByUid',
+          'createdByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'fullName',
+          'phone',
+          'email',
+          'address',
+          'createdByUid',
+          'createdByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.fullName is string &&
+        data.fullName.size() >= 2 &&
+        data.fullName.size() <= 120 &&
+        data.fullName.matches('^\\S(.*\\S)?$') &&
+        data.phone is string &&
+        data.phone.size() >= 7 &&
+        data.phone.size() <= 25 &&
+        data.phone.matches('^[0-9+(][0-9+()\\- ]{5,23}[0-9)]$') &&
+        data.email is string &&
+        data.email.size() >= 5 &&
+        data.email.size() <= 254 &&
+        data.email.matches('^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$') &&
+        isValidStructuredAddress(data.address) &&
+        hasValidAuditMetadata(data);
+    }
+
+    // 5. Client Schema Validator (/clients/{clientId}) — 'company' is optional
+    function isValidClient(data) {
+      return data is map &&
+        data.keys().hasAll([
+          'fullName',
+          'phone',
+          'email',
+          'address',
+          'createdByUid',
+          'createdByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'fullName',
+          'phone',
+          'email',
+          'address',
+          'company',
+          'createdByUid',
+          'createdByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.fullName is string &&
+        data.fullName.size() >= 2 &&
+        data.fullName.size() <= 120 &&
+        data.fullName.matches('^\\S(.*\\S)?$') &&
+        data.phone is string &&
+        data.phone.size() >= 7 &&
+        data.phone.size() <= 25 &&
+        data.phone.matches('^[0-9+(][0-9+()\\- ]{5,23}[0-9)]$') &&
+        data.email is string &&
+        data.email.size() >= 5 &&
+        data.email.size() <= 254 &&
+        data.email.matches('^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$') &&
+        isValidStructuredAddress(data.address) &&
+        (
+          !('company' in data) || (
+            data.company is string &&
+            data.company.size() <= 150 &&
+            (data.company.size() == 0 || data.company.matches('^\\S(.*\\S)?$'))
+          )
+        ) &&
+        hasValidAuditMetadata(data);
+    }
+
+    function isValidAdminRole(data) {
+      return data is map &&
+        data.keys().hasAll(['email', 'grantedAt']) &&
+        data.keys().hasOnly(['email', 'grantedAt']) &&
+        data.email is string &&
+        data.email.size() >= 5 &&
+        data.email.size() <= 254 &&
+        data.email.matches('^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$') &&
+        data.grantedAt is timestamp;
+    }
+
+    // Collection 1: /trainers/{trainerId}
+    match /trainers/{trainerId} {
+      allow get: if isVerifiedUser() &&
+        isValidId(trainerId) &&
+        (existing().createdByUid == request.auth.uid || isAdmin());
+
+      allow list: if isVerifiedUser() &&
+        (resource.data.createdByUid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(trainerId) &&
+        isValidTrainer(incoming()) &&
+        incoming().createdByUid == request.auth.uid &&
+        incoming().createdByEmail == request.auth.token.email &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if (
+        isVerifiedUser() &&
+        isValidId(trainerId) &&
+        isValidTrainer(incoming()) &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().createdByEmail == existing().createdByEmail &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          (
+            existing().createdByUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name',
+              'email',
+              'phone',
+              'avatar',
+              'specialties',
+              'active',
+              'updatedAt'
+            ])
+          ) ||
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name',
+              'email',
+              'phone',
+              'avatar',
+              'specialties',
+              'active',
+              'updatedAt'
+            ])
+          )
+        )
+      );
+
+      allow delete: if isVerifiedUser() &&
+        isValidId(trainerId) &&
+        (existing().createdByUid == request.auth.uid || isAdmin());
+    }
+
+    // Collection 2: /companies/{companyId}
+    match /companies/{companyId} {
+      allow get: if isVerifiedUser() &&
+        isValidId(companyId) &&
+        (existing().createdByUid == request.auth.uid || isAdmin());
+
+      allow list: if isVerifiedUser() &&
+        (resource.data.createdByUid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(companyId) &&
+        isValidCompany(incoming()) &&
+        incoming().createdByUid == request.auth.uid &&
+        incoming().createdByEmail == request.auth.token.email &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if (
+        isVerifiedUser() &&
+        isValidId(companyId) &&
+        isValidCompany(incoming()) &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().createdByEmail == existing().createdByEmail &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          (
+            existing().createdByUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name',
+              'taxId',
+              'industry',
+              'logoText',
+              'companyName',
+              'phone',
+              'primaryContactName',
+              'address',
+              'updatedAt'
+            ])
+          ) ||
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'name',
+              'taxId',
+              'industry',
+              'logoText',
+              'companyName',
+              'phone',
+              'primaryContactName',
+              'address',
+              'updatedAt'
+            ])
+          )
+        )
+      );
+
+      allow delete: if isVerifiedUser() &&
+        isValidId(companyId) &&
+        (existing().createdByUid == request.auth.uid || isAdmin());
+    }
+
+    // Collection 3: /sedes/{sedeId}
+    match /sedes/{sedeId} {
+      allow get: if isVerifiedUser() &&
+        isValidId(sedeId) &&
+        (existing().createdByUid == request.auth.uid || isAdmin());
+
+      allow list: if isVerifiedUser() &&
+        (resource.data.createdByUid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(sedeId) &&
+        isValidSede(incoming()) &&
+        incoming().createdByUid == request.auth.uid &&
+        incoming().createdByEmail == request.auth.token.email &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time &&
+        ownsOrAdminsParentCompany(incoming().companyId);
+
+      allow update: if (
+        isVerifiedUser() &&
+        isValidId(sedeId) &&
+        isValidSede(incoming()) &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().createdByEmail == existing().createdByEmail &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          (
+            existing().createdByUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'companyId',
+              'companyName',
+              'name',
+              'address',
+              'city',
+              'lat',
+              'lng',
+              'geofenceRadiusMeters',
+              'contactPerson',
+              'contactRole',
+              'contactPhone',
+              'colorTag',
+              'updatedAt'
+            ])
+          ) ||
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'companyId',
+              'companyName',
+              'name',
+              'address',
+              'city',
+              'lat',
+              'lng',
+              'geofenceRadiusMeters',
+              'contactPerson',
+              'contactRole',
+              'contactPhone',
+              'colorTag',
+              'updatedAt'
+            ])
+          )
+        ) &&
+        ownsOrAdminsParentCompany(incoming().companyId)
+      );
+
+      allow delete: if isVerifiedUser() &&
+        isValidId(sedeId) &&
+        (existing().createdByUid == request.auth.uid || isAdmin());
+    }
+
+    // Collection 4: /personnel/{personnelId}
+    match /personnel/{personnelId} {
+      allow get: if isVerifiedUser() &&
+        isValidId(personnelId) &&
+        (existing().createdByUid == request.auth.uid || isAdmin());
+
+      allow list: if isVerifiedUser() &&
+        (resource.data.createdByUid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(personnelId) &&
+        isValidPersonnel(incoming()) &&
+        incoming().createdByUid == request.auth.uid &&
+        incoming().createdByEmail == request.auth.token.email &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if (
+        isVerifiedUser() &&
+        isValidId(personnelId) &&
+        isValidPersonnel(incoming()) &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().createdByEmail == existing().createdByEmail &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          (
+            existing().createdByUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'fullName',
+              'phone',
+              'email',
+              'address',
+              'updatedAt'
+            ])
+          ) ||
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'fullName',
+              'phone',
+              'email',
+              'address',
+              'updatedAt'
+            ])
+          )
+        )
+      );
+
+      allow delete: if isVerifiedUser() &&
+        isValidId(personnelId) &&
+        (existing().createdByUid == request.auth.uid || isAdmin());
+    }
+
+    // Collection 5: /clients/{clientId}
+    match /clients/{clientId} {
+      allow get: if isVerifiedUser() &&
+        isValidId(clientId) &&
+        (existing().createdByUid == request.auth.uid || isAdmin());
+
+      allow list: if isVerifiedUser() &&
+        (resource.data.createdByUid == request.auth.uid || isBootstrappedAdmin());
+
+      allow create: if isVerifiedUser() &&
+        isValidId(clientId) &&
+        isValidClient(incoming()) &&
+        incoming().createdByUid == request.auth.uid &&
+        incoming().createdByEmail == request.auth.token.email &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if (
+        isVerifiedUser() &&
+        isValidId(clientId) &&
+        isValidClient(incoming()) &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().createdByEmail == existing().createdByEmail &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time && (
+          (
+            existing().createdByUid == request.auth.uid &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'fullName',
+              'phone',
+              'email',
+              'address',
+              'company',
+              'updatedAt'
+            ])
+          ) ||
+          (
+            isAdmin() &&
+            incoming().diff(existing()).affectedKeys().hasOnly([
+              'fullName',
+              'phone',
+              'email',
+              'address',
+              'company',
+              'updatedAt'
+            ])
+          )
+        )
+      );
+
+      allow delete: if isVerifiedUser() &&
+        isValidId(clientId) &&
+        (existing().createdByUid == request.auth.uid || isAdmin());
+    }
+
+    // Collection 6: /admins/{adminUid}
+    match /admins/{adminUid} {
+      allow get: if isVerifiedUser() &&
+        isValidId(adminUid) &&
+        (request.auth.uid == adminUid || isBootstrappedAdmin());
+
+      allow list: if false;
+
+      allow create: if isBootstrappedAdmin() &&
+        isValidId(adminUid) &&
+        isValidAdminRole(incoming()) &&
+        incoming().grantedAt == request.time;
+
+      allow update: if false;
+
+      allow delete: if isBootstrappedAdmin() &&
+        isValidId(adminUid);
+    }
+  }
+}
