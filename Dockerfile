@@ -1,21 +1,20 @@
 # Usar la imagen oficial de Bun
-FROM oven/bun:1 as base
-WORKDIR /usr/src/app
+FROM oven/bun:1
+WORKDIR /app
 
 # Copiar archivos de dependencias
 COPY package.json bun.lock ./
+RUN bun install
 
-# Instalar dependencias
-RUN bun install --frozen-lockfile
-
-# Copiar el resto del código
+# Copiar todo el código del proyecto
 COPY . .
 
-# Construir la aplicación (Vite)
+# Construir la aplicación para producción
 RUN bun run build
 
-# Puerto requerido por Cloud Run
+# Exponer el puerto oficial de Cloud Run
 EXPOSE 8080
+ENV PORT=8080
 
-# Comando para arrancar el servidor
+# Comando definitivo para arrancar el servidor de Vite en producción
 CMD ["bun", "run", "preview", "--host", "0.0.0.0", "--port", "8080"]
