@@ -1,20 +1,21 @@
-# Usamos una imagen ligera de Node.js
-FROM node:20-slim
-
-# Creamos el directorio de la app
+# Usar la imagen oficial de Bun
+FROM oven/bun:1 as base
 WORKDIR /usr/src/app
 
-# Copiamos los archivos de dependencias
-COPY package*.json ./
+# Copiar archivos de dependencias
+COPY package.json bun.lock ./
 
-# Instalamos las dependencias del proyecto
-RUN npm install
+# Instalar dependencias
+RUN bun install --frozen-lockfile
 
-# Copiamos el resto del código de la aplicación (incluyendo la carpeta src)
+# Copiar el resto del código
 COPY . .
 
-# Exponemos el puerto que pide Cloud Run
+# Construir la aplicación (Vite)
+RUN bun run build
+
+# Puerto requerido por Cloud Run
 EXPOSE 8080
 
-# Comando para arrancar la aplicación
-CMD [ "npm", "start" ]
+# Comando para arrancar el servidor
+CMD ["bun", "run", "preview", "--host", "0.0.0.0", "--port", "8080"]
