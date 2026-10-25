@@ -9,6 +9,7 @@ export interface SessionAlarmStatus {
   startMs: number;
   expectedEndMs: number;
   expectedEndTimeFormatted: string;
+  autoLockDeadlineMs: number;
   elapsedSeconds: number;
   remainingSeconds: number;
   overdueSeconds: number;
@@ -54,7 +55,7 @@ export function calculateEndTimeHHMM(startTimeHHMM: string, durationMinutes: num
   const h = parseInt(hStr, 10);
   const m = parseInt(mStr, 10);
   if (Number.isNaN(h) || Number.isNaN(m)) return '';
-  const totalMins = ((h * 60 + m + Math.max(0, durationMinutes)) % 1440 + 1440) % 1440;
+  const totalMins = ((h * 60 + m + durationMinutes) % 1440 + 1440) % 1440;
   const endH = Math.floor(totalMins / 60);
   const endM = totalMins % 60;
   return `${String(endH).padStart(2, '0')}:${String(endM).padStart(2, '0')}`;
@@ -81,7 +82,6 @@ export function getSessionAlarmStatus(
       ? record.plannedDurationMinutes
       : getDefaultDurationMinutes(record.activityType, record.activityName, catalog);
 
-  const alarmEnabled = record.alarmEnabled !== false;
   const startMs = parseRecordStartMs(record);
   const totalDurationMs = plannedDurationMinutes * 60 * 1000;
   const expectedEndMs = startMs + totalDurationMs;
@@ -113,18 +113,21 @@ export function getSessionAlarmStatus(
   const isOverdue = isInProgress && remainingSeconds <= 0;
   const isNearEnd = isInProgress && remainingSeconds > 0 && remainingSeconds <= 180;
   const remainingBeforeNonComplianceSeconds = Math.max(0, UNCLOSED_GRACE_SECONDS - overdueSeconds);
-  const hasExceededUnclosedGrace = isInProgress && overdueSeconds >= UNCLOSED_GRACE_SECONDS;
+  const hasExceededUnclosedGrace = isInProgress && (nowMs >= autoLockDeadlineMs || overdueSeconds >= UNCLOSED_GRACE_SECONDS);
+
+  // Deactivate alarm automatically if 30-minute unclosed limit has been reached
+  const alarmEnabled = record.alarmEnabled !== false && !hasExceededUnclosedGrace;
 
   let snoozedUntilMs: number | null = null;
-  if (record.alarmSnoozedUntilIso) {
+  if (record.alarmSnoozedUntilIso && !hasExceededUnclosedGrace) {
     const parsedSnooze = new Date(record.alarmSnoozedUntilIso).getTime();
     if (!Number.isNaN(parsedSnooze)) {
-      snoozedUntilMs = parsedSnooze;
+      snoozedUntilMs = Math.min(parsedSnooze, autoLockDeadlineMs);
     }
   }
 
   const isSnoozed = Boolean(snoozedUntilMs && nowMs < snoozedUntilMs);
-  const shouldRing = isInProgress && alarmEnabled && isOverdue && !isSnoozed;
+  const shouldRing = isInProgress && alarmEnabled && isOverdue && !isSnoozed && !hasExceededUnclosedGrace;
 
   return {
     plannedDurationMinutes,
@@ -132,6 +135,7 @@ export function getSessionAlarmStatus(
     startMs,
     expectedEndMs,
     expectedEndTimeFormatted,
+    autoLockDeadlineMs,
     elapsedSeconds,
     remainingSeconds,
     overdueSeconds,
@@ -146,6 +150,22 @@ export function getSessionAlarmStatus(
     isSnoozed,
     shouldRing,
   };
+}
+
+export function clampSnoozeIsoToGraceLimit(
+  alarmStatus: SessionAlarmStatus,
+  requestedMinutes: number,
+  nowMs: number = Date.now()
+): string | null {
+  if (alarmStatus.hasExceededUnclosedGrace || nowMs >= alarmStatus.autoLockDeadlineMs) {
+    return null;
+  }
+  const desiredMs = nowMs + Math.max(1, requestedMinutes) * 60 * 1000;
+  const clampedMs = Math.min(desiredMs, alarmStatus.autoLockDeadlineMs);
+  if (clampedMs <= nowMs) {
+    return null;
+  }
+  return new Date(clampedMs).toISOString();
 }
 
 export function formatSecondsClock(totalSeconds: number): string {

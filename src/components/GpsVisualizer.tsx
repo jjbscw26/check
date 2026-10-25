@@ -98,8 +98,10 @@ export const GpsVisualizer: React.FC<GpsVisualizerProps> = ({
   if (!selectedSede) {
     return (
       <div className="bg-slate-50 border border-slate-200 rounded-xl p-5 text-center text-slate-500">
-        <MapPin className="w-8 h-8 mx-auto text-red-500 mb-2 animate-bounce" />
-        <p className="text-sm">Selecciona una empresa y sede primero para calibrar el GPS.</p>
+        <MapPin className="w-7 h-7 mx-auto text-slate-400 mb-2" />
+        <p className="text-xs sm:text-sm">
+          En blanco hasta cargar la sesión asignada del día para calibrar las coordenadas GPS de la sede.
+        </p>
       </div>
     );
   }

@@ -496,3 +496,206 @@ export async function verifyLiveFaceAgainstRegisteredPhoto(
     message: `Identidad corroborada con la foto de registro de ${trainerName} (${similarityPercent}% de coincidencia biométrica).`,
   };
 }
+
+export interface TrainerCandidateForFaceLogin {
+  id: string;
+  name: string;
+  avatar: string;
+  active: boolean;
+}
+
+export interface TrainerFaceLoginOutcome {
+  verified: boolean;
+  matchedTrainer?: TrainerCandidateForFaceLogin;
+  confidenceScore: number;
+  euclideanDistance?: number;
+  livenessPassed: boolean;
+  failureCode?: FaceVerificationFailureCode;
+  message: string;
+}
+
+/**
+ * Identifies which active trainer is in front of the camera (1:N biometric identification,
+ * or 1:1 when `preferredTrainerId` is provided) by comparing the live 128-D face embedding
+ * against registered trainer photographs.
+ */
+export async function identifyTrainerByLiveFace<T extends TrainerCandidateForFaceLogin>(
+  videoEl: HTMLVideoElement,
+  trainers: T[],
+  onProgress?: (stepMessage: string, progressPercent: number) => void,
+  preferredTrainerId?: string
+): Promise<Omit<TrainerFaceLoginOutcome, 'matchedTrainer'> & { matchedTrainer?: T }> {
+  const activePool = trainers.filter(
+    (t) => t.active !== false && (!preferredTrainerId || t.id === preferredTrainerId)
+  );
+
+  const biometricallyRegistered = activePool.filter(
+    (t) => !isPlaceholderOrMissingAvatar(t.avatar)
+  );
+
+  if (biometricallyRegistered.length === 0) {
+    const targetLabel =
+      preferredTrainerId && activePool[0] ? activePool[0].name : 'Ningún entrenador activo';
+    return {
+      verified: false,
+      confidenceScore: 0,
+      livenessPassed: false,
+      failureCode: 'NO_REGISTERED_PHOTO',
+      message: `${targetLabel} cuenta aún con fotografía facial de registro (solo iniciales). Registra primero la foto real de frente en Panel Admin → Entrenadores o en el Directorio.`,
+    };
+  }
+
+  if (!videoEl || videoEl.videoWidth === 0 || videoEl.videoHeight === 0) {
+    return {
+      verified: false,
+      confidenceScore: 0,
+      livenessPassed: false,
+      failureCode: 'CAMERA_NOT_READY',
+      message: 'La cámara aún no transmite video activo. Espera un segundo e intenta nuevamente.',
+    };
+  }
+
+  onProgress?.('Cargando motor biométrico de reconocimiento facial...', 18);
+  const faceapi = await ensureBiometricModelsLoaded();
+
+  onProgress?.('Capturando fotogramas en vivo y comprobando iluminación...', 40);
+  const frame1 = captureVideoFrameCanvas(videoEl);
+  if (frame1.meanLuminance < 14) {
+    return {
+      verified: false,
+      confidenceScore: 0,
+      livenessPassed: false,
+      failureCode: 'TOO_DARK',
+      message:
+        'La imagen de la cámara está demasiado oscura o el lente está cubierto. Ubícate en un lugar iluminado.',
+    };
+  }
+
+  await delay(260);
+  const frame2 = captureVideoFrameCanvas(videoEl);
+
+  let diffSum = 0;
+  const sampleLen = Math.min(frame1.pixelSample.length, frame2.pixelSample.length);
+  for (let i = 0; i < sampleLen; i += 4) {
+    diffSum += Math.abs(frame1.pixelSample[i] - frame2.pixelSample[i]);
+  }
+  const meanFrameDelta = sampleLen > 0 ? diffSum / (sampleLen / 4) : 0;
+  const livenessPassed = meanFrameDelta > 0.08;
+
+  if (!livenessPassed) {
+    return {
+      verified: false,
+      confidenceScore: 0,
+      livenessPassed: false,
+      failureCode: 'LIVENESS_FAILED',
+      message:
+        'El video parece congelado sin señal en vivo. Parpadea o mueve ligeramente el rostro e intenta nuevamente.',
+    };
+  }
+
+  onProgress?.('Analizando rasgos faciales en cámara...', 62);
+  const [liveFace1, liveFace2] = await Promise.all([
+    extractDominantFaceFromCanvas(frame1.canvas),
+    extractDominantFaceFromCanvas(frame2.canvas),
+  ]);
+
+  const primaryLiveFace = liveFace2 || liveFace1;
+  if (!primaryLiveFace) {
+    return {
+      verified: false,
+      confidenceScore: 0,
+      livenessPassed: true,
+      failureCode: 'NO_LIVE_FACE',
+      message:
+        'No se detectó ningún rostro frente a la cámara. Centra tu rostro dentro del óvalo mirando de frente.',
+    };
+  }
+
+  const minFrameSide = Math.min(primaryLiveFace.frameWidth, primaryLiveFace.frameHeight);
+  const faceRelativeSize =
+    Math.max(primaryLiveFace.box.width, primaryLiveFace.box.height) / Math.max(1, minFrameSide);
+
+  if (faceRelativeSize < 0.16) {
+    return {
+      verified: false,
+      confidenceScore: 0,
+      livenessPassed: true,
+      failureCode: 'FACE_TOO_SMALL',
+      message:
+        'Tu rostro está demasiado lejos de la cámara. Acércate un poco más para centrar tu rostro en el óvalo.',
+    };
+  }
+
+  const combinedLiveDescriptor =
+    liveFace1 && liveFace2
+      ? averageDescriptors(liveFace1.descriptor, liveFace2.descriptor)
+      : primaryLiveFace.descriptor;
+
+  onProgress?.('Comparando rostro con perfiles biométricos de entrenadores...', 82);
+
+  let bestCandidate: T | undefined;
+  let bestDistance = Number.POSITIVE_INFINITY;
+  let validReferenceCount = 0;
+
+  for (const candidate of biometricallyRegistered) {
+    let refDescriptor = registeredDescriptorCache.get(candidate.avatar);
+    if (!refDescriptor) {
+      try {
+        const refCanvas = await loadCleanImageCanvas(candidate.avatar);
+        const refFace = await extractDominantFaceFromCanvas(refCanvas);
+        if (refFace) {
+          refDescriptor = refFace.descriptor;
+          registeredDescriptorCache.set(candidate.avatar, refDescriptor);
+        }
+      } catch {
+        // Skip unreadable avatar URL and continue checking remaining trainers
+      }
+    }
+
+    if (!refDescriptor) continue;
+    validReferenceCount++;
+
+    const dist = faceapi.euclideanDistance(combinedLiveDescriptor, refDescriptor);
+    if (dist < bestDistance) {
+      bestDistance = dist;
+      bestCandidate = candidate;
+    }
+  }
+
+  if (validReferenceCount === 0 || !bestCandidate) {
+    return {
+      verified: false,
+      confidenceScore: 0,
+      livenessPassed: true,
+      failureCode: 'INVALID_REGISTERED_PHOTO',
+      message:
+        'Las fotografías registradas actualmente no contienen un rostro claro reconocible. Actualiza la foto facial del entrenador en Panel Admin → Entrenadores o en el Directorio.',
+    };
+  }
+
+  const bestSimilarity = distanceToSimilarityPercent(bestDistance);
+
+  if (bestDistance > FACE_MATCH_MAX_DISTANCE) {
+    return {
+      verified: false,
+      confidenceScore: bestSimilarity,
+      euclideanDistance: Number(bestDistance.toFixed(3)),
+      livenessPassed: true,
+      failureCode: 'FACE_MISMATCH',
+      message: preferredTrainerId
+        ? `El rostro capturado no coincide con la foto registrada de ${bestCandidate.name} (${bestSimilarity}% de similitud, mínimo requerido: 78%).`
+        : `El rostro capturado no coincide con ningún entrenador registrado en el sistema (máxima similitud detectada: ${bestSimilarity}%, mínimo requerido: 78%). Verifica la iluminación o actualiza tu fotografía facial en Panel Admin / Directorio.`,
+    };
+  }
+
+  onProgress?.(`Identidad verificada: ${bestCandidate.name}`, 100);
+  return {
+    verified: true,
+    matchedTrainer: bestCandidate,
+    confidenceScore: bestSimilarity,
+    euclideanDistance: Number(bestDistance.toFixed(3)),
+    livenessPassed: true,
+    message: `Acceso biométrico concedido a ${bestCandidate.name} (${bestSimilarity}% de coincidencia facial).`,
+  };
+}
+

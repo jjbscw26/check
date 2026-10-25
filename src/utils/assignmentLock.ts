@@ -10,6 +10,16 @@ import {
   getSessionAlarmStatus,
 } from './sessionAlarm';
 
+export const LOAD_WINDOW_MINUTES_BEFORE_START = 30;
+export const LOAD_WINDOW_MINUTES_AFTER_START = 20;
+
+export type AssignmentLoadWindowState =
+  | 'en_ventana'
+  | 'antes_de_30m'
+  | 'cerrada_20m'
+  | 'otro_dia'
+  | 'bloqueada';
+
 export interface AssignmentOccurrenceLockInfo {
   state: 'disponible' | 'en_curso' | 'completada_cerrada' | 'incumplida';
   isLocked: boolean;
@@ -17,6 +27,12 @@ export interface AssignmentOccurrenceLockInfo {
   isNonCompliant: boolean;
   nonComplianceReason?: NonComplianceReason;
   isManuallyClosed: boolean;
+  canLoadNow: boolean;
+  loadWindowState: AssignmentLoadWindowState;
+  unlockTimeHHMM?: string;
+  loadDeadlineHHMM?: string;
+  secondsUntilLoadOpen?: number;
+  secondsUntilLoadClose?: number;
   record?: AttendanceRecord;
   statusLabel: string;
   shortLabel: string;
@@ -28,6 +44,11 @@ export function formatLocalYYYYMMDD(d: Date = new Date()): string {
   const month = String(d.getMonth() + 1).padStart(2, '0');
   const day = String(d.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
+}
+
+function formatMsToHHMM(ms: number): string {
+  const d = new Date(ms);
+  return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
 }
 
 function getMondayIndexedDowFromDateStr(dateStr: string): number | null {
@@ -67,8 +88,12 @@ export function getAssignmentScheduledWindowMs(
 ): {
   startMs: number;
   endMs: number;
+  loadOpenMs: number;
+  loadCloseMs: number;
   durationMinutes: number;
   endHHMM: string;
+  loadOpenHHMM: string;
+  loadCloseHHMM: string;
 } | null {
   if (!dateStr || !assignment.time || !assignment.time.includes(':')) return null;
   const dateParts = dateStr.split('-').map(Number);
@@ -89,13 +114,21 @@ export function getAssignmentScheduledWindowMs(
     0
   ).getTime();
   const endMs = startMs + durationMinutes * 60 * 1000;
+  const loadOpenMs = startMs - LOAD_WINDOW_MINUTES_BEFORE_START * 60 * 1000;
+  const loadCloseMs = startMs + LOAD_WINDOW_MINUTES_AFTER_START * 60 * 1000;
   const endHHMM = calculateEndTimeHHMM(assignment.time, durationMinutes);
+  const loadOpenHHMM = formatMsToHHMM(loadOpenMs);
+  const loadCloseHHMM = formatMsToHHMM(loadCloseMs);
 
   return {
     startMs,
     endMs,
+    loadOpenMs,
+    loadCloseMs,
     durationMinutes,
     endHHMM,
+    loadOpenHHMM,
+    loadCloseHHMM,
   };
 }
 
@@ -170,9 +203,9 @@ export function findMatchingAssignmentForRecord(
 /**
  * Evaluates whether an assignment on a target date (YYYY-MM-DD) is:
  * - 'completada_cerrada' (locked, completed & closed)
- * - 'incumplida' (locked, out of schedule unreported OR not closed within 30 minutes after session end)
+ * - 'incumplida' (locked: either not closed within 30 min max after session end, OR not loaded within +20 min of start)
  * - 'en_curso' (locked, currently active and within the 30-min post-session grace window)
- * - 'disponible' (unlocked, ready for check-in)
+ * - 'disponible' (unlocked, can only be loaded on exact date between -30 min before start and +20 min after start)
  */
 export function getAssignmentOccurrenceStatus(
   assignment: ClassAssignment,
@@ -181,6 +214,8 @@ export function getAssignmentOccurrenceStatus(
   catalog: ActivityCatalogItem[] = [],
   nowMs: number = Date.now()
 ): AssignmentOccurrenceLockInfo {
+  const todayStr = formatLocalYYYYMMDD(new Date(nowMs));
+  const win = getAssignmentScheduledWindowMs(assignment, dateStr, catalog);
   const matchedRecord = findMatchingRecordForAssignmentDate(assignment, dateStr, records);
   const inCompletedDates = Boolean(
     dateStr && assignment.completedDates && assignment.completedDates.includes(dateStr)
@@ -190,7 +225,7 @@ export function getAssignmentOccurrenceStatus(
   // 1. Completed and closed attendance record
   if (matchedRecord?.status === 'completado') {
     const checkOutPart = matchedRecord.checkOutTime
-      ? ` • Salida ${matchedRecord.checkOutTime}`
+      ? ` · Salida ${matchedRecord.checkOutTime}`
       : '';
     return {
       state: 'completada_cerrada',
@@ -198,14 +233,18 @@ export function getAssignmentOccurrenceStatus(
       isCompletedAndClosed: true,
       isNonCompliant: false,
       isManuallyClosed: false,
+      canLoadNow: false,
+      loadWindowState: 'bloqueada',
+      unlockTimeHHMM: win?.loadOpenHHMM,
+      loadDeadlineHHMM: win?.loadCloseHHMM,
       record: matchedRecord,
-      statusLabel: 'Completada y Cerrada • Bloqueada',
+      statusLabel: 'Completada y Cerrada · Bloqueada',
       shortLabel: 'Cerrada y Bloqueada',
       detailText: `Entrada ${matchedRecord.checkInTime}${checkOutPart} (${matchedRecord.attendeesCount} part.)`,
     };
   }
 
-  // 2. Record explicitly marked as 'incumplido' (e.g., not closed after 30 minutes)
+  // 2. Record explicitly marked as 'incumplido' (e.g., not closed after 30 minutes max)
   if (matchedRecord?.status === 'incumplido') {
     const reason: NonComplianceReason = matchedRecord.nonComplianceReason || 'sin_cierre_30m';
     return {
@@ -215,22 +254,26 @@ export function getAssignmentOccurrenceStatus(
       isNonCompliant: true,
       nonComplianceReason: reason,
       isManuallyClosed: false,
+      canLoadNow: false,
+      loadWindowState: 'bloqueada',
+      unlockTimeHHMM: win?.loadOpenHHMM,
+      loadDeadlineHHMM: win?.loadCloseHHMM,
       record: matchedRecord,
       statusLabel:
         reason === 'sin_cierre_30m'
-          ? 'Incumplida • No Cerrada (+30 min) • Bloqueada'
-          : 'Incumplida • Fuera de Horario • Bloqueada',
-      shortLabel: reason === 'sin_cierre_30m' ? 'Incumplida (+30m)' : 'Incumplida',
+          ? 'No Cerrada (+30 min) · Bloqueada · Alarma Desactivada'
+          : 'Cerrada por No Cargar (+20 min) · Bloqueada',
+      shortLabel: reason === 'sin_cierre_30m' ? 'No Cerrada (+30m)' : 'Cerrada (+20m)',
       detailText:
         reason === 'sin_cierre_30m'
-          ? `Entrada ${matchedRecord.checkInTime} sin registro de salida pasados 30 min del fin${
+          ? `Entrada ${matchedRecord.checkInTime} dada por no cerrada, bloqueada y alarma desactivada al cumplir 30 min máx.${
               matchedRecord.markedNonCompliantAt ? ` (${matchedRecord.markedNonCompliantAt})` : ''
             }`
-          : 'Asignación marcada como incumplida y bloqueada',
+          : 'Sesión dada por cerrada y bloqueada',
     };
   }
 
-  // 3. Record currently 'en_curso' — check if 30 minutes have elapsed since planned session end
+  // 3. Record currently 'en_curso' — check if 30 minutes max have elapsed since planned session end
   if (matchedRecord?.status === 'en_curso') {
     const alarm = getSessionAlarmStatus(matchedRecord, catalog, nowMs);
     if (alarm.hasExceededUnclosedGrace) {
@@ -241,10 +284,14 @@ export function getAssignmentOccurrenceStatus(
         isNonCompliant: true,
         nonComplianceReason: 'sin_cierre_30m',
         isManuallyClosed: false,
+        canLoadNow: false,
+        loadWindowState: 'bloqueada',
+        unlockTimeHHMM: win?.loadOpenHHMM,
+        loadDeadlineHHMM: win?.loadCloseHHMM,
         record: matchedRecord,
-        statusLabel: 'Incumplida • No Cerrada (+30 min) • Bloqueada',
-        shortLabel: 'Incumplida (+30m)',
-        detailText: `Entrada ${matchedRecord.checkInTime} • No se cerró en los 30 min posteriores al fin (${alarm.expectedEndTimeFormatted} hrs)`,
+        statusLabel: 'No Cerrada (+30 min) · Bloqueada · Alarma Desactivada',
+        shortLabel: 'No Cerrada (+30m)',
+        detailText: `Entrada ${matchedRecord.checkInTime} · No cerrada en 30 min máx. tras finalizar (${alarm.expectedEndTimeFormatted} hrs). Alarma desactivada.`,
       };
     }
 
@@ -254,10 +301,14 @@ export function getAssignmentOccurrenceStatus(
       isCompletedAndClosed: false,
       isNonCompliant: false,
       isManuallyClosed: false,
+      canLoadNow: false,
+      loadWindowState: 'bloqueada',
+      unlockTimeHHMM: win?.loadOpenHHMM,
+      loadDeadlineHHMM: win?.loadCloseHHMM,
       record: matchedRecord,
-      statusLabel: 'En Curso • Ya Iniciada (Bloqueada)',
+      statusLabel: 'En Curso · Ya Iniciada (Bloqueada)',
       shortLabel: 'En Curso',
-      detailText: `Entrada registrada a las ${matchedRecord.checkInTime} • Pendiente registrar salida`,
+      detailText: `Entrada registrada a las ${matchedRecord.checkInTime} · Pendiente registrar salida`,
     };
   }
 
@@ -269,18 +320,23 @@ export function getAssignmentOccurrenceStatus(
       isCompletedAndClosed: true,
       isNonCompliant: false,
       isManuallyClosed: true,
-      statusLabel: 'Completada y Cerrada • Bloqueada',
+      canLoadNow: false,
+      loadWindowState: 'bloqueada',
+      unlockTimeHHMM: win?.loadOpenHHMM,
+      loadDeadlineHHMM: win?.loadCloseHHMM,
+      statusLabel: 'Completada y Cerrada · Bloqueada',
       shortLabel: 'Cerrada y Bloqueada',
       detailText: assignment.closedAt
-        ? `Cerrada oficialmente (${assignment.closedAt}) • No repetible`
+        ? `Cerrada oficialmente (${assignment.closedAt}) · No repetible`
         : 'Asignación cerrada y bloqueada para evitar repetición',
     };
   }
 
-  // 5. Check out-of-schedule & unreported non-compliance (unless Admin explicitly reopened this date)
+  // 5. Check +20 min post-start auto-close & past-date lock (unless Admin explicitly reopened this date)
   const isReopenedForDate = Boolean(
     dateStr && assignment.reopenedDates && assignment.reopenedDates.includes(dateStr)
   );
+  const appliesToTargetDate = doesAssignmentApplyToDate(assignment, dateStr);
 
   if (!isReopenedForDate) {
     const inMissedDates = Boolean(
@@ -290,8 +346,7 @@ export function getAssignmentOccurrenceStatus(
 
     if (globallyNonCompliant || inMissedDates) {
       const reason: NonComplianceReason = assignment.nonCompliantReason || 'fuera_de_horario';
-      const win = getAssignmentScheduledWindowMs(assignment, dateStr, catalog);
-      const windowLabel = win?.endHHMM ? `${assignment.time}–${win.endHHMM}` : assignment.time;
+      const limitLabel = win?.loadCloseHHMM ? `${win.loadCloseHHMM} hrs` : '+20 min';
       return {
         state: 'incumplida',
         isLocked: true,
@@ -299,21 +354,24 @@ export function getAssignmentOccurrenceStatus(
         isNonCompliant: true,
         nonComplianceReason: reason,
         isManuallyClosed: false,
+        canLoadNow: false,
+        loadWindowState: reason === 'sin_cierre_30m' ? 'bloqueada' : 'cerrada_20m',
+        unlockTimeHHMM: win?.loadOpenHHMM,
+        loadDeadlineHHMM: win?.loadCloseHHMM,
         statusLabel:
           reason === 'sin_cierre_30m'
-            ? 'Incumplida • No Cerrada (+30 min) • Bloqueada'
-            : 'Incumplida • Fuera de Horario (No Reportada) • Bloqueada',
-        shortLabel: reason === 'sin_cierre_30m' ? 'Incumplida (+30m)' : 'Incumplida (Sin Reportar)',
+            ? 'No Cerrada (+30 min) · Bloqueada · Alarma Desactivada'
+            : 'Sesión Cerrada · No Cargada (+20 min) · Bloqueada',
+        shortLabel: reason === 'sin_cierre_30m' ? 'No Cerrada (+30m)' : 'Cerrada (+20m sin carga)',
         detailText:
           reason === 'sin_cierre_30m'
-            ? 'No fue cerrada después de 30 minutos de finalizar • Bloqueada'
-            : `Fuera de horario (${windowLabel} hrs) sin reporte de entrada • Bloqueada`,
+            ? 'Dada por no cerrada y bloqueada tras 30 minutos sin cierre · Alarma desactivada'
+            : `No se cargó dentro de los 20 min posteriores al inicio (límite ${limitLabel}) · Dada por cerrada`,
       };
     }
 
-    const win = getAssignmentScheduledWindowMs(assignment, dateStr, catalog);
-    if (win && doesAssignmentApplyToDate(assignment, dateStr) && nowMs > win.endMs) {
-      const windowLabel = win.endHHMM ? `${assignment.time}–${win.endHHMM}` : assignment.time;
+    // Past date without check-in record: closed
+    if (dateStr && dateStr < todayStr && appliesToTargetDate) {
       return {
         state: 'incumplida',
         isLocked: true,
@@ -321,12 +379,78 @@ export function getAssignmentOccurrenceStatus(
         isNonCompliant: true,
         nonComplianceReason: 'fuera_de_horario',
         isManuallyClosed: false,
-        statusLabel: 'Incumplida • Fuera de Horario (No Reportada) • Bloqueada',
-        shortLabel: 'Incumplida (Sin Reportar)',
-        detailText: `Fuera de horario (${windowLabel} hrs) sin reporte de entrada • Bloqueada`,
+        canLoadNow: false,
+        loadWindowState: 'cerrada_20m',
+        unlockTimeHHMM: win?.loadOpenHHMM,
+        loadDeadlineHHMM: win?.loadCloseHHMM,
+        statusLabel: 'Sesión Cerrada · Fecha Vencida sin Carga',
+        shortLabel: 'Cerrada (Sin carga)',
+        detailText: `La fecha exacta de la sesión (${dateStr}) venció sin registro de entrada · Dada por cerrada`,
+      };
+    }
+
+    // Exact day or scheduled occurrence where > 20 minutes after start have elapsed without loading/check-in
+    if (win && appliesToTargetDate && nowMs > win.loadCloseMs) {
+      return {
+        state: 'incumplida',
+        isLocked: true,
+        isCompletedAndClosed: false,
+        isNonCompliant: true,
+        nonComplianceReason: 'fuera_de_horario',
+        isManuallyClosed: false,
+        canLoadNow: false,
+        loadWindowState: 'cerrada_20m',
+        unlockTimeHHMM: win.loadOpenHHMM,
+        loadDeadlineHHMM: win.loadCloseHHMM,
+        statusLabel: 'Sesión Cerrada · No Cargada (+20 min) · Bloqueada',
+        shortLabel: 'Cerrada (+20m sin carga)',
+        detailText: `Pasaron más de 20 min desde el inicio (${assignment.time} hrs, límite ${win.loadCloseHHMM} hrs) sin cargarse · Dada por cerrada`,
       };
     }
   }
+
+  // 6. Enforce exact day of assignment (cannot load future or non-matching dates)
+  if (dateStr !== todayStr || !appliesToTargetDate) {
+    return {
+      state: 'disponible',
+      isLocked: false,
+      isCompletedAndClosed: false,
+      isNonCompliant: false,
+      isManuallyClosed: false,
+      canLoadNow: false,
+      loadWindowState: 'otro_dia',
+      unlockTimeHHMM: win?.loadOpenHHMM,
+      loadDeadlineHHMM: win?.loadCloseHHMM,
+      statusLabel: 'Programada · Solo Cargable el Día Exacto',
+      shortLabel: 'Día Programado',
+      detailText: win
+        ? `Solo disponible el ${dateStr} de ${win.loadOpenHHMM} a ${win.loadCloseHHMM} hrs`
+        : `Solo disponible el día exacto asignado (${dateStr})`,
+    };
+  }
+
+  // 7. Exact day of assignment (today): check [-30 min, +20 min] load window
+  if (win && !isReopenedForDate && nowMs < win.loadOpenMs) {
+    const secondsUntilLoadOpen = Math.max(0, Math.ceil((win.loadOpenMs - nowMs) / 1000));
+    return {
+      state: 'disponible',
+      isLocked: false,
+      isCompletedAndClosed: false,
+      isNonCompliant: false,
+      isManuallyClosed: false,
+      canLoadNow: false,
+      loadWindowState: 'antes_de_30m',
+      unlockTimeHHMM: win.loadOpenHHMM,
+      loadDeadlineHHMM: win.loadCloseHHMM,
+      secondsUntilLoadOpen,
+      statusLabel: `Disponible Hoy desde ${win.loadOpenHHMM} hrs (-30 min)`,
+      shortLabel: `Habilita ${win.loadOpenHHMM}`,
+      detailText: `Podrás cargar los datos 30 min antes de iniciar (${win.loadOpenHHMM}–${win.loadCloseHHMM} hrs)`,
+    };
+  }
+
+  const secondsUntilLoadClose =
+    win && !isReopenedForDate ? Math.max(0, Math.floor((win.loadCloseMs - nowMs) / 1000)) : undefined;
 
   return {
     state: 'disponible',
@@ -334,8 +458,18 @@ export function getAssignmentOccurrenceStatus(
     isCompletedAndClosed: false,
     isNonCompliant: false,
     isManuallyClosed: false,
-    statusLabel: 'Disponible',
-    shortLabel: 'Disponible',
+    canLoadNow: true,
+    loadWindowState: 'en_ventana',
+    unlockTimeHHMM: win?.loadOpenHHMM,
+    loadDeadlineHHMM: win?.loadCloseHHMM,
+    secondsUntilLoadClose,
+    statusLabel: win
+      ? `Habilitada para Cargar (${win.loadOpenHHMM}–${win.loadCloseHHMM} hrs)`
+      : 'Disponible para Cargar',
+    shortLabel: 'Cargar Ahora',
+    detailText: win
+      ? `Ventana activa hoy de ${win.loadOpenHHMM} a ${win.loadCloseHHMM} hrs`
+      : undefined,
   };
 }
 

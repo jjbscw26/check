@@ -40,16 +40,14 @@ import {
   Sede, 
   Trainer, 
   ActivityType, 
-  SubActivity, 
   GpsData, 
   PunctualityStatus,
-  FacialVerificationData,
   ClassAssignment,
-  ActivityCatalogItem
+  ActivityCatalogItem,
+  TrainerBiometricSession,
 } from '../types';
 import { GpsVisualizer } from './GpsVisualizer';
 import { CameraCapture } from './CameraCapture';
-import { FaceBiometricScanner } from './FaceBiometricScanner';
 import { TrainerCheckOutModal } from './TrainerCheckOutModal';
 import { SessionEndAlarmModal } from './SessionEndAlarmModal';
 import {
@@ -57,9 +55,11 @@ import {
   getAssignmentDurationMinutes,
   calculateEndTimeHHMM,
   getSessionAlarmStatus,
+  clampSnoozeIsoToGraceLimit,
   formatSecondsClock,
   requestAlarmNotificationPermission,
   playAlarmPattern,
+  stopAlarmAudioImmediately,
   unlockMobileAlarmAudio,
   requestSessionWakeLock,
   releaseSessionWakeLock,
@@ -73,6 +73,8 @@ import confetti from 'canvas-confetti';
 
 interface TrainerCheckInViewProps {
   currentTrainer: Trainer;
+  trainerSession?: TrainerBiometricSession | null;
+  onLogoutTrainerSession?: () => void;
   companies: Company[];
   records: AttendanceRecord[];
   assignments?: ClassAssignment[];
@@ -205,6 +207,8 @@ export function getAssignmentScheduleDetails(asg: ClassAssignment, refDate: Date
 
 export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
   currentTrainer,
+  trainerSession = null,
+  onLogoutTrainerSession,
   companies,
   records,
   assignments = [],
@@ -212,10 +216,15 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
   onSaveRecord,
   onUpdateRecord,
 }) => {
-  // Check if this trainer has an active session in progress
-  const activeSession = records.find(
-    (r) => r.trainerId === currentTrainer.id && r.status === 'en_curso'
+  // Strictly isolate records to the authenticated trainer only
+  const trainerRecords = React.useMemo(
+    () => records.filter((r) => r.trainerId === currentTrainer.id),
+    [records, currentTrainer.id]
   );
+
+  // Check if this trainer has an active session in progress
+  const activeSession = trainerRecords.find((r) => r.status === 'en_curso');
+  const autoBlockedSessionIdsRef = React.useRef<Set<string>>(new Set());
 
   const [checkoutModalOpen, setCheckoutModalOpen] = useState(false);
   const [isTestAlarmModalOpen, setIsTestAlarmModalOpen] = useState(false);
@@ -281,25 +290,29 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
     };
   }, [activeSession?.id, activeSession?.alarmEnabled]);
 
-  // Form State
-  const [selectedCompanyId, setSelectedCompanyId] = useState<string>(companies[0]?.id || '');
-  const selectedCompany = companies.find((c) => c.id === selectedCompanyId) || companies[0];
+  // Form State — All fields start strictly BLANK and only fill when an assigned session is loaded
+  const [selectedCompanyId, setSelectedCompanyId] = useState<string>('');
+  const selectedCompany: Company | null = selectedCompanyId
+    ? companies.find((c) => c.id === selectedCompanyId) || null
+    : null;
 
-  const [selectedSedeId, setSelectedSedeId] = useState<string>(selectedCompany?.sedes[0]?.id || '');
-  const selectedSede = selectedCompany?.sedes.find((s) => s.id === selectedSedeId) || selectedCompany?.sedes[0];
+  const [selectedSedeId, setSelectedSedeId] = useState<string>('');
+  const selectedSede: Sede | null =
+    selectedCompany && selectedSedeId
+      ? selectedCompany.sedes.find((s) => s.id === selectedSedeId) || null
+      : null;
 
   const now = new Date(nowMs);
   const todayYMD = formatLocalYYYYMMDD(now);
-  const defaultTimeStr = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
 
-  const [sessionDate, setSessionDate] = useState<string>(() => formatLocalYYYYMMDD(new Date()));
-  const [scheduledTime, setScheduledTime] = useState<string>(defaultTimeStr);
-  const [activityType, setActivityType] = useState<ActivityType>('pausa_activa');
-  const [activityName, setActivityName] = useState<string>('Pausa Activa: Ergonomía y Estiramientos');
-  const [plannedDurationInput, setPlannedDurationInput] = useState<string>('20');
+  const [sessionDate, setSessionDate] = useState<string>('');
+  const [scheduledTime, setScheduledTime] = useState<string>('');
+  const [activityType, setActivityType] = useState<ActivityType | ''>('');
+  const [activityName, setActivityName] = useState<string>('');
+  const [plannedDurationInput, setPlannedDurationInput] = useState<string>('');
   const [alarmEnabled, setAlarmEnabled] = useState<boolean>(true);
-  const [attendeesInput, setAttendeesInput] = useState<string>('0');
-  const [locationArea, setLocationArea] = useState<string>('Piso 4 - Sala de Usos Múltiples');
+  const [attendeesInput, setAttendeesInput] = useState<string>('');
+  const [locationArea, setLocationArea] = useState<string>('');
   const [observations, setObservations] = useState<string>('');
   const [loadedAssignmentId, setLoadedAssignmentId] = useState<string | null>(null);
 
@@ -313,39 +326,74 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
 
   // Filter assignments for current trainer
   const trainerAssignments = assignments.filter((a) => a.trainerId === currentTrainer.id && a.active);
-  const loadedAssignment = trainerAssignments.find((a) => a.id === loadedAssignmentId);
+  const loadedAssignment = trainerAssignments.find((a) => a.id === loadedAssignmentId) || null;
   const loadedDateInfo = loadedAssignment ? getAssignmentScheduleDetails(loadedAssignment, now) : null;
 
   // Hardware / Verification state
   const [currentGps, setCurrentGps] = useState<GpsData | null>(null);
-  const [facialVerification, setFacialVerification] = useState<FacialVerificationData | null>(null);
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
 
   const [validationError, setValidationError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
 
+  const clearCheckInFormFields = React.useCallback(() => {
+    setLoadedAssignmentId(null);
+    setSelectedCompanyId('');
+    setSelectedSedeId('');
+    setSessionDate('');
+    setScheduledTime('');
+    setActivityType('');
+    setActivityName('');
+    setPlannedDurationInput('');
+    setAttendeesInput('');
+    setLocationArea('');
+    setObservations('');
+    setCurrentGps(null);
+    setPhotoUrl(null);
+  }, []);
+
   const handleLoadAssignment = (asg: ClassAssignment, targetDateOverride?: string) => {
     const details = getAssignmentScheduleDetails(asg, now);
     const targetDate = targetDateOverride || details.dateStr;
-    const lockInfo = getAssignmentOccurrenceStatus(asg, targetDate, records, activityCatalog, nowMs);
+    const lockInfo = getAssignmentOccurrenceStatus(asg, targetDate, trainerRecords, activityCatalog, nowMs);
 
     if (lockInfo.isLocked) {
       if (loadedAssignmentId === asg.id) {
-        setLoadedAssignmentId(null);
+        clearCheckInFormFields();
       }
       if (lockInfo.isNonCompliant) {
         setValidationError(
           lockInfo.nonComplianceReason === 'sin_cierre_30m'
-            ? `La asignación "${asg.activityName}" (${targetDate} • ${asg.time} hrs) fue marcada como INCUMPLIDA y bloqueada porque no se registró su salida dentro de los 30 minutos posteriores a finalizar.`
-            : `La asignación "${asg.activityName}" (${targetDate} • ${asg.time} hrs) ya se encuentra fuera de horario sin haber sido reportada, por lo que está bloqueada y marcada como INCUMPLIDA.`
+            ? `La sesión "${asg.activityName}" (${targetDate} · ${asg.time} hrs) se dio por NO CERRADA, fue bloqueada y su alarma quedó desactivada por exceder el máximo de 30 minutos sin cierre.`
+            : `La sesión "${asg.activityName}" (${targetDate} · ${asg.time} hrs) superó los 20 minutos desde su inicio sin haberse cargado, por lo que se dio por CERRADA y bloqueada.`
         );
       } else if (lockInfo.isCompletedAndClosed) {
         setValidationError(
-          `La asignación "${asg.activityName}" (${targetDate} • ${asg.time} hrs) ya fue completada y cerrada, por lo que está bloqueada y no se puede repetir.`
+          `La sesión "${asg.activityName}" (${targetDate} · ${asg.time} hrs) ya fue completada y cerrada, por lo que está bloqueada.`
         );
       } else {
         setValidationError(
-          `La asignación "${asg.activityName}" (${targetDate} • ${asg.time} hrs) ya se encuentra en curso y bloqueada.`
+          `La sesión "${asg.activityName}" (${targetDate} · ${asg.time} hrs) ya se encuentra en curso y bloqueada.`
+        );
+      }
+      return;
+    }
+
+    if (!lockInfo.canLoadNow) {
+      if (loadedAssignmentId === asg.id) {
+        clearCheckInFormFields();
+      }
+      if (lockInfo.loadWindowState === 'otro_dia') {
+        setValidationError(
+          `Solo se permite cargar datos el día exacto de la asignación (${targetDate}). Hoy es ${todayYMD}.`
+        );
+      } else if (lockInfo.loadWindowState === 'antes_de_30m') {
+        setValidationError(
+          `Aún no inicia el horario permitido de carga para "${asg.activityName}". Solo podrás cargar sus datos hoy desde 30 minutos antes de iniciar (${lockInfo.unlockTimeHHMM} hrs) y hasta máximo 20 minutos después de iniciada (${lockInfo.loadDeadlineHHMM} hrs).`
+        );
+      } else {
+        setValidationError(
+          `La sesión "${asg.activityName}" no se encuentra dentro de la ventana permitida de carga.`
         );
       }
       return;
@@ -361,102 +409,64 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
     setActivityName(asg.activityName);
     setPlannedDurationInput(String(assignedDuration));
     setLocationArea(asg.locationArea);
-    // Start participants counter from 0 so trainer counts real attendees
-    setAttendeesInput('0');
+    setAttendeesInput('');
+    setObservations('');
     setCurrentGps(null);
+    setPhotoUrl(null);
     setLoadedAssignmentId(asg.id);
 
-    // Smooth scroll down to the check-in form
     const formEl = document.getElementById('nuevo-registro-form');
     if (formEl) {
       formEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
   };
 
-  // Clear facial verification, loaded assignment, and test modal if trainer changes
+  // Clear all form fields, loaded assignment, and test modal if trainer changes
   React.useEffect(() => {
-    setFacialVerification(null);
-    setLoadedAssignmentId(null);
+    clearCheckInFormFields();
     setValidationError(null);
     setIsTestAlarmModalOpen(false);
-  }, [currentTrainer.id]);
+  }, [currentTrainer.id, clearCheckInFormFields]);
 
-  // Evaluate whether the currently loaded or matching assignment for the selected date/time is already locked
-  const activeFormLockCheck = (() => {
+  // If a loaded session crosses +20 minutes after start without being registered, auto-clear and close it
+  React.useEffect(() => {
+    if (!loadedAssignment) return;
     const targetDate = sessionDate || todayYMD;
-    if (loadedAssignment) {
-      const st = getAssignmentOccurrenceStatus(
-        loadedAssignment,
-        targetDate,
-        records,
-        activityCatalog,
-        nowMs
-      );
-      if (st.isLocked) {
-        return { assignment: loadedAssignment, lockInfo: st };
+    const st = getAssignmentOccurrenceStatus(
+      loadedAssignment,
+      targetDate,
+      trainerRecords,
+      activityCatalog,
+      nowMs
+    );
+    if (!st.canLoadNow) {
+      const expiredName = loadedAssignment.activityName;
+      const expiredTime = loadedAssignment.time;
+      clearCheckInFormFields();
+      if (st.loadWindowState === 'cerrada_20m' || st.isNonCompliant) {
+        setValidationError(
+          `Transcurrieron más de 20 minutos desde el inicio programado de "${expiredName}" (${expiredTime} hrs) sin registrar la entrada. La sesión se dio por cerrada y los campos volvieron a quedar en blanco.`
+        );
       }
     }
-    const matchingScheduled = trainerAssignments.find(
-      (a) =>
-        a.companyId === selectedCompanyId &&
-        a.sedeId === selectedSedeId &&
-        a.time === scheduledTime &&
-        doesAssignmentApplyToDate(a, targetDate)
+  }, [loadedAssignment, sessionDate, todayYMD, trainerRecords, activityCatalog, nowMs, clearCheckInFormFields]);
+
+  // Evaluate whether the currently loaded assignment is locked
+  const activeFormLockCheck = (() => {
+    if (!loadedAssignment) return null;
+    const targetDate = sessionDate || todayYMD;
+    const st = getAssignmentOccurrenceStatus(
+      loadedAssignment,
+      targetDate,
+      trainerRecords,
+      activityCatalog,
+      nowMs
     );
-    if (matchingScheduled) {
-      const st = getAssignmentOccurrenceStatus(
-        matchingScheduled,
-        targetDate,
-        records,
-        activityCatalog,
-        nowMs
-      );
-      if (st.isLocked) {
-        return { assignment: matchingScheduled, lockInfo: st };
-      }
+    if (st.isLocked) {
+      return { assignment: loadedAssignment, lockInfo: st };
     }
     return null;
   })();
-
-  // Handle company change
-  const handleCompanyChange = (compId: string) => {
-    setSelectedCompanyId(compId);
-    const comp = companies.find((c) => c.id === compId);
-    if (comp && comp.sedes.length > 0) {
-      setSelectedSedeId(comp.sedes[0].id);
-      setCurrentGps(null); // trigger recalculation
-    }
-  };
-
-  // Sub-activity options from dynamic catalog with defaults fallback
-  const catalogPausas = activityCatalog
-    .filter((c) => c.activityType === 'pausa_activa' && c.active)
-    .map((c) => c.name);
-  const catalogFitness = activityCatalog
-    .filter((c) => c.activityType === 'clase_fitness' && c.active)
-    .map((c) => c.name);
-
-  const pausaActivaOptions =
-    catalogPausas.length > 0
-      ? catalogPausas
-      : [
-          'Pausa Activa: Ergonomía y Estiramientos',
-          'Pausa Activa: Movilidad Articular y Postura',
-          'Pausa Activa: Respiración y Anti-estrés',
-          'Pausa Activa: Coordinación y Gimnasia Cerebral',
-        ];
-
-  const claseFitnessOptions =
-    catalogFitness.length > 0
-      ? catalogFitness
-      : [
-          'Clase Fitness: Entrenamiento Funcional',
-          'Clase Fitness: Yoga Corporativo',
-          'Clase Fitness: Pilates Mat',
-          'Clase Fitness: Zumba y Ritmos Latinos',
-          'Clase Fitness: HIIT y Cardio Quema-grasa',
-          'Clase Fitness: Tonificación y Fuerza con Bandas',
-        ];
 
   // Calculate punctuality relative to scheduled time
   const calculatePunctuality = (schedTime: string, nowTime: Date) => {
@@ -483,46 +493,45 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
     e.preventDefault();
     setValidationError(null);
 
-    if (!selectedSede) {
-      setValidationError('Por favor selecciona una sede corporativa válida.');
+    if (!loadedAssignment || !selectedCompany || !selectedSede || !activityType || !sessionDate || !scheduledTime) {
+      setValidationError(
+        'Debes cargar primero una sesión asignada del día de hoy (dentro de los 30 minutos previos al inicio y hasta 20 minutos después de iniciada) para llenar los datos de la sede.'
+      );
       return;
     }
 
     const checkInDate = new Date();
     const dateFormatted = formatLocalYYYYMMDD(checkInDate);
-    const targetSessionDate = sessionDate || dateFormatted;
 
-    // Prevent repeating or late-reporting a locked (completed/closed, non-compliant, or already in-progress) assignment
-    if (activeFormLockCheck) {
-      if (activeFormLockCheck.lockInfo.isNonCompliant) {
-        setValidationError(
-          activeFormLockCheck.lockInfo.nonComplianceReason === 'sin_cierre_30m'
-            ? `Esta asignación ("${activeFormLockCheck.assignment.activityName}" el ${targetSessionDate} a las ${activeFormLockCheck.assignment.time} hrs) quedó bloqueada y marcada como INCUMPLIDA por no haberse cerrado dentro de los 30 minutos posteriores a finalizar.`
-            : `Esta asignación ("${activeFormLockCheck.assignment.activityName}" el ${targetSessionDate} a las ${activeFormLockCheck.assignment.time} hrs) está fuera de horario sin haber sido reportada. Quedó bloqueada y marcada como INCUMPLIDA.`
-        );
-      } else if (activeFormLockCheck.lockInfo.isCompletedAndClosed) {
-        setValidationError(
-          `Esta asignación ("${activeFormLockCheck.assignment.activityName}" el ${targetSessionDate} a las ${activeFormLockCheck.assignment.time} hrs) ya fue completada y cerrada. Se encuentra bloqueada y no se puede repetir.`
-        );
-      } else {
-        setValidationError(
-          `Esta asignación ya tiene una sesión en curso registrada hoy. Finaliza primero la salida pendiente.`
-        );
-      }
+    if (sessionDate !== dateFormatted || !doesAssignmentApplyToDate(loadedAssignment, dateFormatted)) {
+      clearCheckInFormFields();
+      setValidationError('Solo se permite registrar datos el día exacto de la asignación.');
       return;
     }
 
-    if (!facialVerification) {
-      setValidationError('La validación de entrada mediante foto del rostro del entrenador es OBLIGATORIA.');
+    const liveStatus = getAssignmentOccurrenceStatus(
+      loadedAssignment,
+      sessionDate,
+      trainerRecords,
+      activityCatalog,
+      checkInDate.getTime()
+    );
+
+    if (liveStatus.isLocked || !liveStatus.canLoadNow) {
+      clearCheckInFormFields();
+      setValidationError(
+        liveStatus.loadWindowState === 'cerrada_20m' || liveStatus.isNonCompliant
+          ? `La sesión "${loadedAssignment.activityName}" superó los 20 minutos posteriores a su inicio sin cargarse y fue dada por cerrada.`
+          : `La sesión "${loadedAssignment.activityName}" no está dentro del horario permitido de carga (-30 min a +20 min del inicio).`
+      );
       return;
     }
 
     if (!photoUrl) {
-      setValidationError('La foto de presencia en el salón o sede es OBLIGATORIA.');
+      setValidationError('La foto obligatoria de presencia en el salón es OBLIGATORIA.');
       return;
     }
 
-    // Unlock mobile audio synchronously on Check-In tap so session-end alarm can ring automatically
     unlockMobileAlarmAudio();
     if (alarmEnabled) {
       requestSessionWakeLock().then((ok) => setWakeLockActive(ok));
@@ -538,7 +547,6 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
       checkInDate
     );
 
-    // Fallback GPS if not explicitly refreshed
     const fallbackGps: GpsData = currentGps || {
       lat: selectedSede.lat,
       lng: selectedSede.lng,
@@ -557,19 +565,9 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
       )
     );
 
-    const matchedCandidateAsg =
-      loadedAssignment ||
-      trainerAssignments.find(
-        (a) =>
-          a.companyId === selectedCompany.id &&
-          a.sedeId === selectedSede.id &&
-          a.time === scheduledTime &&
-          doesAssignmentApplyToDate(a, targetSessionDate)
-      );
-
     const newRecord: AttendanceRecord = {
       id: `rec_${Date.now()}`,
-      assignmentId: matchedCandidateAsg?.id,
+      assignmentId: loadedAssignment.id,
       trainerId: currentTrainer.id,
       trainerName: currentTrainer.name,
       companyId: selectedCompany.id,
@@ -577,7 +575,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
       sedeId: selectedSede.id,
       sedeName: selectedSede.name,
       sedeAddress: selectedSede.address,
-      date: targetSessionDate,
+      date: sessionDate,
       scheduledTime,
       checkInTime,
       checkInIso,
@@ -591,7 +589,6 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
       locationArea,
       observations,
       checkInGps: fallbackGps,
-      facialVerification,
       photoUrl,
       plannedDurationMinutes: parsedDuration,
       alarmEnabled,
@@ -610,11 +607,8 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
       });
     } catch {}
 
-    // Reset local wizard fields and unlink loaded assignment so it cannot be re-submitted
-    setLoadedAssignmentId(null);
-    setFacialVerification(null);
-    setPhotoUrl(null);
-    setAttendeesInput('0');
+    // Reset all fields back to blank after registering entry
+    clearCheckInFormFields();
   };
 
   const handleCheckoutConfirm = (
@@ -631,6 +625,17 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
   ) => {
     if (!activeSession) return;
 
+    // Prevent checkout if 30-min unclosed deadline already passed
+    const checkStatus = getSessionAlarmStatus(activeSession, activityCatalog, Date.now());
+    if (checkStatus.hasExceededUnclosedGrace) {
+      stopAlarmAudioImmediately();
+      void releaseSessionWakeLock();
+      setCheckoutModalOpen(false);
+      setIsTestAlarmModalOpen(false);
+      return;
+    }
+
+    stopAlarmAudioImmediately();
     const updated: AttendanceRecord = {
       ...activeSession,
       checkOutTime: checkoutData.checkOutTime,
@@ -641,6 +646,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
       exitPhotoUrl: checkoutData.exitPhotoUrl,
       checkOutGps: checkoutData.exitGps,
       durationMinutes: checkoutData.durationMinutes,
+      alarmEnabled: false,
       alarmSnoozedUntilIso: null,
     };
 
@@ -653,15 +659,59 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
     ? getSessionAlarmStatus(activeSession, activityCatalog, nowMs)
     : null;
 
+  // Immediate 1-second enforcement: if an unclosed session reaches 30 minutes max after ending,
+  // mark it as not closed ('incumplido' / 'sin_cierre_30m'), lock it, and deactivate the alarm once.
+  React.useEffect(() => {
+    if (!activeSession || !activeSessionAlarm?.hasExceededUnclosedGrace) return;
+    if (autoBlockedSessionIdsRef.current.has(activeSession.id)) return;
+    autoBlockedSessionIdsRef.current.add(activeSession.id);
+
+    stopAlarmAudioImmediately();
+    void releaseSessionWakeLock();
+    setWakeLockActive(false);
+    setCheckoutModalOpen(false);
+    setIsTestAlarmModalOpen(false);
+
+    const nowTimeStr = new Date().toLocaleTimeString('es-MX', { hour12: false });
+    const autoNote = `[Sistema BSCW] Sesión dada por NO CERRADA, bloqueada y alarma desactivada automáticamente en el lapso máximo de 30 min tras finalizar (${activeSessionAlarm.autoLockDeadlineFormatted} hrs).`;
+    const mergedObs = activeSession.observations
+      ? activeSession.observations.includes('[Sistema BSCW]')
+        ? activeSession.observations
+        : `${activeSession.observations} | ${autoNote}`
+      : autoNote;
+
+    onUpdateRecord({
+      ...activeSession,
+      status: 'incumplido',
+      nonComplianceReason: 'sin_cierre_30m',
+      markedNonCompliantAt: nowTimeStr,
+      alarmEnabled: false,
+      alarmSnoozedUntilIso: null,
+      observations: mergedObs,
+    });
+  }, [activeSession, activeSessionAlarm?.hasExceededUnclosedGrace, activeSessionAlarm?.autoLockDeadlineFormatted, onUpdateRecord]);
+
+  const recentAutoBlockedUnclosedSession = trainerRecords.find(
+    (r) =>
+      r.date === todayYMD &&
+      r.status === 'incumplido' &&
+      r.nonComplianceReason === 'sin_cierre_30m'
+  );
+
   const handleSnoozeActiveAlarm = (minutes: number) => {
-    if (!activeSession) {
+    if (!activeSession || !activeSessionAlarm) {
       setIsTestAlarmModalOpen(false);
       return;
     }
-    const snoozeUntil = new Date(Date.now() + minutes * 60 * 1000).toISOString();
+    const clampedSnoozeIso = clampSnoozeIsoToGraceLimit(activeSessionAlarm, minutes, Date.now());
+    if (!clampedSnoozeIso) {
+      stopAlarmAudioImmediately();
+      setIsTestAlarmModalOpen(false);
+      return;
+    }
     onUpdateRecord({
       ...activeSession,
-      alarmSnoozedUntilIso: snoozeUntil,
+      alarmSnoozedUntilIso: clampedSnoozeIso,
     });
     setIsTestAlarmModalOpen(false);
   };
@@ -669,6 +719,9 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
   const handleToggleActiveSessionAlarm = () => {
     if (!activeSession) return;
     const currentlyEnabled = activeSession.alarmEnabled !== false;
+    if (currentlyEnabled) {
+      stopAlarmAudioImmediately();
+    }
     onUpdateRecord({
       ...activeSession,
       alarmEnabled: !currentlyEnabled,
@@ -693,10 +746,32 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
 
   return (
     <div className="max-w-4xl mx-auto px-4 py-6 sm:py-8 space-y-6">
+      {/* Notice if a session today exceeded the 30-min max closure window */}
+      {!activeSession && recentAutoBlockedUnclosedSession && (
+        <div className="bg-rose-950 text-white rounded-2xl p-4 sm:p-5 border border-rose-800 shadow-sm flex items-start space-x-3.5">
+          <div className="w-10 h-10 rounded-xl bg-rose-900 border border-rose-700 text-rose-200 flex items-center justify-center shrink-0">
+            <Ban className="w-5 h-5" />
+          </div>
+          <div className="text-xs sm:text-sm space-y-1">
+            <div className="flex flex-wrap items-center gap-2 font-bold text-rose-200">
+              <span>Sesión dada por No Cerrada y Bloqueada (30 min máx.)</span>
+              <span aria-hidden="true">·</span>
+              <span>Alarma Desactivada</span>
+            </div>
+            <p className="text-rose-100">
+              La sesión <strong>{recentAutoBlockedUnclosedSession.activityName}</strong> en{' '}
+              <strong>
+                {recentAutoBlockedUnclosedSession.companyName} — {recentAutoBlockedUnclosedSession.sedeName}
+              </strong>{' '}
+              (entrada <span className="font-mono tabular-nums">{recentAutoBlockedUnclosedSession.checkInTime}</span>) no fue cerrada en el lapso máximo de 30 minutos posteriores a finalizar. Quedó bloqueada como no cerrada y su alarma fue desactivada automáticamente.
+            </p>
+          </div>
+        </div>
+      )}
       {/* Active Session Alert Banner with Live Countdown & Session-End Alarm */}
       {activeSession && activeSessionAlarm && (
         <div
-          className={`text-white rounded-2xl p-5 shadow-xl relative overflow-hidden animate-fadeIn transition-colors ${
+          className={`text-white rounded-2xl p-5 shadow-xl relative overflow-hidden transition-colors ${
             activeSessionAlarm.isOverdue
               ? 'bg-gradient-to-r from-red-700 via-rose-700 to-amber-700 ring-2 ring-amber-300'
               : activeSessionAlarm.isNearEnd
@@ -704,40 +779,38 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                 : 'bg-gradient-to-r from-red-600 via-rose-600 to-red-700'
           }`}
         >
-          <div className="absolute top-0 right-0 transform translate-x-4 -translate-y-4 w-32 h-32 bg-white/10 rounded-full blur-2xl pointer-events-none" />
-
           <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 relative">
             <div className="flex items-start space-x-3.5">
               <div
                 className={`w-12 h-12 rounded-xl border flex items-center justify-center shrink-0 shadow-inner ${
                   activeSessionAlarm.isOverdue
-                    ? 'bg-amber-300 border-amber-200 text-slate-950 animate-bounce'
+                    ? 'bg-amber-300 border-amber-200 text-slate-950'
                     : 'bg-white/20 border-white/30 text-white'
                 }`}
               >
                 {activeSessionAlarm.isOverdue ? (
                   <BellRing className="w-6 h-6 stroke-[2.5]" />
                 ) : (
-                  <Play className="w-6 h-6 animate-pulse" />
+                  <Play className="w-6 h-6" />
                 )}
               </div>
               <div>
                 <div className="flex flex-wrap items-center gap-2">
                   <span
-                    className={`px-2.5 py-0.5 rounded-full text-[10px] font-extrabold uppercase tracking-wider shadow-sm ${
+                    className={`px-2.5 py-0.5 rounded-lg text-[10px] font-extrabold tracking-wider shadow-sm ${
                       activeSessionAlarm.isOverdue
-                        ? 'bg-amber-300 text-slate-950 animate-pulse'
-                        : 'bg-white text-red-600 animate-pulse'
+                        ? 'bg-amber-300 text-slate-950'
+                        : 'bg-white text-red-700'
                     }`}
                   >
                     {activeSessionAlarm.isOverdue
-                      ? '⚠ SESIÓN FINALIZADA — SALIDA PENDIENTE'
+                      ? 'SESIÓN FINALIZADA — SALIDA PENDIENTE'
                       : activeSessionAlarm.isNearEnd
-                        ? '⏳ SESIÓN POR FINALIZAR'
-                        : '● SESIÓN EN CURSO'}
+                        ? 'SESIÓN POR FINALIZAR'
+                        : 'SESIÓN EN CURSO'}
                   </span>
-                  <span className="text-xs text-red-100 font-mono">
-                    Fecha: {activeSession.date} • Inició: {activeSession.checkInTime}
+                  <span className="text-xs text-red-100 font-mono tabular-nums">
+                    Fecha: {activeSession.date} · Inició: {activeSession.checkInTime}
                   </span>
                 </div>
                 <h3 className="text-base sm:text-lg font-bold text-white mt-1">
@@ -874,7 +947,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
               <div
                 className={`h-full rounded-full transition-all duration-500 ${
                   activeSessionAlarm.isOverdue
-                    ? 'bg-amber-300 animate-pulse'
+                    ? 'bg-amber-300'
                     : activeSessionAlarm.isNearEnd
                       ? 'bg-amber-200'
                       : 'bg-white'
@@ -890,11 +963,11 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                   <AlertTriangle className="w-4 h-4 text-amber-300 shrink-0 mt-0.5 sm:mt-0" />
                   <span>
                     <strong>Límite máximo de cierre (30 min):</strong> Si no registras la salida antes de las{' '}
-                    <strong className="font-mono text-white">{activeSessionAlarm.autoLockDeadlineFormatted} hrs</strong>,
-                    la sesión quedará <strong>BLOQUEADA y marcada como INCUMPLIDA</strong>.
+                    <strong className="font-mono tabular-nums text-white">{activeSessionAlarm.autoLockDeadlineFormatted} hrs</strong>,
+                    la sesión se dará por <strong>NO CERRADA, quedará BLOQUEADA y la alarma se desactivará</strong>.
                   </span>
                 </div>
-                <span className="px-2.5 py-1 rounded-lg bg-amber-300 text-slate-950 font-mono font-black text-xs shrink-0 self-start sm:self-center">
+                <span className="px-2.5 py-1 rounded-lg bg-amber-300 text-slate-950 font-mono tabular-nums font-black text-xs shrink-0 self-start sm:self-center whitespace-nowrap">
                   Restan {formatSecondsClock(activeSessionAlarm.remainingBeforeNonComplianceSeconds)}
                 </span>
               </div>
@@ -903,49 +976,76 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
         </div>
       )}
 
-      {/* Trainer Profile Card in Light Theme */}
+      {/* Trainer Individual Session Profile Card */}
       <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div className="flex items-center space-x-4">
           <img
             src={currentTrainer.avatar}
             alt={currentTrainer.name}
-            className="w-14 h-14 rounded-2xl object-cover border-2 border-red-500 shadow-sm"
+            className="w-14 h-14 rounded-2xl object-cover border-2 border-emerald-500 shadow-sm shrink-0"
           />
           <div>
-            <div className="flex items-center space-x-2">
+            <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
               <h2 className="text-lg font-bold text-slate-900">{currentTrainer.name}</h2>
-              <span className="px-2 py-0.5 rounded text-[11px] font-semibold bg-red-50 text-red-700 border border-red-200">
-                Entrenador BSCW
+              <span className="text-xs text-slate-400" aria-hidden="true">·</span>
+              <span className="text-xs font-semibold text-emerald-700">
+                Sesión Individual Biométrica
+                {trainerSession ? ` (${trainerSession.confidenceScore}%)` : ''}
               </span>
             </div>
-            <p className="text-xs text-slate-500 mt-0.5">{currentTrainer.email}</p>
-            <div className="flex flex-wrap gap-1.5 mt-2">
-              {currentTrainer.specialties.map((spec, i) => (
-                <span
-                  key={i}
-                  className="text-[10px] bg-slate-100 text-slate-700 font-medium px-2 py-0.5 rounded-md border border-slate-200"
-                >
-                  {spec}
-                </span>
-              ))}
-            </div>
+            <p className="text-xs text-slate-500 mt-0.5">
+              {currentTrainer.email}
+              {trainerSession ? ` · Acceso facial ${trainerSession.authenticatedAt}` : ''}
+            </p>
+            <p className="text-[11px] text-slate-500 mt-1.5">
+              {currentTrainer.specialties.join(' · ')}
+            </p>
           </div>
         </div>
 
-        {/* Mini stats */}
-        <div className="flex sm:flex-col justify-around sm:justify-center border-t sm:border-t-0 sm:border-l border-slate-200 pt-3 sm:pt-0 sm:pl-6 text-center sm:text-right gap-3">
-          <div>
-            <span className="text-xs text-slate-500 block font-medium">Visitas Registradas</span>
-            <span className="text-lg font-bold text-slate-900 font-mono">
-              {records.filter((r) => r.trainerId === currentTrainer.id).length}
-            </span>
+        {/* Mini stats + Session Actions */}
+        <div className="flex flex-wrap sm:flex-col items-center sm:items-end justify-between sm:justify-center border-t sm:border-t-0 sm:border-l border-slate-200 pt-3 sm:pt-0 sm:pl-6 gap-3">
+          <div className="flex items-center gap-5 text-center sm:text-right">
+            <div>
+              <span className="text-xs text-slate-500 block font-medium">Mis Visitas</span>
+              <span className="text-lg font-bold text-slate-900 font-mono tabular-nums">
+                {trainerRecords.length}
+              </span>
+            </div>
+            <div>
+              <span className="text-xs text-slate-500 block font-medium">Mis Asignaciones</span>
+              <span className="text-lg font-bold text-red-600 font-mono tabular-nums">
+                {trainerAssignments.length}
+              </span>
+            </div>
           </div>
-          <div>
-            <span className="text-xs text-slate-500 block font-medium">Puntualidad</span>
-            <span className="text-lg font-bold text-red-600 font-mono">96%</span>
-          </div>
+
+          {onLogoutTrainerSession && (
+            <button
+              type="button"
+              onClick={onLogoutTrainerSession}
+              className="inline-flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-white hover:bg-red-50 text-red-700 border border-red-200 hover:border-red-300 text-xs font-semibold transition whitespace-nowrap shrink-0"
+              title="Cerrar mi sesión individual para otro entrenador"
+            >
+              <LogOut className="w-3.5 h-3.5 shrink-0" />
+              <span>Cerrar Mi Sesión</span>
+            </button>
+          )}
         </div>
       </div>
+
+      {/* Empty state if authenticated trainer currently has no assigned sessions */}
+      {trainerAssignments.length === 0 && (
+        <div className="bg-white border border-slate-200/90 rounded-2xl p-6 text-center space-y-2 shadow-sm">
+          <Calendar className="w-8 h-8 text-slate-400 mx-auto" />
+          <h3 className="text-sm font-bold text-slate-900">
+            No tienes sesiones asignadas activas en tu perfil
+          </h3>
+          <p className="text-xs text-slate-500 max-w-md mx-auto">
+            En tu sesión individual solo se muestran las clases y sedes programadas específicamente para <strong>{currentTrainer.name}</strong>.
+          </p>
+        </div>
+      )}
 
       {/* Assigned Classes Section with Explicit Dates and Schedules */}
       {trainerAssignments.length > 0 && (() => {
@@ -955,7 +1055,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
             const lockInfo = getAssignmentOccurrenceStatus(
               asg,
               details.dateStr,
-              records,
+              trainerRecords,
               activityCatalog,
               nowMs
             );
@@ -1088,7 +1188,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                     </h3>
                   </div>
                   <p className="text-xs text-slate-500 mt-0.5">
-                    Fechas calendario oficiales, días y horarios programados para ti. Haz clic para cargar los datos en tu registro.
+                    Solo se permite cargar datos el día exacto asignado, desde 30 min antes de iniciar hasta 20 min después de iniciada la sesión.
                   </p>
                 </div>
               </div>
@@ -1099,7 +1199,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setAssignmentViewMode('tarjetas')}
-                    className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition ${
+                    className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition whitespace-nowrap shrink-0 ${
                       assignmentViewMode === 'tarjetas'
                         ? 'bg-white text-slate-900 shadow-xs'
                         : 'text-slate-600 hover:text-slate-900'
@@ -1111,7 +1211,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setAssignmentViewMode('calendario')}
-                    className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition ${
+                    className={`px-3 py-1.5 rounded-lg flex items-center space-x-1.5 transition whitespace-nowrap shrink-0 ${
                       assignmentViewMode === 'calendario'
                         ? 'bg-white text-slate-900 shadow-xs'
                         : 'text-slate-600 hover:text-slate-900'
@@ -1130,7 +1230,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setAssignmentFilterTab('todas')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap shrink-0 tabular-nums ${
                     assignmentFilterTab === 'todas'
                       ? 'bg-slate-900 text-white shadow-xs'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -1141,19 +1241,19 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setAssignmentFilterTab('hoy')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap flex items-center space-x-1.5 ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap shrink-0 flex items-center space-x-1.5 tabular-nums ${
                     assignmentFilterTab === 'hoy'
                       ? 'bg-red-600 text-white shadow-xs'
                       : 'bg-red-50 text-red-700 border border-red-200 hover:bg-red-100'
                   }`}
                 >
-                  <span className="w-2 h-2 rounded-full bg-red-500 animate-ping" />
+                  <Calendar className="w-3.5 h-3.5" />
                   <span>Para Hoy ({todayAssignmentsCount})</span>
                 </button>
                 <button
                   type="button"
                   onClick={() => setAssignmentFilterTab('proximas')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap shrink-0 tabular-nums ${
                     assignmentFilterTab === 'proximas'
                       ? 'bg-slate-900 text-white shadow-xs'
                       : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
@@ -1164,7 +1264,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setAssignmentFilterTab('cerradas')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap flex items-center space-x-1.5 ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap shrink-0 flex items-center space-x-1.5 tabular-nums ${
                     assignmentFilterTab === 'cerradas'
                       ? 'bg-slate-800 text-white shadow-xs'
                       : 'bg-emerald-50 text-emerald-800 border border-emerald-200 hover:bg-emerald-100'
@@ -1176,14 +1276,14 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setAssignmentFilterTab('incumplidas')}
-                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap flex items-center space-x-1.5 ${
+                  className={`px-3 py-1.5 rounded-lg text-xs font-bold transition whitespace-nowrap shrink-0 flex items-center space-x-1.5 tabular-nums ${
                     assignmentFilterTab === 'incumplidas'
                       ? 'bg-rose-700 text-white shadow-xs'
                       : 'bg-rose-50 text-rose-800 border border-rose-200 hover:bg-rose-100'
                   }`}
                 >
                   <Ban className="w-3 h-3" />
-                  <span>Incumplidas ({nonCompliantAssignmentsCount})</span>
+                  <span>Cerradas / No Cerradas ({nonCompliantAssignmentsCount})</span>
                 </button>
               </div>
 
@@ -1218,7 +1318,8 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                   </div>
                 ) : (
                   filteredList.map(({ assignment: asg, details, lockInfo }) => {
-                    const isLoaded = loadedAssignmentId === asg.id && !lockInfo.isLocked;
+                    const isLoaded =
+                      loadedAssignmentId === asg.id && lockInfo.canLoadNow && !lockInfo.isLocked;
                     const isClosed = lockInfo.isCompletedAndClosed;
                     const isNonCompliant = lockInfo.isNonCompliant;
                     const isInProgress = lockInfo.state === 'en_curso';
@@ -1243,67 +1344,58 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                         {/* Top Prominent Date & Lock Status Banner */}
                         <div>
                           <div className="flex flex-wrap items-center justify-between gap-1.5 pb-2.5 border-b border-slate-200/80">
-                            <div className="flex flex-wrap items-center gap-1.5">
+                            <div className="flex flex-wrap items-center gap-1.5 text-xs">
                               {isNonCompliant ? (
-                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-rose-700 text-white shadow-2xs">
-                                  <Ban className="w-3 h-3 mr-1 text-rose-200" />
+                                <span className="inline-flex items-center font-bold text-rose-700">
+                                  <Ban className="w-3.5 h-3.5 mr-1 text-rose-600" />
                                   {lockInfo.nonComplianceReason === 'sin_cierre_30m'
-                                    ? 'Incumplida • Sin Cierre (+30m)'
-                                    : 'Incumplida • Fuera de Horario'}
+                                    ? 'No Cerrada (+30m) · Bloqueada'
+                                    : 'Cerrada · No Cargada (+20m)'}
                                 </span>
                               ) : isClosed ? (
-                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-slate-800 text-white shadow-2xs">
-                                  <Lock className="w-3 h-3 mr-1 text-emerald-400" />
+                                <span className="inline-flex items-center font-bold text-emerald-800">
+                                  <Lock className="w-3.5 h-3.5 mr-1 text-emerald-600" />
                                   Completada y Cerrada
                                 </span>
                               ) : isInProgress ? (
-                                <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider bg-amber-600 text-white shadow-2xs">
-                                  <Lock className="w-3 h-3 mr-1" />
-                                  En Curso • Bloqueada
+                                <span className="inline-flex items-center font-bold text-amber-800">
+                                  <Lock className="w-3.5 h-3.5 mr-1 text-amber-600" />
+                                  En Curso · Bloqueada
                                 </span>
                               ) : (
                                 <span
-                                  className={`inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-black uppercase tracking-wider ${
-                                    details.isToday
-                                      ? 'bg-red-600 text-white animate-pulse shadow-xs'
-                                      : 'bg-red-50 text-red-700 border border-red-200'
+                                  className={`inline-flex items-center font-bold ${
+                                    details.isToday ? 'text-red-600' : 'text-slate-700'
                                   }`}
                                 >
-                                  <Calendar className="w-3 h-3 mr-1" />
-                                  {details.isToday ? '¡ASIGNADA HOY!' : details.badgeText}
+                                  <Calendar className="w-3.5 h-3.5 mr-1 text-red-600" />
+                                  {details.isToday ? 'Asignada Hoy' : details.badgeText}
                                 </span>
                               )}
-                              <span className="text-xs font-mono font-bold text-slate-700">
+                              <span className="text-slate-300" aria-hidden="true">·</span>
+                              <span className="font-mono tabular-nums font-bold text-slate-700">
                                 {details.formattedShort}
                               </span>
                             </div>
 
-                            <div className="flex items-center space-x-1.5">
+                            <div className="flex items-center space-x-2 text-xs font-mono tabular-nums">
                               {(() => {
                                 const durMins = getAssignmentDurationMinutes(asg, activityCatalog);
                                 const endHHMM = calculateEndTimeHHMM(asg.time, durMins);
                                 return (
                                   <>
                                     <span
-                                      className={`text-xs font-mono font-bold flex items-center bg-white px-2 py-0.5 rounded border border-slate-200 shadow-2xs ${
+                                      className={`font-bold flex items-center ${
                                         isClosed || isNonCompliant
-                                          ? 'text-slate-600 line-through'
+                                          ? 'text-slate-500 line-through'
                                           : 'text-red-600'
                                       }`}
                                     >
-                                      <Clock
-                                        className={`w-3.5 h-3.5 mr-1 ${
-                                          isNonCompliant
-                                            ? 'text-rose-500'
-                                            : isClosed
-                                              ? 'text-slate-400'
-                                              : 'text-red-600'
-                                        }`}
-                                      />
+                                      <Clock className="w-3.5 h-3.5 mr-1 shrink-0" />
                                       {asg.time}{endHHMM ? `–${endHHMM}` : ' hrs'}
                                     </span>
-                                    <span className="text-[11px] font-mono font-bold text-slate-700 flex items-center bg-slate-100 px-2 py-0.5 rounded border border-slate-200">
-                                      <Timer className={`w-3 h-3 mr-1 ${isClosed ? 'text-slate-500' : 'text-red-500'}`} />
+                                    <span className="text-slate-300" aria-hidden="true">·</span>
+                                    <span className="font-semibold text-slate-600">
                                       {durMins} min
                                     </span>
                                   </>
@@ -1314,23 +1406,15 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
 
                           {/* Full Date In Spanish Callout */}
                           <div className="mt-2 text-xs font-bold text-slate-900 flex items-center justify-between gap-2">
-                            <span>📅 {details.formattedLong}</span>
-                            {isNonCompliant ? (
-                              <span className="inline-flex items-center text-[10px] font-extrabold text-rose-800 bg-rose-100 border border-rose-300 px-2 py-0.5 rounded-md">
-                                <Lock className="w-3 h-3 mr-1 text-rose-700" />
-                                Incumplida • Bloqueada
+                            <span>{details.formattedLong}</span>
+                            {!isNonCompliant && !isClosed && !isInProgress && lockInfo.unlockTimeHHMM && lockInfo.loadDeadlineHHMM && (
+                              <span className="text-[11px] font-mono tabular-nums font-semibold text-slate-600">
+                                Carga: {lockInfo.unlockTimeHHMM}–{lockInfo.loadDeadlineHHMM} hrs
                               </span>
-                            ) : (
-                              isClosed && (
-                                <span className="inline-flex items-center text-[10px] font-extrabold text-emerald-800 bg-emerald-100 border border-emerald-300 px-2 py-0.5 rounded-md">
-                                  <CheckCircle2 className="w-3 h-3 mr-1 text-emerald-700" />
-                                  Bloqueada
-                                </span>
-                              )
                             )}
                           </div>
 
-                          {/* Recurrence description badge */}
+                          {/* Recurrence description */}
                           <div className="mt-1 flex items-center text-[11px] text-slate-500 font-medium">
                             <Repeat className="w-3 h-3 mr-1 text-slate-400" />
                             <span>{details.frequencyLabel}</span>
@@ -1349,7 +1433,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                           <div className="text-xs text-slate-700 mt-1.5 flex items-center flex-wrap gap-1">
                             <Building2 className="w-3.5 h-3.5 text-slate-400 shrink-0" />
                             <span className="font-semibold text-slate-900">{asg.companyName}</span>
-                            <span className="text-slate-300">•</span>
+                            <span className="text-slate-300" aria-hidden="true">·</span>
                             <span className="text-slate-600 font-medium">{asg.sedeName}</span>
                           </div>
 
@@ -1359,8 +1443,8 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                               <MapPin className="w-3 h-3 text-red-500 mr-0.5 shrink-0" />
                               {asg.locationArea}
                             </span>
-                            <span>•</span>
-                            <span>👥 ~{asg.expectedAttendees || 15} participantes</span>
+                            <span aria-hidden="true">·</span>
+                            <span className="tabular-nums">~{asg.expectedAttendees || 15} participantes</span>
                           </div>
 
                           {/* Non-Compliant / Closure / In-Progress Audit Seal */}
@@ -1370,11 +1454,11 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                               <div>
                                 <span className="font-extrabold block text-rose-900">
                                   {lockInfo.nonComplianceReason === 'sin_cierre_30m'
-                                    ? 'Marcada como Incumplida — No cerrada después de 30 minutos'
-                                    : 'Marcada como Incumplida — Fuera de horario sin reporte'}
+                                    ? 'Sesión No Cerrada — Excedió 30 min máx. (Bloqueada · Alarma desactivada)'
+                                    : 'Sesión Cerrada — No se cargó pasados 20 minutos de iniciada'}
                                 </span>
                                 {lockInfo.detailText && (
-                                  <span className="text-rose-800 font-mono text-[10px] block mt-0.5">
+                                  <span className="text-rose-800 font-mono tabular-nums text-[10px] block mt-0.5">
                                     {lockInfo.detailText}
                                   </span>
                                 )}
@@ -1390,7 +1474,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                                   Sesión Completada y Cerrada (No se puede repetir)
                                 </span>
                                 {lockInfo.detailText && (
-                                  <span className="text-emerald-800 font-mono text-[10px] block mt-0.5">
+                                  <span className="text-emerald-800 font-mono tabular-nums text-[10px] block mt-0.5">
                                     {lockInfo.detailText}
                                   </span>
                                 )}
@@ -1406,7 +1490,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                                   Sesión Actualmente en Curso
                                 </span>
                                 {lockInfo.detailText && (
-                                  <span className="text-amber-800 font-mono text-[10px] block mt-0.5">
+                                  <span className="text-amber-800 font-mono tabular-nums text-[10px] block mt-0.5">
                                     {lockInfo.detailText}
                                   </span>
                                 )}
@@ -1422,7 +1506,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                           )}
                         </div>
 
-                        {/* Action Button — Locked if Non-Compliant, Completed/Closed, or In Progress */}
+                        {/* Action Button — Enforces Exact Day & [-30 min, +20 min] Load Window */}
                         {lockInfo.isLocked ? (
                           <button
                             type="button"
@@ -1436,15 +1520,37 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                             }`}
                           >
                             <Lock className="w-3.5 h-3.5 shrink-0" />
-                            <span>
+                            <span className="truncate">
                               {isNonCompliant
                                 ? lockInfo.nonComplianceReason === 'sin_cierre_30m'
-                                  ? 'Bloqueada — Incumplida (+30 min sin cierre)'
-                                  : 'Bloqueada — Incumplida (Fuera de horario)'
+                                  ? 'No Cerrada (+30 min) — Bloqueada · Alarma Off'
+                                  : 'Sesión Cerrada — No cargada (+20 min)'
                                 : isClosed
                                   ? 'Bloqueada — Completada y Cerrada'
                                   : 'Bloqueada — Sesión en Curso'}
                             </span>
+                          </button>
+                        ) : !lockInfo.canLoadNow ? (
+                          <button
+                            type="button"
+                            disabled
+                            className="w-full py-2.5 px-3 rounded-xl font-bold text-xs border bg-slate-100 text-slate-500 border-slate-300 flex items-center justify-center space-x-2 cursor-not-allowed select-none"
+                          >
+                            {lockInfo.loadWindowState === 'antes_de_30m' ? (
+                              <>
+                                <Clock className="w-3.5 h-3.5 shrink-0 text-slate-500" />
+                                <span className="font-mono tabular-nums truncate">
+                                  Habilitada hoy {lockInfo.unlockTimeHHMM} hrs (-30m · en {formatSecondsClock(lockInfo.secondsUntilLoadOpen ?? 0)})
+                                </span>
+                              </>
+                            ) : (
+                              <>
+                                <Calendar className="w-3.5 h-3.5 shrink-0 text-slate-500" />
+                                <span className="truncate">
+                                  Solo el día exacto ({details.formattedShort})
+                                </span>
+                              </>
+                            )}
                           </button>
                         ) : (
                           <button
@@ -1456,11 +1562,11 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                                 : 'bg-red-600 hover:bg-red-700 text-white shadow-red-500/20'
                             }`}
                           >
-                            <Sparkles className="w-3.5 h-3.5" />
-                            <span>
+                            <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                            <span className="truncate tabular-nums">
                               {isLoaded
-                                ? '✓ Datos Cargados al Formulario'
-                                : `Cargar Datos de Clase (Fecha: ${details.formattedShort})`}
+                                ? '✓ Sesión Cargada en Registro'
+                                : `Cargar Sesión de Hoy (Cierra ${lockInfo.loadDeadlineHHMM} hrs)`}
                             </span>
                           </button>
                         )}
@@ -1479,14 +1585,14 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setCalendarWeekOffset((prev) => prev - 1)}
-                    className="p-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shadow-2xs text-xs font-semibold flex items-center"
+                    className="p-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shadow-2xs text-xs font-semibold flex items-center whitespace-nowrap shrink-0"
                   >
                     <ChevronLeft className="w-4 h-4 mr-0.5" />
                     <span>Semana anterior</span>
                   </button>
 
                   <div className="text-center">
-                    <span className="text-xs font-bold text-slate-900 block">
+                    <span className="text-xs font-bold text-slate-900 block tabular-nums">
                       Semana del {weekDays[0].dayNum} {weekDays[0].monthName} al {weekDays[6].dayNum} {weekDays[6].monthName}
                     </span>
                     {calendarWeekOffset !== 0 && (
@@ -1503,7 +1609,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                   <button
                     type="button"
                     onClick={() => setCalendarWeekOffset((prev) => prev + 1)}
-                    className="p-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shadow-2xs text-xs font-semibold flex items-center"
+                    className="p-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shadow-2xs text-xs font-semibold flex items-center whitespace-nowrap shrink-0"
                   >
                     <span>Semana siguiente</span>
                     <ChevronRight className="w-4 h-4 ml-0.5" />
@@ -1528,7 +1634,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                             {day.dayName}
                           </span>
                           <span
-                            className={`px-1.5 py-0.5 rounded text-[11px] font-mono font-bold ${
+                            className={`px-1.5 py-0.5 rounded text-[11px] font-mono tabular-nums font-bold ${
                               day.isToday
                                 ? 'bg-red-600 text-white'
                                 : 'bg-slate-100 text-slate-700'
@@ -1549,13 +1655,14 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                               const dayLock = getAssignmentOccurrenceStatus(
                                 asg,
                                 day.dateStr,
-                                records,
+                                trainerRecords,
                                 activityCatalog,
                                 nowMs
                               );
                               const isDayLoaded =
                                 loadedAssignmentId === asg.id &&
                                 sessionDate === day.dateStr &&
+                                dayLock.canLoadNow &&
                                 !dayLock.isLocked;
 
                               return (
@@ -1575,7 +1682,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                                 >
                                   <div className="flex items-center justify-between gap-1">
                                     <span
-                                      className={`font-mono text-[10px] font-bold ${
+                                      className={`font-mono tabular-nums text-[10px] font-bold ${
                                         dayLock.isCompletedAndClosed || dayLock.isNonCompliant
                                           ? 'text-slate-500 line-through'
                                           : 'text-red-600'
@@ -1584,21 +1691,19 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                                       {asg.time} ({getAssignmentDurationMinutes(asg, activityCatalog)}m)
                                     </span>
                                     {dayLock.isNonCompliant ? (
-                                      <span className="inline-flex items-center text-[9px] uppercase font-extrabold text-rose-800 bg-rose-100 px-1 py-0.5 rounded">
-                                        <Ban className="w-2.5 h-2.5 mr-0.5" />
-                                        Incumplida
+                                      <span className="text-[9px] font-extrabold text-rose-800">
+                                        {dayLock.nonComplianceReason === 'sin_cierre_30m' ? 'No cerrada' : 'Cerrada'}
                                       </span>
                                     ) : dayLock.isCompletedAndClosed ? (
-                                      <span className="inline-flex items-center text-[9px] uppercase font-extrabold text-emerald-800 bg-emerald-100 px-1 py-0.5 rounded">
-                                        <Lock className="w-2.5 h-2.5 mr-0.5" />
+                                      <span className="text-[9px] font-extrabold text-emerald-800">
                                         Cerrada
                                       </span>
                                     ) : dayLock.state === 'en_curso' ? (
-                                      <span className="inline-flex items-center text-[9px] uppercase font-extrabold text-amber-800 bg-amber-100 px-1 py-0.5 rounded">
+                                      <span className="text-[9px] font-extrabold text-amber-800">
                                         En curso
                                       </span>
                                     ) : (
-                                      <span className="text-[9px] uppercase font-bold text-slate-500">
+                                      <span className="text-[9px] font-bold text-slate-500">
                                         {asg.activityType === 'pausa_activa' ? 'Pausa' : 'Fitness'}
                                       </span>
                                     )}
@@ -1630,11 +1735,25 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                                       <Lock className="w-2.5 h-2.5" />
                                       <span>
                                         {dayLock.isNonCompliant
-                                          ? 'Incumplida'
+                                          ? dayLock.nonComplianceReason === 'sin_cierre_30m'
+                                            ? 'No cerrada'
+                                            : 'Cerrada (+20m)'
                                           : dayLock.isCompletedAndClosed
                                             ? 'Bloqueada'
                                             : 'En curso'}
                                       </span>
+                                    </button>
+                                  ) : !dayLock.canLoadNow ? (
+                                    <button
+                                      type="button"
+                                      disabled
+                                      className="w-full mt-1 py-1 rounded text-[10px] font-bold border bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed tabular-nums"
+                                    >
+                                      {dayLock.loadWindowState === 'antes_de_30m'
+                                        ? `Abre ${dayLock.unlockTimeHHMM}`
+                                        : dayLock.loadWindowState === 'otro_dia'
+                                          ? 'Solo ese día'
+                                          : 'Cerrada'}
                                     </button>
                                   ) : (
                                     <button
@@ -1654,8 +1773,8 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
 
                       {day.isToday && (
                         <div className="mt-2 text-center">
-                          <span className="text-[9px] font-extrabold uppercase text-red-600 bg-red-100 px-1.5 py-0.5 rounded">
-                            ● Hoy
+                          <span className="text-[10px] font-bold text-red-700">
+                            Hoy
                           </span>
                         </div>
                       )}
@@ -1668,7 +1787,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
         );
       })()}
 
-      {/* Check-In Form in Clean Light Theme */}
+      {/* Check-In Form in Clean Light Theme — Fields start strictly blank until session is loaded */}
       <div id="nuevo-registro-form" className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-8 shadow-sm">
         <div className="border-b border-slate-200 pb-4 mb-6">
           <h3 className="text-lg sm:text-xl font-bold text-slate-900 flex items-center">
@@ -1676,25 +1795,37 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
             Nuevo Registro de Entrada en Sede
           </h3>
           <p className="text-xs sm:text-sm text-slate-500 mt-1">
-            Diligencie la información, verifique las coordenadas GPS, valide su rostro mediante biometría y capture la foto de presencia en el salón.
+            Los campos permanecen en blanco y se llenan automáticamente al cargar tu sesión asignada del día (habilitada desde 30 min antes del inicio y hasta 20 min después de iniciada).
           </p>
         </div>
 
+        {/* Notice when no session is loaded yet */}
+        {!loadedAssignment && (
+          <div className="mb-6 p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs sm:text-sm text-slate-700 flex items-start space-x-3">
+            <Info className="w-5 h-5 text-red-600 shrink-0 mt-0.5" />
+            <div>
+              <p className="font-bold text-slate-900">
+                Campos en blanco hasta cargar sesión asignada
+              </p>
+              <p className="mt-0.5 text-slate-600">
+                Selecciona <strong>«Cargar Sesión de Hoy»</strong> en la sección superior para rellenar los datos de la sede y actividad. Solo se permite cargar el día exacto de la asignación, entre <strong>30 minutos antes</strong> de iniciar y máximo <strong>20 minutos después</strong> de iniciada.
+              </p>
+            </div>
+          </div>
+        )}
+
         {/* Banner if class assignment from administration is loaded */}
         {loadedAssignment && loadedDateInfo && (
-          <div className="mb-6 p-4 rounded-xl bg-gradient-to-r from-red-50 to-rose-50 border border-red-200/90 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fadeIn">
+          <div className="mb-6 p-4 rounded-xl bg-red-50/70 border border-red-200/90 shadow-xs flex flex-col sm:flex-row sm:items-center justify-between gap-3 animate-fadeIn">
             <div className="flex items-start space-x-3">
               <div className="w-9 h-9 rounded-xl bg-red-100 border border-red-200 flex items-center justify-center text-red-600 shrink-0 shadow-2xs">
-                <Sparkles className="w-5 h-5" />
+                <CheckCircle2 className="w-5 h-5" />
               </div>
               <div>
-                <div className="flex items-center space-x-2">
-                  <span className="px-2 py-0.5 rounded text-[10px] font-black bg-red-600 text-white uppercase tracking-wider">
-                    Clase Oficial Asignada
-                  </span>
-                  <span className="text-xs text-slate-500 font-medium">
-                    Programación de Administración
-                  </span>
+                <div className="flex flex-wrap items-center gap-2 text-xs">
+                  <span className="font-bold text-red-700">Sesión Oficial Cargada</span>
+                  <span className="text-slate-400" aria-hidden="true">·</span>
+                  <span className="text-slate-500 font-medium">Programación de Administración</span>
                 </div>
                 <p className="text-sm font-bold text-slate-900 mt-0.5">
                   {loadedAssignment.activityName}
@@ -1704,12 +1835,12 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                     <Calendar className="w-3.5 h-3.5 mr-1" />
                     Fecha Asignada: {loadedDateInfo.formattedLong}
                   </span>
-                  <span>•</span>
-                  <span className="flex items-center font-mono font-bold text-slate-800">
+                  <span aria-hidden="true">·</span>
+                  <span className="flex items-center font-mono tabular-nums font-bold text-slate-800">
                     <Clock className="w-3.5 h-3.5 mr-1" />
                     {loadedAssignment.time} hrs ({getAssignmentDurationMinutes(loadedAssignment, activityCatalog)} min)
                   </span>
-                  <span>•</span>
+                  <span aria-hidden="true">·</span>
                   <span>{loadedAssignment.companyName} ({loadedAssignment.sedeName})</span>
                 </div>
               </div>
@@ -1717,11 +1848,11 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
 
             <button
               type="button"
-              onClick={() => setLoadedAssignmentId(null)}
-              className="self-end sm:self-center px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-red-700 hover:bg-white rounded-lg border border-slate-200 transition"
-              title="Quitar vinculación y usar datos manuales"
+              onClick={clearCheckInFormFields}
+              className="self-end sm:self-center px-3 py-1.5 text-xs font-semibold text-slate-600 hover:text-red-700 hover:bg-white rounded-lg border border-slate-200 transition whitespace-nowrap shrink-0"
+              title="Quitar sesión cargada y dejar campos en blanco"
             >
-              Desvincular
+              Vaciar campos
             </button>
           </div>
         )}
@@ -1743,20 +1874,20 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
               <p className="font-bold text-white">
                 {activeFormLockCheck.lockInfo.isNonCompliant
                   ? activeFormLockCheck.lockInfo.nonComplianceReason === 'sin_cierre_30m'
-                    ? 'Asignación Incumplida y Bloqueada (No cerrada pasados 30 min)'
-                    : 'Asignación Incumplida y Bloqueada (Fuera de horario sin reporte)'
+                    ? 'Sesión No Cerrada y Bloqueada (+30 min máx. · Alarma Desactivada)'
+                    : 'Sesión Cerrada y Bloqueada (No se cargó pasados 20 min del inicio)'
                   : activeFormLockCheck.lockInfo.isCompletedAndClosed
-                    ? 'Asignación Completada y Cerrada (Bloqueada)'
-                    : 'Asignación Actualmente en Curso (Bloqueada)'}
+                    ? 'Sesión Completada y Cerrada (Bloqueada)'
+                    : 'Sesión Actualmente en Curso (Bloqueada)'}
               </p>
               <p className="mt-0.5 text-slate-200">
                 La clase <strong>{activeFormLockCheck.assignment.activityName}</strong> del{' '}
-                <strong className="font-mono">{sessionDate}</strong> a las{' '}
-                <strong className="font-mono">{activeFormLockCheck.assignment.time} hrs</strong>{' '}
+                <strong className="font-mono tabular-nums">{sessionDate}</strong> a las{' '}
+                <strong className="font-mono tabular-nums">{activeFormLockCheck.assignment.time} hrs</strong>{' '}
                 {activeFormLockCheck.lockInfo.isNonCompliant
                   ? activeFormLockCheck.lockInfo.nonComplianceReason === 'sin_cierre_30m'
-                    ? 'excedió los 30 minutos posteriores a finalizar sin registro de salida y quedó bloqueada como incumplida.'
-                    : 'ya está fuera de su horario asignado sin haber sido reportada y quedó bloqueada como incumplida.'
+                    ? 'no fue cerrada en un lapso máximo de 30 minutos; quedó bloqueada como no cerrada y su alarma fue desactivada.'
+                    : 'superó los 20 minutos posteriores al inicio sin cargarse y fue dada por cerrada.'
                   : activeFormLockCheck.lockInfo.isCompletedAndClosed
                     ? 'ya fue completada y cerrada, por lo que no puede repetirse en esta fecha.'
                     : 'ya tiene una sesión en curso. Registra primero la salida de sede.'}
@@ -1776,9 +1907,9 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
         )}
 
         <form onSubmit={handleCheckInSubmit} className="space-y-6">
-          {/* Section 1: Company & Sede Selection */}
+          {/* Section 1: Company & Sede Selection — Blank until session is loaded */}
           <div className="space-y-3">
-            <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center">
+            <h4 className="text-xs font-bold text-slate-700 flex items-center">
               <span className="w-5 h-5 rounded-full bg-red-100 text-red-700 flex items-center justify-center mr-2 text-[11px] font-bold">
                 1
               </span>
@@ -1791,17 +1922,14 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                   <Building2 className="w-3.5 h-3.5 mr-1 text-red-600" />
                   Empresa Cliente *
                 </label>
-                <select
-                  value={selectedCompanyId}
-                  onChange={(e) => handleCompanyChange(e.target.value)}
-                  className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 shadow-sm"
-                >
-                  {companies.map((comp) => (
-                    <option key={comp.id} value={comp.id}>
-                      {comp.name}
-                    </option>
-                  ))}
-                </select>
+                <input
+                  type="text"
+                  readOnly
+                  disabled={!loadedAssignment}
+                  value={selectedCompany?.name || ''}
+                  placeholder=""
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 font-medium focus:outline-none disabled:bg-slate-50/80 disabled:text-slate-500 shadow-xs"
+                />
               </div>
 
               <div>
@@ -1809,40 +1937,37 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                   <MapPin className="w-3.5 h-3.5 mr-1 text-red-600" />
                   Sede / Sucursal Oficial *
                 </label>
-                <select
-                  value={selectedSedeId}
-                  onChange={(e) => {
-                    setSelectedSedeId(e.target.value);
-                    setCurrentGps(null);
-                  }}
-                  className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 shadow-sm"
-                >
-                  {selectedCompany?.sedes.map((sede) => (
-                    <option key={sede.id} value={sede.id}>
-                      {sede.name}
-                    </option>
-                  ))}
-                </select>
+                <input
+                  type="text"
+                  readOnly
+                  disabled={!loadedAssignment}
+                  value={selectedSede?.name || ''}
+                  placeholder=""
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 font-medium focus:outline-none disabled:bg-slate-50/80 disabled:text-slate-500 shadow-xs"
+                />
               </div>
             </div>
 
             {selectedSede && (
               <div className="bg-slate-50 rounded-xl p-3 border border-slate-200 text-xs text-slate-600 flex flex-col sm:flex-row sm:items-center justify-between gap-2 shadow-inner">
                 <div>
-                  <span className="font-bold text-slate-900 block">📍 Dirección: {selectedSede.address}</span>
-                  <span className="text-slate-500 font-medium">Contacto Sede: {selectedSede.contactPerson} ({selectedSede.contactRole})</span>
+                  <span className="font-bold text-slate-900 block">Dirección: {selectedSede.address}</span>
+                  <span className="text-slate-500 font-medium">
+                    Contacto Sede: {selectedSede.contactPerson} ({selectedSede.contactRole})
+                  </span>
                 </div>
-                <div className="text-right">
-                  <span className="text-red-600 font-mono text-[11px] font-bold block">Tel: {selectedSede.contactPhone}</span>
-                  <span className="text-slate-500 text-[10px]">Radio permitido: {selectedSede.geofenceRadiusMeters}m</span>
+                <div className="sm:text-right">
+                  <span className="text-slate-500 text-[11px] font-mono tabular-nums">
+                    Radio permitido: {selectedSede.geofenceRadiusMeters}m
+                  </span>
                 </div>
               </div>
             )}
           </div>
 
-          {/* Section 2: Activity and Schedule */}
+          {/* Section 2: Activity and Schedule — Blank until session is loaded */}
           <div className="space-y-3 pt-2">
-            <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider flex items-center">
+            <h4 className="text-xs font-bold text-slate-700 flex items-center">
               <span className="w-5 h-5 rounded-full bg-red-100 text-red-700 flex items-center justify-center mr-2 text-[11px] font-bold">
                 2
               </span>
@@ -1856,14 +1981,18 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                   Fecha de la Sesión Asignada *
                 </label>
                 <input
-                  type="date"
+                  type="text"
+                  readOnly
+                  disabled={!loadedAssignment}
                   value={sessionDate}
-                  onChange={(e) => setSessionDate(e.target.value)}
-                  className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2 text-sm text-slate-900 font-mono font-bold focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 shadow-sm"
+                  placeholder=""
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2 text-sm text-slate-900 font-mono tabular-nums font-bold focus:outline-none disabled:bg-slate-50/80 disabled:text-slate-500 shadow-xs"
                 />
-                <span className="text-[11px] text-slate-500 mt-1 block font-medium capitalize truncate">
-                  {formatDateFriendlySpanish(sessionDate)}
-                </span>
+                {sessionDate && (
+                  <span className="text-[11px] text-slate-500 mt-1 block font-medium capitalize truncate">
+                    {formatDateFriendlySpanish(sessionDate)}
+                  </span>
+                )}
               </div>
 
               <div>
@@ -1872,14 +2001,13 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                   Hora Programada de la Sesión *
                 </label>
                 <input
-                  type="time"
-                  value={scheduledTime}
-                  onChange={(e) => setScheduledTime(e.target.value)}
-                  className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2 text-sm text-slate-900 font-mono focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 shadow-sm"
+                  type="text"
+                  readOnly
+                  disabled={!loadedAssignment}
+                  value={scheduledTime ? `${scheduledTime} hrs` : ''}
+                  placeholder=""
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2 text-sm text-slate-900 font-mono tabular-nums font-bold focus:outline-none disabled:bg-slate-50/80 disabled:text-slate-500 shadow-xs"
                 />
-                <span className="text-[11px] text-slate-500 mt-1 block font-medium">
-                  Horario de inicio programado
-                </span>
               </div>
 
               <div>
@@ -1887,45 +2015,20 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                   <Activity className="w-3.5 h-3.5 mr-1 text-red-600" />
                   Modalidad de Bienestar *
                 </label>
-                <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const nextAct = pausaActivaOptions[0];
-                      setActivityType('pausa_activa');
-                      setActivityName(nextAct);
-                      setPlannedDurationInput(
-                        String(getDefaultDurationMinutes('pausa_activa', nextAct, activityCatalog))
-                      );
-                    }}
-                    className={`py-2 px-2 text-xs font-bold rounded-xl border text-center transition shadow-sm ${
-                      activityType === 'pausa_activa'
-                        ? 'bg-red-50 border-red-500 text-red-700 font-bold'
-                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Pausa Activa
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const nextAct = claseFitnessOptions[0];
-                      setActivityType('clase_fitness');
-                      setActivityName(nextAct);
-                      setPlannedDurationInput(
-                        String(getDefaultDurationMinutes('clase_fitness', nextAct, activityCatalog))
-                      );
-                    }}
-                    className={`py-2 px-2 text-xs font-bold rounded-xl border text-center transition shadow-sm ${
-                      activityType === 'clase_fitness'
-                        ? 'bg-red-50 border-red-500 text-red-700 font-bold'
-                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:text-slate-900'
-                    }`}
-                  >
-                    Clase Fitness
-                  </button>
-                </div>
+                <input
+                  type="text"
+                  readOnly
+                  disabled={!loadedAssignment}
+                  value={
+                    activityType === 'pausa_activa'
+                      ? 'Pausa Activa'
+                      : activityType === 'clase_fitness'
+                        ? 'Clase Fitness'
+                        : ''
+                  }
+                  placeholder=""
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2 text-sm text-slate-900 font-medium focus:outline-none disabled:bg-slate-50/80 disabled:text-slate-500 shadow-xs"
+                />
               </div>
 
               <div>
@@ -1936,11 +2039,12 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                 <div className="flex items-center space-x-1.5">
                   <button
                     type="button"
+                    disabled={!loadedAssignment}
                     onClick={() => {
                       const cur = attendeesInput === '' ? 0 : parseInt(attendeesInput, 10) || 0;
                       setAttendeesInput(String(Math.max(0, cur - 1)));
                     }}
-                    className="w-9 h-9 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-300 text-slate-700 flex items-center justify-center shrink-0"
+                    className="w-9 h-9 rounded-xl bg-slate-50 hover:bg-slate-100 border border-slate-300 text-slate-700 flex items-center justify-center shrink-0 disabled:opacity-40 disabled:cursor-not-allowed"
                     aria-label="Restar participante"
                   >
                     <Minus className="w-3.5 h-3.5" />
@@ -1949,7 +2053,8 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                     type="text"
                     inputMode="numeric"
                     pattern="[0-9]*"
-                    placeholder="0"
+                    disabled={!loadedAssignment}
+                    placeholder=""
                     value={attendeesInput}
                     onFocus={(e) => e.target.select()}
                     onChange={(e) => {
@@ -1960,28 +2065,26 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                         setAttendeesInput(String(Math.min(999, parseInt(digits, 10))));
                       }
                     }}
-                    onBlur={() => {
-                      if (attendeesInput.trim() === '') setAttendeesInput('0');
-                    }}
-                    className="w-full bg-white border border-slate-300 rounded-xl px-2 py-2 text-center text-sm font-bold text-slate-900 font-mono focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 shadow-sm"
+                    className="w-full bg-white border border-slate-300 rounded-xl px-2 py-2 text-center text-sm font-bold text-slate-900 font-mono tabular-nums focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 disabled:bg-slate-50/80 disabled:text-slate-500 shadow-xs"
                   />
                   <button
                     type="button"
+                    disabled={!loadedAssignment}
                     onClick={() => {
                       const cur = attendeesInput === '' ? 0 : parseInt(attendeesInput, 10) || 0;
                       setAttendeesInput(String(Math.min(999, cur + 1)));
                     }}
-                    className="w-9 h-9 rounded-xl bg-red-600 hover:bg-red-700 text-white flex items-center justify-center shrink-0 shadow-2xs"
+                    className="w-9 h-9 rounded-xl bg-red-600 hover:bg-red-700 text-white flex items-center justify-center shrink-0 shadow-2xs disabled:opacity-40 disabled:cursor-not-allowed"
                     aria-label="Sumar participante"
                   >
                     <Plus className="w-3.5 h-3.5" />
                   </button>
                 </div>
-                <span className="text-[11px] text-slate-500 mt-1 block font-medium">
-                  {loadedAssignment?.expectedAttendees
-                    ? `Inicia en 0 (Esperados: ~${loadedAssignment.expectedAttendees})`
-                    : 'Inicia en 0 • Escribe con teclado'}
-                </span>
+                {loadedAssignment?.expectedAttendees ? (
+                  <span className="text-[11px] text-slate-500 mt-1 block font-medium tabular-nums">
+                    Esperados aprox.: ~{loadedAssignment.expectedAttendees}
+                  </span>
+                ) : null}
               </div>
             </div>
 
@@ -1990,30 +2093,14 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                 <label className="block text-xs font-semibold text-slate-700 mb-1.5">
                   Sub-actividad Específica *
                 </label>
-                <select
+                <input
+                  type="text"
+                  readOnly
+                  disabled={!loadedAssignment}
                   value={activityName}
-                  onChange={(e) => {
-                    const nextAct = e.target.value;
-                    setActivityName(nextAct);
-                    setPlannedDurationInput(
-                      String(getDefaultDurationMinutes(activityType, nextAct, activityCatalog))
-                    );
-                  }}
-                  className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 shadow-sm font-medium"
-                >
-                  {(() => {
-                    const baseOpts =
-                      activityType === 'pausa_activa' ? pausaActivaOptions : claseFitnessOptions;
-                    const mergedOpts = baseOpts.includes(activityName)
-                      ? baseOpts
-                      : [activityName, ...baseOpts];
-                    return mergedOpts.map((act, i) => (
-                      <option key={i} value={act}>
-                        {act}
-                      </option>
-                    ));
-                  })()}
-                </select>
+                  placeholder=""
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 font-medium focus:outline-none disabled:bg-slate-50/80 disabled:text-slate-500 shadow-xs"
+                />
               </div>
 
               <div>
@@ -2022,10 +2109,11 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                 </label>
                 <input
                   type="text"
+                  disabled={!loadedAssignment}
                   value={locationArea}
                   onChange={(e) => setLocationArea(e.target.value)}
-                  placeholder="Ej: Piso 8 - Área de Finanzas / Sala Polivalente"
-                  className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2 text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 shadow-sm"
+                  placeholder=""
+                  className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 disabled:bg-slate-50/80 disabled:text-slate-500 shadow-xs"
                 />
               </div>
             </div>
@@ -2048,22 +2136,20 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                     )}
                   </div>
                   <div>
-                    <div className="flex items-center space-x-2">
+                    <div className="flex flex-wrap items-center gap-2">
                       <span className="text-xs font-bold text-slate-900">
-                        Alarma de Fin de Sesión (Aviso de Salida No Registrada)
+                        Alarma de Fin de Sesión (Se desactiva y bloquea a los 30 min máx. sin cierre)
                       </span>
                       <span
-                        className={`px-2 py-0.5 rounded text-[10px] font-bold ${
-                          alarmEnabled
-                            ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                            : 'bg-slate-200 text-slate-600'
+                        className={`text-[11px] font-bold ${
+                          alarmEnabled ? 'text-emerald-700' : 'text-slate-500'
                         }`}
                       >
-                        {alarmEnabled ? 'Activa' : 'Desactivada'}
+                        · {alarmEnabled ? 'Activa' : 'Desactivada'}
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-500 mt-0.5">
-                      Emite una alerta sonora y en pantalla al cumplirse la duración si aún no has registrado la salida.
+                      Emite alerta sonora al cumplirse la duración. Si pasan 30 minutos máximo sin cerrar la sesión, se da por no cerrada, se bloquea y la alarma se apaga automáticamente.
                     </p>
                   </div>
                 </div>
@@ -2077,7 +2163,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                       setSoundTestFeedback(ok ? 'ok' : 'blocked');
                       setTimeout(() => setSoundTestFeedback('idle'), 4500);
                     }}
-                    className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-red-50 border border-slate-300 hover:border-red-300 text-xs font-bold text-slate-800 hover:text-red-700 transition flex items-center space-x-1.5"
+                    className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-red-50 border border-slate-300 hover:border-red-300 text-xs font-bold text-slate-800 hover:text-red-700 transition flex items-center space-x-1.5 whitespace-nowrap shrink-0"
                     title="Reproducir tono de prueba para verificar el volumen multimedia en tu celular"
                   >
                     <Volume2 className="w-3.5 h-3.5 text-red-600" />
@@ -2097,7 +2183,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                         unlockMobileAlarmAudio();
                         handleEnableBrowserNotif();
                       }}
-                      className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 border border-slate-300 text-[11px] font-semibold text-slate-700 transition"
+                      className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 border border-slate-300 text-[11px] font-semibold text-slate-700 transition whitespace-nowrap shrink-0"
                     >
                       Permitir notificaciones
                     </button>
@@ -2109,7 +2195,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                       unlockMobileAlarmAudio();
                       setAlarmEnabled((prev) => !prev);
                     }}
-                    className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition flex items-center space-x-1.5 ${
+                    className={`px-3 py-1.5 rounded-xl text-xs font-bold border transition flex items-center space-x-1.5 whitespace-nowrap shrink-0 ${
                       alarmEnabled
                         ? 'bg-red-600 text-white border-red-600 shadow-xs'
                         : 'bg-white text-slate-600 border-slate-300 hover:bg-slate-100'
@@ -2137,13 +2223,14 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                       Duración para el aviso:
                     </span>
                     {[15, 20, 30, 45, 50, 60].map((mins) => {
-                      const isSelected = parseInt(plannedDurationInput, 10) === mins;
+                      const isSelected = Boolean(loadedAssignment) && parseInt(plannedDurationInput, 10) === mins;
                       return (
                         <button
                           key={mins}
                           type="button"
+                          disabled={!loadedAssignment}
                           onClick={() => setPlannedDurationInput(String(mins))}
-                          className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition ${
+                          className={`px-2.5 py-1 rounded-lg text-xs font-bold border transition tabular-nums disabled:opacity-40 disabled:cursor-not-allowed ${
                             isSelected
                               ? 'bg-red-600 text-white border-red-600 shadow-2xs'
                               : 'bg-white text-slate-700 border-slate-300 hover:border-red-300'
@@ -2160,13 +2247,15 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                       htmlFor="planned-duration-input"
                       className="text-[11px] font-semibold text-slate-600 whitespace-nowrap"
                     >
-                      Personalizar (min):
+                      Duración (min):
                     </label>
                     <input
                       id="planned-duration-input"
                       type="text"
                       inputMode="numeric"
                       pattern="[0-9]*"
+                      disabled={!loadedAssignment}
+                      placeholder=""
                       value={plannedDurationInput}
                       onFocus={(e) => e.target.select()}
                       onChange={(e) => {
@@ -2178,13 +2267,18 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                         }
                       }}
                       onBlur={() => {
+                        if (!loadedAssignment) return;
                         if (!plannedDurationInput.trim() || parseInt(plannedDurationInput, 10) < 1) {
                           setPlannedDurationInput(
-                            String(getDefaultDurationMinutes(activityType, activityName, activityCatalog))
+                            String(
+                              activityType
+                                ? getDefaultDurationMinutes(activityType, activityName, activityCatalog)
+                                : 20
+                            )
                           );
                         }
                       }}
-                      className="w-16 bg-white border border-slate-300 rounded-lg px-2 py-1 text-center text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-red-500"
+                      className="w-16 bg-white border border-slate-300 rounded-lg px-2 py-1 text-center text-xs font-mono tabular-nums font-bold text-slate-900 focus:outline-none focus:border-red-500 disabled:bg-slate-50/80 disabled:text-slate-500"
                     />
                   </div>
                 </div>
@@ -2194,7 +2288,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
 
           {/* Section 3: High Precision Geolocation Verification */}
           <div className="pt-2">
-            <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2 flex items-center">
+            <h4 className="text-xs font-bold text-slate-700 mb-2 flex items-center">
               <span className="w-5 h-5 rounded-full bg-red-100 text-red-700 flex items-center justify-center mr-2 text-[11px] font-bold">
                 3
               </span>
@@ -2207,32 +2301,13 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
             />
           </div>
 
-          {/* Section 4: Mandatory Facial Recognition Verification */}
+          {/* Section 4: Mandatory Photo Evidence in the Salon */}
           <div className="pt-2">
-            <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2 flex items-center">
+            <h4 className="text-xs font-bold text-slate-700 mb-2 flex items-center">
               <span className="w-5 h-5 rounded-full bg-red-100 text-red-700 flex items-center justify-center mr-2 text-[11px] font-bold">
                 4
               </span>
-              Validación de Entrada mediante Foto del Rostro (Biometría Facial)
-            </h4>
-            <FaceBiometricScanner
-              trainer={currentTrainer}
-              gpsData={currentGps}
-              companyName={selectedCompany?.name || ''}
-              sedeName={selectedSede?.name || ''}
-              verificationData={facialVerification}
-              onVerificationComplete={(data) => setFacialVerification(data)}
-              onVerificationCleared={() => setFacialVerification(null)}
-            />
-          </div>
-
-          {/* Section 5: Mandatory Photo Evidence in the Salon/Venue */}
-          <div className="pt-2">
-            <h4 className="text-xs font-bold text-slate-700 uppercase tracking-wider mb-2 flex items-center">
-              <span className="w-5 h-5 rounded-full bg-red-100 text-red-700 flex items-center justify-center mr-2 text-[11px] font-bold">
-                5
-              </span>
-              Foto Obligatoria de Presencia con Sello
+              Foto Obligatoria de Presencia en el Salón
             </h4>
             <CameraCapture
               trainerName={currentTrainer.name}
@@ -2247,7 +2322,6 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
             />
           </div>
 
-
           {/* Observations optional */}
           <div>
             <label className="block text-xs font-semibold text-slate-700 mb-1">
@@ -2255,28 +2329,33 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
             </label>
             <input
               type="text"
+              disabled={!loadedAssignment}
               value={observations}
               onChange={(e) => setObservations(e.target.value)}
-              placeholder="Ej: Se acordó iniciar con estiramientos de cuello y túnel carpiano..."
-              className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 shadow-sm"
+              placeholder=""
+              className="w-full bg-white border border-slate-300 rounded-xl px-3.5 py-2 text-xs text-slate-900 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 disabled:bg-slate-50/80 disabled:text-slate-500 shadow-xs"
             />
           </div>
 
           {/* Submit Action */}
           <div className="pt-4 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
             <div className="text-xs text-slate-500 font-medium">
-              * Hora de entrada registrada exactamente al presionar enviar.
+              {loadedAssignment
+                ? '* Hora de entrada registrada exactamente al presionar enviar.'
+                : '* Carga una sesión asignada del día de hoy para habilitar el registro.'}
             </div>
 
             <button
               type="submit"
-              disabled={isSubmitting || Boolean(activeFormLockCheck)}
-              className={`px-6 py-3.5 rounded-xl font-bold text-sm flex items-center justify-center space-x-2 transition ${
+              disabled={!loadedAssignment || isSubmitting || Boolean(activeFormLockCheck)}
+              className={`px-6 py-3.5 rounded-xl font-bold text-sm flex items-center justify-center space-x-2 transition whitespace-nowrap shrink-0 ${
                 activeFormLockCheck
                   ? activeFormLockCheck.lockInfo.isNonCompliant
                     ? 'bg-rose-200 text-rose-900 border border-rose-300 cursor-not-allowed'
                     : 'bg-slate-200 text-slate-500 border border-slate-300 cursor-not-allowed'
-                  : 'bg-gradient-to-r from-red-600 via-rose-600 to-red-700 hover:from-red-700 hover:to-rose-800 text-white shadow-xl shadow-red-500/25 hover:scale-[1.02] active:scale-95 disabled:opacity-50'
+                  : !loadedAssignment
+                    ? 'bg-slate-200 text-slate-500 border border-slate-300 cursor-not-allowed'
+                    : 'bg-gradient-to-r from-red-600 via-rose-600 to-red-700 hover:from-red-700 hover:to-rose-800 text-white shadow-xl shadow-red-500/25 disabled:opacity-50'
               }`}
             >
               {activeFormLockCheck ? (
@@ -2284,9 +2363,14 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                   <Lock className="w-5 h-5" />
                   <span>
                     {activeFormLockCheck.lockInfo.isNonCompliant
-                      ? 'Asignación Incumplida y Bloqueada'
-                      : 'Asignación Bloqueada (No se puede repetir)'}
+                      ? 'Sesión Cerrada / Bloqueada'
+                      : 'Sesión Bloqueada'}
                   </span>
+                </>
+              ) : !loadedAssignment ? (
+                <>
+                  <Lock className="w-4 h-4" />
+                  <span>Carga una Sesión para Registrar</span>
                 </>
               ) : (
                 <>

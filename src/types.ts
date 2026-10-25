@@ -67,6 +67,16 @@ export interface FacialVerificationData {
   trainerName: string;
 }
 
+export interface TrainerBiometricSession {
+  trainerId: string;
+  trainerName: string;
+  confidenceScore: number;
+  biometricId: string;
+  authenticatedAt: string;
+  authenticatedIso: string;
+  facePhotoUrl?: string;
+}
+
 export type NonComplianceReason = 'fuera_de_horario' | 'sin_cierre_30m' | 'manual_admin';
 
 export interface ClassAssignment {

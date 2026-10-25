@@ -57,9 +57,9 @@ export const SessionEndAlarmModal: React.FC<SessionEndAlarmModalProps> = ({
     }
   }, [isTestMode, record.id]);
 
-  // Trigger audio alarm pattern immediately & repeat every 3.5 seconds unless muted
+  // Trigger audio alarm pattern immediately & repeat every 3.5 seconds unless muted or 30-min grace exceeded
   useEffect(() => {
-    if (isMuted) {
+    if (isMuted || (!isTestMode && alarmStatus.hasExceededUnclosedGrace)) {
       stopAlarmAudioImmediately();
       return;
     }
@@ -86,11 +86,11 @@ export const SessionEndAlarmModal: React.FC<SessionEndAlarmModalProps> = ({
       clearInterval(interval);
       stopAlarmAudioImmediately();
     };
-  }, [isMuted]);
+  }, [isMuted, isTestMode, alarmStatus.hasExceededUnclosedGrace]);
 
   // If mobile browser blocked autoplay after a cold reload, unlock on the very first touch anywhere
   useEffect(() => {
-    if (!audioBlockedByMobile || isMuted) return;
+    if (!audioBlockedByMobile || isMuted || (!isTestMode && alarmStatus.hasExceededUnclosedGrace)) return;
 
     const onFirstTouch = () => {
       handleManualSoundActivation();
@@ -103,7 +103,7 @@ export const SessionEndAlarmModal: React.FC<SessionEndAlarmModalProps> = ({
       window.removeEventListener('touchstart', onFirstTouch);
       window.removeEventListener('click', onFirstTouch);
     };
-  }, [audioBlockedByMobile, isMuted, handleManualSoundActivation]);
+  }, [audioBlockedByMobile, isMuted, isTestMode, alarmStatus.hasExceededUnclosedGrace, handleManualSoundActivation]);
 
   const elapsedFormatted = formatSecondsClock(alarmStatus.elapsedSeconds);
   const overdueFormatted = formatSecondsClock(alarmStatus.overdueSeconds);
@@ -190,40 +190,40 @@ export const SessionEndAlarmModal: React.FC<SessionEndAlarmModalProps> = ({
                 </span>
                 <span className="text-xs text-slate-600">
                   Duración programada: <strong>{alarmStatus.plannedDurationMinutes} min</strong> (Fin est.{' '}
-                  <strong className="font-mono">{alarmStatus.expectedEndTimeFormatted}</strong>)
+                  <strong className="font-mono tabular-nums">{alarmStatus.expectedEndTimeFormatted}</strong>)
                 </span>
               </div>
             </div>
 
             <div className="text-left sm:text-right bg-white px-3.5 py-2 rounded-xl border border-red-200 shadow-2xs shrink-0">
-              <span className="font-mono text-xl font-black text-red-600 block leading-none">
+              <span className="font-mono tabular-nums text-xl font-black text-red-600 block leading-none">
                 {alarmStatus.isOverdue ? `+${overdueFormatted}` : elapsedFormatted}
               </span>
-              <span className="text-[10px] font-semibold text-slate-500">
+              <span className="text-[10px] font-semibold text-slate-500 tabular-nums">
                 Total en sede: {elapsedFormatted}
               </span>
             </div>
           </div>
 
-          {/* 30-Minute Non-Compliance Auto-Lock Warning */}
+          {/* 30-Minute Max Auto-Block & Alarm Deactivation Warning */}
           <div className="bg-amber-50 border border-amber-300 rounded-2xl p-3.5 text-xs text-amber-950 flex items-start space-x-2.5">
             <AlertTriangle className="w-4 h-4 text-red-600 shrink-0 mt-0.5" />
             <div>
               <span className="font-extrabold text-red-800 block">
-                Bloqueo automático por incumplimiento a los 30 minutos
+                Bloqueo automático y desactivación de alarma en 30 minutos máximo
               </span>
               <span className="text-[11px] text-amber-900">
                 {alarmStatus.isOverdue ? (
                   <>
-                    Tiempo restante antes de marcarse como <strong>INCUMPLIDA</strong> y bloquearse:{' '}
-                    <strong className="font-mono text-red-700">
+                    Tiempo restante antes de darse por <strong>NO CERRADA</strong>, bloquearse y desactivar la alarma:{' '}
+                    <strong className="font-mono tabular-nums text-red-700">
                       {formatSecondsClock(alarmStatus.remainingBeforeNonComplianceSeconds)}
                     </strong>{' '}
-                    (límite <strong className="font-mono">{alarmStatus.autoLockDeadlineFormatted} hrs</strong>).
+                    (límite <strong className="font-mono tabular-nums">{alarmStatus.autoLockDeadlineFormatted} hrs</strong>).
                   </>
                 ) : (
                   <>
-                    Las sesiones no cerradas pasados <strong>30 minutos</strong> del término programado se bloquean y marcan automáticamente como <strong>incumplidas</strong>.
+                    Si la sesión no se cierra en un lapso máximo de <strong>30 minutos</strong> tras finalizar, se dará por <strong>no cerrada</strong>, se bloqueará y la alarma se desactivará automáticamente.
                   </>
                 )}
               </span>

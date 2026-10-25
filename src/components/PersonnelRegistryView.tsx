@@ -25,7 +25,6 @@ import {
   Compass,
   Database,
   Download,
-  DownloadCloud,
   Edit3,
   Eye,
   FileSpreadsheet,
@@ -108,8 +107,6 @@ import {
   saveRecordToFirestore,
   saveSedeToFirestore,
   saveTrainerToFirestore,
-  syncEvidenceRecordsToFirestore,
-  syncWorkspaceDataToFirestore,
 } from '../utils/firestoreDemoSync';
 import { formatDistance, getCurrentPositionAsync } from '../utils/geo';
 import {
@@ -450,7 +447,6 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
   });
 
   const [isSaving, setIsSaving] = useState<boolean>(false);
-  const [isSeedingDemo, setIsSeedingDemo] = useState<boolean>(false);
   const [gettingSedeGps, setGettingSedeGps] = useState<boolean>(false);
 
   // Bitácora de Evidencias (/records) UI & export state
@@ -459,7 +455,6 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
     'all' | 'completado' | 'en_curso' | 'incumplido'
   >('all');
   const [evidenceDateFilter, setEvidenceDateFilter] = useState<string>('');
-  const [isSyncingEvidences, setIsSyncingEvidences] = useState<boolean>(false);
   const [isExportingPdf, setIsExportingPdf] = useState<boolean>(false);
   const [singlePdfRecordId, setSinglePdfRecordId] = useState<string | null>(null);
   const [isEvidencePdfModalOpen, setIsEvidencePdfModalOpen] = useState<boolean>(false);
@@ -982,53 +977,6 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
     catalogList.length +
     personnelList.length +
     clientsList.length;
-
-  const handleSeedDemoData = async () => {
-    setIsSeedingDemo(true);
-    setSaveFeedback(null);
-    try {
-      const res = await syncWorkspaceDataToFirestore();
-      setSaveFeedback({
-        category: activeCategory,
-        type: 'success',
-        message: `Sincronización completada con Firestore: ${res.assignmentsCount} asignaciones y ${res.recordsCount} evidencias verificadas/actualizadas${
-          res.trainersCount + res.companiesCount + res.sedesCount + res.catalogCount > 0
-            ? ` (+${res.trainersCount} entrenadores, ${res.companiesCount} empresas, ${res.sedesCount} sedes, ${res.catalogCount} modalidades)`
-            : ''
-        }.`,
-      });
-    } catch (err) {
-      setFatalFirestoreError(err as Error);
-    } finally {
-      setIsSeedingDemo(false);
-    }
-  };
-
-  const handleSyncEvidenceLog = async () => {
-    setIsSyncingEvidences(true);
-    setSaveFeedback(null);
-    try {
-      if (recordsList.length === 0) {
-        const res = await syncWorkspaceDataToFirestore();
-        setSaveFeedback({
-          category: 'evidences',
-          type: 'success',
-          message: `Bitácora sincronizada en /records: ${res.recordsCount} registros cargados y verificados en Cloud Firestore.`,
-        });
-      } else {
-        const res = await syncEvidenceRecordsToFirestore();
-        setSaveFeedback({
-          category: 'evidences',
-          type: 'success',
-          message: `Bitácora de evidencias sincronizada con /records (${res.syncedCount} actualizados de ${res.totalCount} registros locales).`,
-        });
-      }
-    } catch (err) {
-      setFatalFirestoreError(err as Error);
-    } finally {
-      setIsSyncingEvidences(false);
-    }
-  };
 
   const handleAuditRecordSave = async (updated: AttendanceRecord) => {
     try {
@@ -1794,17 +1742,6 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
 
           <button
             type="button"
-            onClick={handleSeedDemoData}
-            disabled={isSeedingDemo}
-            className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap"
-            title="Sincronizar entrenadores, empresas, sedes y calendario de asignaciones activos con Cloud Firestore"
-          >
-            <DownloadCloud className="w-4 h-4 text-red-400" />
-            <span>{isSeedingDemo ? 'Sincronizando...' : 'Sincronizar Base de Datos'}</span>
-          </button>
-
-          <button
-            type="button"
             onClick={() => void onSignOut()}
             className="px-3 py-2 rounded-xl bg-white hover:bg-rose-50 text-slate-700 hover:text-rose-700 border border-slate-200 hover:border-rose-300 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap"
             title="Cerrar sesión en el Directorio"
@@ -2133,23 +2070,8 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                     </div>
                   </div>
 
-                  {/* Export & Sync Toolbar */}
+                  {/* Export Toolbar */}
                   <div className="flex flex-wrap items-center gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void handleSyncEvidenceLog()}
-                      disabled={isSyncingEvidences}
-                      className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 disabled:opacity-60 text-slate-800 border border-slate-200 text-xs font-bold inline-flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap shrink-0"
-                      title="Sincronizar bitácora local con /records en Cloud Firestore"
-                    >
-                      <RefreshCw
-                        className={`w-3.5 h-3.5 text-red-600 ${
-                          isSyncingEvidences ? 'animate-spin' : ''
-                        }`}
-                      />
-                      <span>{isSyncingEvidences ? 'Sincronizando...' : 'Sincronizar BD'}</span>
-                    </button>
-
                     <button
                       type="button"
                       onClick={handleDownloadDirectoryExcel}
@@ -3504,25 +3426,10 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                 ))}
               </div>
             ) : countsByCategory[activeCategory] === 0 ? (
-              <div className="py-10 text-center space-y-3">
+              <div className="py-10 text-center space-y-2">
                 <p className="text-xs text-slate-600">
                   Aún no hay documentos en <strong className="font-mono">{activeCategoryMeta.collectionPath}</strong>.
                 </p>
-                {activeCategoryMeta.isDemoCore && (
-                  <button
-                    type="button"
-                    onClick={handleSeedDemoData}
-                    disabled={isSeedingDemo}
-                    className="px-4 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer"
-                  >
-                    <DownloadCloud className="w-4 h-4 text-red-400" />
-                    <span>
-                      {isSeedingDemo
-                        ? 'Importando...'
-                        : 'Cargar Entrenadores, Empresas y Sedes del Demo'}
-                    </span>
-                  </button>
-                )}
               </div>
             ) : (
               <>

@@ -322,6 +322,49 @@ function buildUpdatePayloadWithOptionalDeletes(
   return updateData;
 }
 
+function stableDeepEqual(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== typeof b || a === null || b === null) return false;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!stableDeepEqual(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (typeof a === 'object' && typeof b === 'object') {
+    const objA = a as Record<string, unknown>;
+    const objB = b as Record<string, unknown>;
+    const keysA = Object.keys(objA);
+    const keysB = Object.keys(objB);
+    if (keysA.length !== keysB.length) return false;
+    for (const k of keysA) {
+      if (!Object.prototype.hasOwnProperty.call(objB, k)) return false;
+      if (!stableDeepEqual(objA[k], objB[k])) return false;
+    }
+    return true;
+  }
+  return false;
+}
+
+function areOperationalFieldsUnchanged(
+  sanitizedPayload: Record<string, unknown>,
+  existingData: Record<string, unknown>,
+  optionalKeys: readonly string[]
+): boolean {
+  for (const [key, val] of Object.entries(sanitizedPayload)) {
+    if (!stableDeepEqual(val, existingData[key])) {
+      return false;
+    }
+  }
+  for (const optKey of optionalKeys) {
+    if (!(optKey in sanitizedPayload) && optKey in existingData && existingData[optKey] !== undefined) {
+      return false;
+    }
+  }
+  return true;
+}
+
 async function upsertOperationalDoc(params: {
   docRef: DocumentReference<DocumentData>;
   path: string;
@@ -365,6 +408,9 @@ async function upsertOperationalDoc(params: {
   const existingData = snap.data({ serverTimestamps: 'estimate' }) || {};
   if (hasValidServerAuditAndKeys(snap, allowedDataKeys)) {
     if (skipUpdateIfValid && skipUpdateIfValid(existingData)) {
+      return 'unchanged';
+    }
+    if (areOperationalFieldsUnchanged(sanitizedPayload, existingData, optionalKeys)) {
       return 'unchanged';
     }
     try {

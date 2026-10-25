@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import {
   getStoredCompanies,
@@ -20,13 +20,20 @@ import {
   Trainer,
   ClassAssignment,
   ActivityCatalogItem,
+  TrainerBiometricSession,
 } from './types';
 import { Header } from './components/Header';
 import { TrainerCheckInView } from './components/TrainerCheckInView';
+import { TrainerFacialLoginView } from './components/TrainerFacialLoginView';
 import { AdminDashboard } from './components/AdminDashboard';
 import { PersonnelRegistryView } from './components/PersonnelRegistryView';
 import { FirestoreErrorBoundary } from './components/FirestoreErrorBoundary';
-import { getSessionAlarmStatus, unlockMobileAlarmAudio } from './utils/sessionAlarm';
+import {
+  getSessionAlarmStatus,
+  releaseSessionWakeLock,
+  stopAlarmAudioImmediately,
+  unlockMobileAlarmAudio,
+} from './utils/sessionAlarm';
 import {
   doesAssignmentApplyToDate,
   findMatchingAssignmentForRecord,
@@ -60,12 +67,50 @@ import {
   saveTrainerToFirestore,
   seedDemoDataToFirestore,
   syncDataSetsToFirestore,
-  syncEvidenceRecordsToFirestore,
   syncWorkspaceDataToFirestore,
   toSafeDocId,
 } from './utils/firestoreDemoSync';
 import { deriveCompanyLogoText, generateInitialsAvatarDataUrl } from './utils/personnelValidation';
-import { ShieldCheck, CheckCheck, AlertTriangle, RefreshCw } from 'lucide-react';
+import { ShieldCheck, CheckCheck, AlertTriangle } from 'lucide-react';
+
+const TRAINER_SESSION_STORAGE_KEY = 'bscw_trainer_biometric_session_v1';
+
+function readStoredTrainerSession(): TrainerBiometricSession | null {
+  if (typeof window === 'undefined') return null;
+  try {
+    const raw = window.sessionStorage.getItem(TRAINER_SESSION_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<TrainerBiometricSession>;
+    if (
+      typeof parsed?.trainerId === 'string' &&
+      parsed.trainerId.trim().length > 0 &&
+      typeof parsed?.trainerName === 'string' &&
+      typeof parsed?.confidenceScore === 'number' &&
+      typeof parsed?.biometricId === 'string' &&
+      typeof parsed?.authenticatedAt === 'string' &&
+      typeof parsed?.authenticatedIso === 'string'
+    ) {
+      return parsed as TrainerBiometricSession;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function updateStateIfChanged<T>(
+  setter: React.Dispatch<React.SetStateAction<T>>,
+  nextValue: T,
+  onChanged?: (val: T) => void
+) {
+  setter((prev) => {
+    if (JSON.stringify(prev) === JSON.stringify(nextValue)) {
+      return prev;
+    }
+    onChanged?.(nextValue);
+    return nextValue;
+  });
+}
 
 function checkIsMobileOrTablet(): boolean {
   if (typeof window === 'undefined') return false;
@@ -86,11 +131,12 @@ export default function App() {
     checkIsMobileOrTablet()
   );
   const [currentView, setCurrentView] = useState<'trainer' | 'personnel' | 'admin'>('trainer');
-  const [selectedTrainerId, setSelectedTrainerId] = useState<string>('');
+  const [trainerSession, setTrainerSession] = useState<TrainerBiometricSession | null>(() =>
+    readStoredTrainerSession()
+  );
   const [nowTick, setNowTick] = useState<number>(() => Date.now());
   const [initialCalendarReady, setInitialCalendarReady] = useState<boolean>(false);
   const [syncErrorMessage, setSyncErrorMessage] = useState<string | null>(null);
-  const [isRetryingSync, setIsRetryingSync] = useState<boolean>(false);
 
   const { isAuthenticated: isDirectoryAuthenticated, user: directoryUser } = useDirectoryAuth();
 
@@ -104,12 +150,27 @@ export default function App() {
   const pendingRecordsByIdRef = useRef<Map<string, AttendanceRecord>>(new Map());
   const inFlightRecordWritesRef = useRef<Map<string, number>>(new Map());
   const deletedRecordIdsRef = useRef<Set<string>>(new Set());
+  const trainersRef = useRef<Trainer[]>([]);
   const companiesRef = useRef<Company[]>([]);
+  const assignmentsRef = useRef<ClassAssignment[]>([]);
+  const activityCatalogRef = useRef<ActivityCatalogItem[]>([]);
   const recordsRef = useRef<AttendanceRecord[]>([]);
+
+  useEffect(() => {
+    trainersRef.current = trainers;
+  }, [trainers]);
 
   useEffect(() => {
     companiesRef.current = companies;
   }, [companies]);
+
+  useEffect(() => {
+    assignmentsRef.current = assignments;
+  }, [assignments]);
+
+  useEffect(() => {
+    activityCatalogRef.current = activityCatalog;
+  }, [activityCatalog]);
 
   useEffect(() => {
     recordsRef.current = records;
@@ -153,7 +214,7 @@ export default function App() {
         .catch((err) => {
           console.error(err);
           setSyncErrorMessage(
-            'No se pudo sincronizar una asignación con la base de datos. Pulsa "Sincronizar ahora" para reintentar.'
+            'No se pudo guardar una asignación en la base de datos. Verifica tu conexión.'
           );
         })
         .finally(() => {
@@ -193,7 +254,7 @@ export default function App() {
       .catch((err) => {
         console.error(err);
         setSyncErrorMessage(
-          'No se pudo sincronizar un registro de la bitácora de evidencias con Firestore. Pulsa "Sincronizar ahora" para reintentar.'
+          'No se pudo guardar un registro de la bitácora de evidencias en Firestore. Verifica tu conexión.'
         );
       })
       .finally(() => {
@@ -209,26 +270,29 @@ export default function App() {
     return normalized;
   }, []);
 
-  const handleRetryWorkspaceSync = async () => {
-    setIsRetryingSync(true);
+  const handleTrainerSessionAuthenticated = useCallback((session: TrainerBiometricSession) => {
+    setTrainerSession(session);
     try {
-      await syncWorkspaceDataToFirestore();
-      setSyncErrorMessage(null);
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setIsRetryingSync(false);
+      window.sessionStorage.setItem(TRAINER_SESSION_STORAGE_KEY, JSON.stringify(session));
+    } catch {
+      // Ignore sessionStorage quota issues
     }
-  };
-
-  const handleSyncEvidenceDatabase = useCallback(async () => {
-    const res = await syncEvidenceRecordsToFirestore(recordsRef.current);
-    setSyncErrorMessage(null);
-    return res;
   }, []);
 
+  const handleLogoutTrainerSession = useCallback(() => {
+    stopAlarmAudioImmediately();
+    void releaseSessionWakeLock();
+    setTrainerSession(null);
+    try {
+      window.sessionStorage.removeItem(TRAINER_SESSION_STORAGE_KEY);
+    } catch {
+      // Ignore sessionStorage errors
+    }
+  }, []);
+
+  // Slow root compliance tick (15s) to prevent whole-app re-render flicker; active timers run locally in child views
   useEffect(() => {
-    const timer = setInterval(() => setNowTick(Date.now()), 5000);
+    const timer = setInterval(() => setNowTick(Date.now()), 15000);
     const onWakeOrFocus = () => {
       if (document.visibilityState === 'visible') {
         setNowTick(Date.now());
@@ -274,11 +338,16 @@ export default function App() {
     setTrainers(loadedTrainers);
     setAssignments(loadedAssignments);
     setActivityCatalog(loadedCatalog);
-
-    if (loadedTrainers.length > 0) {
-      setSelectedTrainerId(loadedTrainers[0].id);
-    }
   }, []);
+
+  // If a stored biometric session belongs to an inactive or deleted trainer once trainers load, invalidate it
+  useEffect(() => {
+    if (!trainerSession || trainers.length === 0) return;
+    const match = trainers.find((t) => t.id === trainerSession.trainerId && t.active !== false);
+    if (!match) {
+      handleLogoutTrainerSession();
+    }
+  }, [trainerSession, trainers, handleLogoutTrainerSession]);
 
   // Automatic real-time Firestore connection from any device without login
   useEffect(() => {
@@ -330,6 +399,18 @@ export default function App() {
 
       autoSeedTriggeredRef.current = true;
 
+      // Force full reconciliation of all operational collections with Cloud Firestore
+      const trainersToForce =
+        trainersRef.current.length > 0 ? trainersRef.current : initialLocalTrainers;
+      const companiesToForce =
+        companiesRef.current.length > 0 ? companiesRef.current : initialLocalCompanies;
+      const catalogToForce =
+        activityCatalogRef.current.length > 0 ? activityCatalogRef.current : initialLocalCatalog;
+      const assignmentsToForce =
+        assignmentsRef.current.length > 0 ? assignmentsRef.current : initialLocalAssignments;
+      const recordsToForce =
+        recordsRef.current.length > 0 ? recordsRef.current : initialLocalRecords;
+
       if (
         serverEmpty.trainers &&
         serverEmpty.companies &&
@@ -344,35 +425,23 @@ export default function App() {
         return;
       }
 
-      const isFirstCalendarUpgrade = serverEmpty.records || serverEmpty.catalog;
-      const needsCompaniesOrSedes =
-        serverEmpty.companies ||
-        serverEmpty.sedes ||
-        serverEmpty.assignments ||
-        isFirstCalendarUpgrade;
-      const payloadToSync: Parameters<typeof syncDataSetsToFirestore>[0] = {};
-
-      if (serverEmpty.trainers || isFirstCalendarUpgrade) {
-        payloadToSync.trainers = initialLocalTrainers;
-      }
-      if (needsCompaniesOrSedes) {
-        payloadToSync.companies = initialLocalCompanies;
-      }
-      if (serverEmpty.catalog) {
-        payloadToSync.activityCatalog = initialLocalCatalog;
-      }
-      if (serverEmpty.assignments || isFirstCalendarUpgrade) {
-        payloadToSync.assignments = initialLocalAssignments;
-      }
-      if (serverEmpty.records) {
-        payloadToSync.records = initialLocalRecords;
-      }
-
-      if (Object.keys(payloadToSync).length > 0) {
-        syncDataSetsToFirestore(payloadToSync)
-          .then(() => setSyncErrorMessage(null))
-          .catch(console.error);
-      }
+      // Only create missing documents on startup instead of rewriting every server document (prevents snapshot storms & UI flicker)
+      syncDataSetsToFirestore(
+        {
+          trainers: trainersToForce,
+          companies: companiesToForce,
+          activityCatalog: catalogToForce,
+          assignments: assignmentsToForce,
+          records: recordsToForce,
+        },
+        {
+          upsertAssignments: false,
+          upsertCoreEntities: false,
+          upsertRecords: false,
+        }
+      )
+        .then(() => setSyncErrorMessage(null))
+        .catch(console.error);
     };
 
     const syncCombinedCompanies = () => {
@@ -392,14 +461,17 @@ export default function App() {
         }
       });
 
-      const allMergedSedes = Array.from(mergedSedeMap.values());
-      const assembled: Company[] = latestFsCompanies.map((comp) => ({
-        ...comp,
-        sedes: allMergedSedes.filter((s) => s.companyId === comp.id),
-      }));
+      const allMergedSedes = Array.from(mergedSedeMap.values()).sort((a, b) =>
+        a.id.localeCompare(b.id)
+      );
+      const assembled: Company[] = [...latestFsCompanies]
+        .sort((a, b) => a.id.localeCompare(b.id))
+        .map((comp) => ({
+          ...comp,
+          sedes: allMergedSedes.filter((s) => s.companyId === comp.id),
+        }));
       companiesRef.current = assembled;
-      setCompanies(assembled);
-      saveStoredCompanies(assembled);
+      updateStateIfChanged(setCompanies, assembled, saveStoredCompanies);
     };
 
     const unsubTrainers = onSnapshot(
@@ -411,26 +483,24 @@ export default function App() {
           maybeReconcileEmptyServerCollections();
         }
         if (snap.empty) return;
-        const fsTrainers: Trainer[] = snap.docs.map((docSnap) => {
-          const d = docSnap.data();
-          const name = String(d.name || '');
-          return {
-            id: docSnap.id,
-            name,
-            email: String(d.email || ''),
-            phone: String(d.phone || ''),
-            avatar: String(d.avatar || generateInitialsAvatarDataUrl(name)),
-            specialties: Array.isArray(d.specialties)
-              ? d.specialties.map((s) => String(s))
-              : ['Pausas Activas'],
-            active: d.active !== false,
-          };
-        });
-        setTrainers(fsTrainers);
-        saveStoredTrainers(fsTrainers);
-        setSelectedTrainerId((prev) =>
-          fsTrainers.some((t) => t.id === prev) ? prev : fsTrainers[0]?.id || ''
-        );
+        const fsTrainers: Trainer[] = snap.docs
+          .map((docSnap) => {
+            const d = docSnap.data();
+            const name = String(d.name || '');
+            return {
+              id: docSnap.id,
+              name,
+              email: String(d.email || ''),
+              phone: String(d.phone || ''),
+              avatar: String(d.avatar || generateInitialsAvatarDataUrl(name)),
+              specialties: Array.isArray(d.specialties)
+                ? d.specialties.map((s) => String(s))
+                : ['Pausas Activas'],
+              active: d.active !== false,
+            };
+          })
+          .sort((a, b) => a.id.localeCompare(b.id));
+        updateStateIfChanged(setTrainers, fsTrainers, saveStoredTrainers);
       },
       (err) => {
         try {
@@ -592,12 +662,12 @@ export default function App() {
             pendingAssignmentsByIdRef.current.size === 0
           ) {
             reconciledInitialAssignmentsRef.current = true;
-            setAssignments([]);
-            saveStoredAssignments([]);
+            updateStateIfChanged<ClassAssignment[]>(setAssignments, [], saveStoredAssignments);
           } else if (pendingAssignmentsByIdRef.current.size > 0) {
-            const optimisticOnly = Array.from(pendingAssignmentsByIdRef.current.values());
-            setAssignments(optimisticOnly);
-            saveStoredAssignments(optimisticOnly);
+            const optimisticOnly = Array.from(pendingAssignmentsByIdRef.current.values()).sort(
+              (a, b) => a.id.localeCompare(b.id)
+            );
+            updateStateIfChanged(setAssignments, optimisticOnly, saveStoredAssignments);
           }
           return;
         }
@@ -617,9 +687,10 @@ export default function App() {
           }
         });
 
-        const mergedList = Array.from(mergedMap.values());
-        setAssignments(mergedList);
-        saveStoredAssignments(mergedList);
+        const mergedList = Array.from(mergedMap.values()).sort((a, b) =>
+          a.id.localeCompare(b.id)
+        );
+        updateStateIfChanged(setAssignments, mergedList, saveStoredAssignments);
       },
       (err) => {
         setSyncErrorMessage(
@@ -680,12 +751,14 @@ export default function App() {
             autoSeedTriggeredRef.current &&
             pendingRecordsByIdRef.current.size === 0
           ) {
-            setRecords([]);
-            saveStoredRecords([]);
+            updateStateIfChanged<AttendanceRecord[]>(setRecords, [], saveStoredRecords);
           } else if (pendingRecordsByIdRef.current.size > 0) {
-            const optimisticOnly = Array.from(pendingRecordsByIdRef.current.values());
-            setRecords(optimisticOnly);
-            saveStoredRecords(optimisticOnly);
+            const optimisticOnly = Array.from(pendingRecordsByIdRef.current.values()).sort(
+              (a, b) =>
+                `${b.date}T${b.checkInTime}`.localeCompare(`${a.date}T${a.checkInTime}`) ||
+                b.id.localeCompare(a.id)
+            );
+            updateStateIfChanged(setRecords, optimisticOnly, saveStoredRecords);
           }
           return;
         }
@@ -708,11 +781,10 @@ export default function App() {
         mergedRecords.sort((a, b) => {
           const keyA = `${a.date}T${a.checkInTime}`;
           const keyB = `${b.date}T${b.checkInTime}`;
-          return keyB.localeCompare(keyA);
+          return keyB.localeCompare(keyA) || b.id.localeCompare(a.id);
         });
 
-        setRecords(mergedRecords);
-        saveStoredRecords(mergedRecords);
+        updateStateIfChanged(setRecords, mergedRecords, saveStoredRecords);
       },
       (err) => {
         setSyncErrorMessage(
@@ -736,19 +808,20 @@ export default function App() {
         }
         if (snap.empty) return;
         serverEmpty.catalog = false;
-        const fsCatalog: ActivityCatalogItem[] = snap.docs.map((docSnap) => {
-          const d = docSnap.data();
-          return {
-            id: docSnap.id,
-            name: String(d.name || ''),
-            activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
-            defaultDurationMinutes: Number(d.defaultDurationMinutes ?? 20),
-            ...(typeof d.description === 'string' ? { description: d.description } : {}),
-            active: d.active !== false,
-          };
-        });
-        setActivityCatalog(fsCatalog);
-        saveStoredActivityCatalog(fsCatalog);
+        const fsCatalog: ActivityCatalogItem[] = snap.docs
+          .map((docSnap): ActivityCatalogItem => {
+            const d = docSnap.data();
+            return {
+              id: docSnap.id,
+              name: String(d.name || ''),
+              activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
+              defaultDurationMinutes: Number(d.defaultDurationMinutes ?? 20),
+              ...(typeof d.description === 'string' ? { description: d.description } : {}),
+              active: d.active !== false,
+            };
+          })
+          .sort((a, b) => a.id.localeCompare(b.id));
+        updateStateIfChanged(setActivityCatalog, fsCatalog, saveStoredActivityCatalog);
       },
       (err) => {
         try {
@@ -788,7 +861,10 @@ export default function App() {
       if (!alarm.hasExceededUnclosedGrace) return rec;
 
       recordsChanged = true;
-      const autoNote = `[Sistema BSCW] Bloqueada y marcada como INCUMPLIDA por no registrar salida pasados 30 min del fin programado (${alarm.expectedEndTimeFormatted} hrs).`;
+      stopAlarmAudioImmediately();
+      void releaseSessionWakeLock();
+
+      const autoNote = `[Sistema BSCW] Sesión dada por NO CERRADA, bloqueada y alarma desactivada automáticamente en el lapso máximo de 30 min tras finalizar (${alarm.autoLockDeadlineFormatted} hrs).`;
       const mergedObs = rec.observations
         ? rec.observations.includes('[Sistema BSCW]')
           ? rec.observations
@@ -800,6 +876,7 @@ export default function App() {
         status: 'incumplido',
         nonComplianceReason: 'sin_cierre_30m',
         markedNonCompliantAt: nowTimeStr,
+        alarmEnabled: false,
         alarmSnoozedUntilIso: null,
         observations: mergedObs,
       };
@@ -845,7 +922,8 @@ export default function App() {
         if (matchedRec) continue;
 
         const win = getAssignmentScheduledWindowMs(currentAsg, checkDate, activityCatalog);
-        if (win && nowTick > win.endMs) {
+        // Close & lock session if 20 minutes have elapsed since start time without loading/check-in (or past date)
+        if ((win && nowTick > win.loadCloseMs) || checkDate < todayStr) {
           currentAsg = markAssignmentDateNonCompliant(currentAsg, checkDate, 'fuera_de_horario');
           assignmentsChanged = true;
         }
@@ -912,59 +990,81 @@ export default function App() {
     setCurrentView(view);
   };
 
-  const syncAssignmentLockFromRecord = (record: AttendanceRecord) => {
-    const matchedAsg = findMatchingAssignmentForRecord(record, assignments);
-    if (!matchedAsg) return;
+  const syncAssignmentLockFromRecord = useCallback(
+    (record: AttendanceRecord) => {
+      const currentAssignments = assignmentsRef.current;
+      const matchedAsg = findMatchingAssignmentForRecord(record, currentAssignments);
+      if (!matchedAsg) return;
 
-    if (record.status === 'completado') {
-      const lockedAsg = toggleAssignmentDateLock(matchedAsg, record.date, true);
-      const normalized = persistAssignmentToFirestore(lockedAsg);
-      const updatedAsgs = assignments.map((a) => (a.id === normalized.id ? normalized : a));
-      setAssignments(updatedAsgs);
-      saveStoredAssignments(updatedAsgs);
-    } else if (record.status === 'incumplido') {
-      const breachedAsg = markAssignmentDateNonCompliant(
-        matchedAsg,
-        record.date,
-        record.nonComplianceReason || 'sin_cierre_30m'
+      if (record.status === 'completado') {
+        const lockedAsg = toggleAssignmentDateLock(matchedAsg, record.date, true);
+        const normalized = persistAssignmentToFirestore(lockedAsg);
+        const updatedAsgs = currentAssignments.map((a) =>
+          a.id === normalized.id ? normalized : a
+        );
+        assignmentsRef.current = updatedAsgs;
+        setAssignments(updatedAsgs);
+        saveStoredAssignments(updatedAsgs);
+      } else if (record.status === 'incumplido') {
+        const breachedAsg = markAssignmentDateNonCompliant(
+          matchedAsg,
+          record.date,
+          record.nonComplianceReason || 'sin_cierre_30m'
+        );
+        const normalized = persistAssignmentToFirestore(breachedAsg);
+        const updatedAsgs = currentAssignments.map((a) =>
+          a.id === normalized.id ? normalized : a
+        );
+        assignmentsRef.current = updatedAsgs;
+        setAssignments(updatedAsgs);
+        saveStoredAssignments(updatedAsgs);
+      }
+    },
+    [persistAssignmentToFirestore]
+  );
+
+  // Record handlers (automatically synced with Firestore /records and stable across renders)
+  const handleSaveRecord = useCallback(
+    (newRecord: AttendanceRecord) => {
+      const currentAssignments = assignmentsRef.current;
+      const currentRecords = recordsRef.current;
+      const matchedAsg = findMatchingAssignmentForRecord(newRecord, currentAssignments);
+      const recordWithAsg =
+        matchedAsg && !newRecord.assignmentId
+          ? { ...newRecord, assignmentId: matchedAsg.id }
+          : newRecord;
+
+      const normalized = persistRecordToFirestore(recordWithAsg);
+      const updated = [normalized, ...currentRecords.filter((r) => r.id !== normalized.id)];
+      recordsRef.current = updated;
+      setRecords(updated);
+      saveStoredRecords(updated);
+      syncAssignmentLockFromRecord(normalized);
+    },
+    [persistRecordToFirestore, syncAssignmentLockFromRecord]
+  );
+
+  const handleUpdateRecord = useCallback(
+    (updatedRecord: AttendanceRecord) => {
+      const currentAssignments = assignmentsRef.current;
+      const currentRecords = recordsRef.current;
+      const matchedAsg = findMatchingAssignmentForRecord(updatedRecord, currentAssignments);
+      const recordWithAsg =
+        matchedAsg && !updatedRecord.assignmentId
+          ? { ...updatedRecord, assignmentId: matchedAsg.id }
+          : updatedRecord;
+
+      const normalized = persistRecordToFirestore(recordWithAsg);
+      const updated = currentRecords.map((r) =>
+        r.id === updatedRecord.id || r.id === normalized.id ? normalized : r
       );
-      const normalized = persistAssignmentToFirestore(breachedAsg);
-      const updatedAsgs = assignments.map((a) => (a.id === normalized.id ? normalized : a));
-      setAssignments(updatedAsgs);
-      saveStoredAssignments(updatedAsgs);
-    }
-  };
-
-  // Record handlers (automatically synced with Firestore /records)
-  const handleSaveRecord = (newRecord: AttendanceRecord) => {
-    const matchedAsg = findMatchingAssignmentForRecord(newRecord, assignments);
-    const recordWithAsg =
-      matchedAsg && !newRecord.assignmentId
-        ? { ...newRecord, assignmentId: matchedAsg.id }
-        : newRecord;
-
-    const normalized = persistRecordToFirestore(recordWithAsg);
-    const updated = [normalized, ...records.filter((r) => r.id !== normalized.id)];
-    setRecords(updated);
-    saveStoredRecords(updated);
-    syncAssignmentLockFromRecord(normalized);
-  };
-
-  const handleUpdateRecord = (updatedRecord: AttendanceRecord) => {
-    const matchedAsg = findMatchingAssignmentForRecord(updatedRecord, assignments);
-    const recordWithAsg =
-      matchedAsg && !updatedRecord.assignmentId
-        ? { ...updatedRecord, assignmentId: matchedAsg.id }
-        : updatedRecord;
-
-    const normalized = persistRecordToFirestore(recordWithAsg);
-    const updated = records.map((r) =>
-      r.id === updatedRecord.id || r.id === normalized.id ? normalized : r
-    );
-    setRecords(updated);
-    saveStoredRecords(updated);
-    syncAssignmentLockFromRecord(normalized);
-  };
+      recordsRef.current = updated;
+      setRecords(updated);
+      saveStoredRecords(updated);
+      syncAssignmentLockFromRecord(normalized);
+    },
+    [persistRecordToFirestore, syncAssignmentLockFromRecord]
+  );
 
   const handleDeleteRecord = (recordId: string) => {
     const safeId = toSafeDocId(recordId, 'rec');
@@ -1084,6 +1184,9 @@ export default function App() {
     const updated = trainers.map((t) => (t.id === updatedTrainer.id ? updatedTrainer : t));
     setTrainers(updated);
     saveStoredTrainers(updated);
+    if (updatedTrainer.active === false && trainerSession?.trainerId === updatedTrainer.id) {
+      handleLogoutTrainerSession();
+    }
     saveTrainerToFirestore(updatedTrainer).catch(console.error);
   };
 
@@ -1091,8 +1194,8 @@ export default function App() {
     const updated = trainers.filter((t) => t.id !== trainerId);
     setTrainers(updated);
     saveStoredTrainers(updated);
-    if (selectedTrainerId === trainerId && updated.length > 0) {
-      setSelectedTrainerId(updated[0].id);
+    if (trainerSession?.trainerId === trainerId) {
+      handleLogoutTrainerSession();
     }
     deleteTrainerFromFirestore(trainerId).catch(console.error);
   };
@@ -1189,20 +1292,38 @@ export default function App() {
     seedDemoDataToFirestore().catch(console.error);
   };
 
-  const currentTrainer = trainers.find((t) => t.id === selectedTrainerId) || trainers[0];
-  const activeSessionCount = records.filter((r) => r.status === 'en_curso').length;
-  const overdueSessionCount = records.filter(
+  const authenticatedTrainer = useMemo(() => {
+    if (!trainerSession) return null;
+    return trainers.find((t) => t.id === trainerSession.trainerId && t.active !== false) || null;
+  }, [trainerSession, trainers]);
+
+  // Strict per-trainer isolation: each trainer only receives their own assignments and records
+  const isolatedTrainerAssignments = useMemo(() => {
+    if (!authenticatedTrainer) return [];
+    return assignments.filter((a) => a.trainerId === authenticatedTrainer.id);
+  }, [assignments, authenticatedTrainer]);
+
+  const isolatedTrainerRecords = useMemo(() => {
+    if (!authenticatedTrainer) return [];
+    return records.filter((r) => r.trainerId === authenticatedTrainer.id);
+  }, [records, authenticatedTrainer]);
+
+  const isTrainerPortalActive = isMobileOrTablet || currentView === 'trainer';
+  const headerVisibleRecords = isTrainerPortalActive ? isolatedTrainerRecords : records;
+
+  const activeSessionCount = headerVisibleRecords.filter((r) => r.status === 'en_curso').length;
+  const overdueSessionCount = headerVisibleRecords.filter(
     (r) => r.status === 'en_curso' && getSessionAlarmStatus(r, activityCatalog, nowTick).isOverdue
   ).length;
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col selection:bg-red-600 selection:text-white font-sans">
       <Header
-        currentView={isMobileOrTablet ? 'trainer' : currentView}
+        currentView={isTrainerPortalActive ? 'trainer' : currentView}
         onViewChange={handleViewChange}
-        trainers={trainers}
-        selectedTrainerId={selectedTrainerId}
-        onTrainerChange={setSelectedTrainerId}
+        authenticatedTrainer={authenticatedTrainer}
+        trainerSession={trainerSession}
+        onLogoutTrainerSession={handleLogoutTrainerSession}
         activeSessionCount={activeSessionCount}
         overdueSessionCount={overdueSessionCount}
         isMobileOrTablet={isMobileOrTablet}
@@ -1211,45 +1332,43 @@ export default function App() {
       />
 
       {syncErrorMessage && (
-        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2.5 text-xs text-amber-900">
-          <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2.5 text-xs text-amber-900 print:hidden">
+          <div className="max-w-7xl mx-auto flex items-center justify-between gap-2">
             <div className="flex items-center gap-2 font-semibold">
               <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
               <span>{syncErrorMessage}</span>
             </div>
-            <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={handleRetryWorkspaceSync}
-                disabled={isRetryingSync}
-                className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white font-bold inline-flex items-center gap-1.5 cursor-pointer"
-              >
-                <RefreshCw className={`w-3.5 h-3.5 ${isRetryingSync ? 'animate-spin' : ''}`} />
-                <span>{isRetryingSync ? 'Sincronizando...' : 'Sincronizar ahora'}</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setSyncErrorMessage(null)}
-                className="px-2 py-1 text-amber-700 hover:text-amber-950 font-bold"
-              >
-                ✕
-              </button>
-            </div>
+            <button
+              type="button"
+              onClick={() => setSyncErrorMessage(null)}
+              className="px-2 py-1 text-amber-700 hover:text-amber-950 font-bold"
+            >
+              ✕
+            </button>
           </div>
         </div>
       )}
 
       <main className="flex-1 pb-16">
-        {(isMobileOrTablet || currentView === 'trainer') && currentTrainer && (
-          <TrainerCheckInView
-            currentTrainer={currentTrainer}
-            companies={companies}
-            records={records}
-            assignments={assignments}
-            activityCatalog={activityCatalog}
-            onSaveRecord={handleSaveRecord}
-            onUpdateRecord={handleUpdateRecord}
-          />
+        {isTrainerPortalActive && (
+          authenticatedTrainer ? (
+            <TrainerCheckInView
+              currentTrainer={authenticatedTrainer}
+              trainerSession={trainerSession}
+              onLogoutTrainerSession={handleLogoutTrainerSession}
+              companies={companies}
+              records={isolatedTrainerRecords}
+              assignments={isolatedTrainerAssignments}
+              activityCatalog={activityCatalog}
+              onSaveRecord={handleSaveRecord}
+              onUpdateRecord={handleUpdateRecord}
+            />
+          ) : (
+            <TrainerFacialLoginView
+              trainers={trainers}
+              onSessionAuthenticated={handleTrainerSessionAuthenticated}
+            />
+          )
         )}
 
         {!isMobileOrTablet && currentView === 'personnel' && (
@@ -1286,7 +1405,6 @@ export default function App() {
               onUpdateCatalogItem={handleUpdateCatalogItem}
               onDeleteCatalogItem={handleDeleteCatalogItem}
               onResetData={handleResetData}
-              onSyncEvidenceDatabase={handleSyncEvidenceDatabase}
               isDirectoryAuthenticated={isDirectoryAuthenticated}
             />
           </div>

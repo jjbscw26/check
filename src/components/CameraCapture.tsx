@@ -279,8 +279,8 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({
           <h4 className="text-sm font-bold text-slate-800 flex items-center">
             <Camera className="w-4 h-4 mr-2 text-red-600 shrink-0" />
             {recordType === 'SALIDA'
-              ? 'Foto Obligatoria de Salida en Salón / Sede'
-              : 'Foto Obligatoria de Presencia en Salón / Sede'}
+              ? 'Foto Obligatoria de Salida en el Salón'
+              : 'Foto Obligatoria de Presencia en el Salón'}
           </h4>
           <p className="text-xs text-slate-500">
             Se estampará automáticamente el sello de {recordType === 'SALIDA' ? 'SALIDA' : 'ENTRADA'}, hora exacta, GPS y entrenador.

@@ -81,7 +81,6 @@ interface AdminDashboardProps {
   onUpdateCatalogItem: (item: ActivityCatalogItem, previousName?: string) => void;
   onDeleteCatalogItem: (id: string) => void;
   onResetData: () => void;
-  onSyncEvidenceDatabase?: () => Promise<{ syncedCount: number; totalCount: number }>;
   isDirectoryAuthenticated?: boolean;
 }
 
@@ -109,7 +108,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onUpdateCatalogItem,
   onDeleteCatalogItem,
   onResetData,
-  onSyncEvidenceDatabase,
   isDirectoryAuthenticated = false,
 }) => {
   const [activeTab, setActiveTab] = useState<'reports' | 'schedule' | 'activity_types' | 'log' | 'sedes' | 'trainers' | 'personnel'>('reports');
@@ -159,8 +157,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [logViewMode, setLogViewMode] = useState<'table' | 'gallery'>('table');
   const [isEvidencePdfModalOpen, setIsEvidencePdfModalOpen] = useState<boolean>(false);
   const [isExportingLogPdf, setIsExportingLogPdf] = useState<boolean>(false);
-  const [isSyncingLogDb, setIsSyncingLogDb] = useState<boolean>(false);
-  const [logSyncFeedback, setLogSyncFeedback] = useState<string | null>(null);
   const [lightboxState, setLightboxState] = useState<{
     record: AttendanceRecord;
     slot: EvidencePhotoSlot;
@@ -428,31 +424,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     }
   };
 
-  const handleManualSyncLogDb = async () => {
-    if (!onSyncEvidenceDatabase) return;
-    setIsSyncingLogDb(true);
-    setLogSyncFeedback(null);
-    try {
-      const res = await onSyncEvidenceDatabase();
-      setLogSyncFeedback(
-        `Bitácora sincronizada en Cloud Firestore (/records): ${res.totalCount} registro(s) respaldado(s)${
-          res.syncedCount > 0 ? ` (${res.syncedCount} actualizado(s))` : ' al día'
-        }.`
-      );
-    } catch {
-      setLogSyncFeedback('No fue posible completar la sincronización manual con Firestore.');
-    } finally {
-      setIsSyncingLogDb(false);
-    }
-  };
-
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-6">
       {/* Top Banner & Tab Navigation in Light Theme */}
-      <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-6 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-4">
-        <div>
+      <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-6 shadow-sm flex flex-col gap-4">
+        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
           <div className="flex items-center space-x-3">
-            <span className="p-2.5 rounded-xl bg-red-50 text-red-600 border border-red-200/80 shadow-sm">
+            <span className="p-2.5 rounded-xl bg-red-50 text-red-600 border border-red-200/80 shadow-sm shrink-0">
               <BarChart3 className="w-5 h-5" />
             </span>
             <div>
@@ -1028,23 +1006,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   </button>
                 </div>
 
-                {onSyncEvidenceDatabase && (
-                  <button
-                    type="button"
-                    onClick={() => void handleManualSyncLogDb()}
-                    disabled={isSyncingLogDb}
-                    className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
-                    title="Sincronizar y respaldar todos los registros de evidencia en Cloud Firestore (/records)"
-                  >
-                    <RefreshCw
-                      className={`w-3.5 h-3.5 text-red-400 ${
-                        isSyncingLogDb ? 'animate-spin' : ''
-                      }`}
-                    />
-                    <span>{isSyncingLogDb ? 'Sincronizando...' : 'Sincronizar BD'}</span>
-                  </button>
-                )}
-
                 <button
                   type="button"
                   onClick={handleExportLogExcel}
@@ -1081,22 +1042,6 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </button>
               </div>
             </div>
-
-            {logSyncFeedback && (
-              <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-3.5 py-2.5 text-xs font-semibold text-emerald-900 flex items-center justify-between gap-2">
-                <div className="flex items-center gap-2">
-                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
-                  <span>{logSyncFeedback}</span>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => setLogSyncFeedback(null)}
-                  className="text-emerald-700 hover:text-emerald-950 font-bold cursor-pointer"
-                >
-                  ✕
-                </button>
-              </div>
-            )}
 
             {/* Search & Filters */}
             <div className="flex flex-col gap-3">
