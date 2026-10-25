@@ -74,6 +74,7 @@ import {
   toSafeDocId,
 } from './utils/firestoreDemoSync';
 import { deriveCompanyLogoText, generateInitialsAvatarDataUrl } from './utils/personnelValidation';
+import { collectMissingCatalogItemsFromTrainers } from './utils/specialtyDisciplines';
 import { ShieldCheck, CheckCheck } from 'lucide-react';
 
 const TRAINER_SESSION_STORAGE_KEY = 'bscw_trainer_biometric_session_v1';
@@ -156,6 +157,7 @@ export default function App() {
   const deletedRecordIdsRef = useRef<Set<string>>(new Set());
   const seededNewModalitiesRef = useRef<boolean>(false);
   const deletedCatalogIdsRef = useRef<Set<string>>(new Set());
+  const autoSyncedSpecialtyIdsRef = useRef<Set<string>>(new Set());
   const trainersRef = useRef<Trainer[]>([]);
   const companiesRef = useRef<Company[]>([]);
   const assignmentsRef = useRef<ClassAssignment[]>([]);
@@ -437,6 +439,27 @@ export default function App() {
       }
     };
 
+    const syncMissingTrainerSpecialtiesIntoCatalog = (
+      currentTrainers: Trainer[],
+      currentCatalog: ActivityCatalogItem[]
+    ) => {
+      if (!serverSeen.trainers || !serverSeen.catalog) return;
+      if (currentTrainers.length === 0) return;
+
+      const missingItems = collectMissingCatalogItemsFromTrainers(currentTrainers, currentCatalog);
+      for (const item of missingItems) {
+        const safeCatId = toSafeDocId(item.id, 'cat');
+        if (
+          deletedCatalogIdsRef.current.has(safeCatId) ||
+          autoSyncedSpecialtyIdsRef.current.has(safeCatId)
+        ) {
+          continue;
+        }
+        autoSyncedSpecialtyIdsRef.current.add(safeCatId);
+        void saveActivityCatalogItemToFirestore(item, { onlyIfMissing: true }).catch(console.error);
+      }
+    };
+
     const maybeReconcileEmptyServerCollections = () => {
       if (autoSeedTriggeredRef.current) return;
       const allSeen =
@@ -547,7 +570,11 @@ export default function App() {
             };
           })
           .sort((a, b) => a.id.localeCompare(b.id));
+        trainersRef.current = fsTrainers;
         updateStateIfChanged(setTrainers, fsTrainers, saveStoredTrainers);
+        if (!snap.metadata.fromCache) {
+          syncMissingTrainerSpecialtiesIntoCatalog(fsTrainers, activityCatalogRef.current);
+        }
       },
       (err) => {
         try {
@@ -886,7 +913,11 @@ export default function App() {
           }
         }
 
+        activityCatalogRef.current = fsCatalog;
         updateStateIfChanged(setActivityCatalog, fsCatalog, saveStoredActivityCatalog);
+        if (!snap.metadata.fromCache) {
+          syncMissingTrainerSpecialtiesIntoCatalog(trainersRef.current, fsCatalog);
+        }
       },
       (err) => {
         try {
@@ -1241,22 +1272,49 @@ export default function App() {
     deleteSedeFromFirestore(sedeId).catch(console.error);
   };
 
-  // Trainer CRUD handlers (automatically synced with Firestore /trainers)
+  const syncSingleTrainerSpecialtiesToCatalog = (trainerObj: Trainer) => {
+    const missingItems = collectMissingCatalogItemsFromTrainers(
+      [trainerObj],
+      activityCatalogRef.current
+    );
+    if (missingItems.length === 0) return;
+
+    const filteredNew = missingItems.filter(
+      (item) => !deletedCatalogIdsRef.current.has(toSafeDocId(item.id, 'cat'))
+    );
+    if (filteredNew.length === 0) return;
+
+    const mergedCatalog = [...activityCatalogRef.current, ...filteredNew];
+    activityCatalogRef.current = mergedCatalog;
+    setActivityCatalog(mergedCatalog);
+    saveStoredActivityCatalog(mergedCatalog);
+
+    filteredNew.forEach((item) => {
+      autoSyncedSpecialtyIdsRef.current.add(toSafeDocId(item.id, 'cat'));
+      void saveActivityCatalogItemToFirestore(item, { onlyIfMissing: true }).catch(console.error);
+    });
+  };
+
+  // Trainer CRUD handlers (automatically synced with Firestore /trainers + /activity_catalog)
   const handleAddTrainer = (newTrainer: Trainer) => {
     const updated = [...trainers, newTrainer];
+    trainersRef.current = updated;
     setTrainers(updated);
     saveStoredTrainers(updated);
     saveTrainerToFirestore(newTrainer).catch(console.error);
+    syncSingleTrainerSpecialtiesToCatalog(newTrainer);
   };
 
   const handleUpdateTrainer = (updatedTrainer: Trainer) => {
     const updated = trainers.map((t) => (t.id === updatedTrainer.id ? updatedTrainer : t));
+    trainersRef.current = updated;
     setTrainers(updated);
     saveStoredTrainers(updated);
     if (updatedTrainer.active === false && trainerSession?.trainerId === updatedTrainer.id) {
       handleLogoutTrainerSession();
     }
     saveTrainerToFirestore(updatedTrainer).catch(console.error);
+    syncSingleTrainerSpecialtiesToCatalog(updatedTrainer);
   };
 
   const handleDeleteTrainer = (trainerId: string) => {

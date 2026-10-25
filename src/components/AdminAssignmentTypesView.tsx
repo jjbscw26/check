@@ -7,6 +7,7 @@ import {
   ALL_ACTIVITY_TYPES,
   ClassAssignment,
   normalizeActivityType,
+  Trainer,
 } from '../types';
 import {
   Activity,
@@ -27,10 +28,16 @@ import {
   Ban,
 } from 'lucide-react';
 import { getAssignmentDurationMinutes, getDefaultDurationMinutes } from '../utils/sessionAlarm';
+import {
+  collectMissingCatalogItemsFromTrainers,
+  getAssignmentDisciplineGroups,
+  resolveDisciplineSelection,
+} from '../utils/specialtyDisciplines';
 
 interface AdminAssignmentTypesViewProps {
   activityCatalog: ActivityCatalogItem[];
   assignments: ClassAssignment[];
+  trainers?: Trainer[];
   onAddCatalogItem: (item: ActivityCatalogItem) => void;
   onUpdateCatalogItem: (item: ActivityCatalogItem, previousName?: string) => void;
   onDeleteCatalogItem: (id: string) => void;
@@ -143,6 +150,7 @@ const MODALITY_CONFIG: Record<ActivityType, ModalityMeta> = {
 export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> = ({
   activityCatalog,
   assignments,
+  trainers = [],
   onAddCatalogItem,
   onUpdateCatalogItem,
   onDeleteCatalogItem,
@@ -263,15 +271,25 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
   };
 
   const handleQuickChangeActivityName = (asg: ClassAssignment, newName: string) => {
-    const normType = normalizeActivityType(asg.activityType);
+    const currentNormType = normalizeActivityType(asg.activityType);
+    const resolved = resolveDisciplineSelection(newName, currentNormType, activityCatalog);
     onUpdateAssignment({
       ...asg,
-      activityType: normType,
-      activityName: newName,
-      durationMinutes: getDefaultDurationMinutes(normType, newName, activityCatalog),
+      activityType: resolved.activityType,
+      activityName: resolved.activityName,
+      durationMinutes: getDefaultDurationMinutes(
+        resolved.activityType,
+        resolved.activityName,
+        activityCatalog
+      ),
     });
     triggerSavedBadge(asg.id);
   };
+
+  const uncatalogedTrainerSpecialties = collectMissingCatalogItemsFromTrainers(
+    trainers,
+    activityCatalog
+  );
 
   const filteredAssignments = assignments.filter((a) => {
     if (filterType !== 'all' && normalizeActivityType(a.activityType) !== filterType) return false;
@@ -350,6 +368,38 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
             );
           })}
         </div>
+
+        {uncatalogedTrainerSpecialties.length > 0 && (
+          <div className="pt-3 border-t border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div>
+              <span className="text-xs font-bold text-slate-900 block">
+                Especialidades de entrenadores pendientes de incorporar al catálogo (
+                <span className="font-mono tabular-nums">
+                  {uncatalogedTrainerSpecialties.length}
+                </span>
+                )
+              </span>
+              <span className="text-[11px] text-slate-500">
+                Ya están disponibles al asignar clases; también puedes registrarlas en{' '}
+                <strong className="font-mono">/activity_catalog</strong> con duración sugerida:
+              </span>
+            </div>
+            <div className="flex flex-wrap items-center gap-1.5">
+              {uncatalogedTrainerSpecialties.map((item) => (
+                <button
+                  key={item.id}
+                  type="button"
+                  onClick={() => onAddCatalogItem(item)}
+                  className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-red-50 text-slate-800 hover:text-red-700 border border-slate-300 hover:border-red-300 text-[11px] font-bold inline-flex items-center gap-1 whitespace-nowrap cursor-pointer transition"
+                  title={`Incorporar en ${ACTIVITY_TYPE_LABELS[item.activityType]} (${item.defaultDurationMinutes} min)`}
+                >
+                  <Plus className="w-3 h-3 text-red-600 shrink-0" />
+                  <span>{item.name}</span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* SECTION 1: Quick Editor for Existing Assignments */}
@@ -419,10 +469,26 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
           <div className="space-y-2.5">
             {filteredAssignments.map((asg) => {
               const currentType = normalizeActivityType(asg.activityType);
-              const options = getActiveNamesForType(currentType);
-              const selectOptions = options.includes(asg.activityName)
-                ? options
-                : [asg.activityName, ...options];
+              const assignedTrainer = trainers.find((t) => t.id === asg.trainerId);
+              const groups = getAssignmentDisciplineGroups({
+                activityType: currentType,
+                selectedTrainer: assignedTrainer,
+                trainers,
+                activityCatalog,
+                fallbackOptionsByType: {
+                  pausa_activa: [MODALITY_CONFIG.pausa_activa.fallbackActivityName],
+                  clase_fitness: [MODALITY_CONFIG.clase_fitness.fallbackActivityName],
+                  gimnasio_corporativo: [MODALITY_CONFIG.gimnasio_corporativo.fallbackActivityName],
+                  masajes: [MODALITY_CONFIG.masajes.fallbackActivityName],
+                },
+              });
+              const allGroupedOptions = [
+                ...groups.modalityCatalogOptions,
+                ...groups.selectedTrainerSpecialties,
+                ...groups.otherTrainerSpecialties,
+                ...groups.otherCatalogByType.flatMap((g) => g.items),
+              ];
+              const hasCurrentInGroups = allGroupedOptions.includes(asg.activityName);
 
               const isClosed = Boolean(asg.closed);
               const isNonCompliant = Boolean(asg.nonCompliant);
@@ -520,17 +586,51 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
                       })}
                     </div>
 
-                    {/* Specific Activity Selector */}
+                    {/* Specific Activity / Specialty Selector */}
                     <select
                       value={asg.activityName}
                       disabled={isLockedRow}
                       onChange={(e) => handleQuickChangeActivityName(asg, e.target.value)}
                       className="bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs font-semibold text-slate-900 focus:outline-none focus:border-red-500 sm:w-64 disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed"
                     >
-                      {selectOptions.map((opt, idx) => (
-                        <option key={idx} value={opt}>
-                          {opt}
-                        </option>
+                      {!hasCurrentInGroups && asg.activityName && (
+                        <option value={asg.activityName}>{asg.activityName}</option>
+                      )}
+                      <optgroup label={`Catálogo — ${ACTIVITY_TYPE_LABELS[currentType]}`}>
+                        {groups.modalityCatalogOptions.map((opt) => (
+                          <option key={`mod_${opt}`} value={opt}>
+                            {opt}
+                          </option>
+                        ))}
+                      </optgroup>
+                      {groups.selectedTrainerSpecialties.length > 0 && (
+                        <optgroup
+                          label={`Especialidades de ${assignedTrainer?.name || asg.trainerName}`}
+                        >
+                          {groups.selectedTrainerSpecialties.map((spec) => (
+                            <option key={`tr_${spec}`} value={spec}>
+                              {spec}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {groups.otherTrainerSpecialties.length > 0 && (
+                        <optgroup label="Otras Especialidades en Entrenadores (BD)">
+                          {groups.otherTrainerSpecialties.map((spec) => (
+                            <option key={`other_tr_${spec}`} value={spec}>
+                              {spec}
+                            </option>
+                          ))}
+                        </optgroup>
+                      )}
+                      {groups.otherCatalogByType.map((grp) => (
+                        <optgroup key={grp.type} label={`Catálogo — ${grp.label}`}>
+                          {grp.items.map((opt) => (
+                            <option key={`cat_${grp.type}_${opt}`} value={opt}>
+                              {opt}
+                            </option>
+                          ))}
+                        </optgroup>
                       ))}
                     </select>
 

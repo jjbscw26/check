@@ -64,6 +64,10 @@ import {
 } from '../firebase';
 import { useDirectoryAuth } from '../hooks/useDirectoryAuth';
 import {
+  ACTIVITY_TYPE_DEFAULT_MINUTES,
+  ACTIVITY_TYPE_LABELS,
+  ActivityType,
+  ALL_ACTIVITY_TYPES,
   AttendanceRecord,
   FirestoreActivityCatalogRecord,
   FirestoreAssignmentRecord,
@@ -72,6 +76,7 @@ import {
   FirestoreDirectoryCategory,
   FirestoreSedeRecord,
   FirestoreTrainerRecord,
+  normalizeActivityType,
   PersonnelRecord,
   StructuredAddress,
 } from '../types';
@@ -97,17 +102,25 @@ import {
   validateTrainerInput,
 } from '../utils/personnelValidation';
 import {
+  deleteActivityCatalogItemFromFirestore,
   deleteAssignmentFromFirestore,
   deleteCompanyAndSedesFromFirestore,
   deleteRecordFromFirestore,
   deleteSedeFromFirestore,
   deleteTrainerFromFirestore,
   parseFirestoreAttendanceRecord,
+  saveActivityCatalogItemToFirestore,
   saveCompanyToFirestore,
   saveRecordToFirestore,
   saveSedeToFirestore,
   saveTrainerToFirestore,
 } from '../utils/firestoreDemoSync';
+import {
+  cleanDisciplineLabel,
+  collectAllSelectableSpecialties,
+  collectMissingCatalogItemsFromTrainers,
+  PRESET_SPECIALTIES,
+} from '../utils/specialtyDisciplines';
 import { formatDistance, getCurrentPositionAsync } from '../utils/geo';
 import {
   EvidencePhotoSlot,
@@ -131,20 +144,6 @@ import {
 } from '../utils/faceVerification';
 
 const DIRECTORY_CAMERA_OWNER_ID = 'directory-trainer-camera';
-
-const PRESET_SPECIALTIES = [
-  'Pausas Activas',
-  'Entrenamiento Funcional',
-  'Ergonomía Laboral',
-  'Yoga Corporativo',
-  'Pilates Mat',
-  'Mindfulness y Respiración',
-  'HIIT & Cardio',
-  'Zumba / Ritmos Latinos',
-  'Movilidad Articular',
-  'Tonificación con Bandas',
-  'Gimnasia Cerebral',
-];
 
 const SEDE_COLOR_TAGS: { value: string; label: string; dotClass: string }[] = [
   { value: 'bg-red-600', label: 'Rojo BSCW', dotClass: 'bg-red-600' },
@@ -414,6 +413,16 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
   const [sedeForm, setSedeForm] = useState<SedeFormInput>(EMPTY_SEDE_FORM);
   const [personnelForm, setPersonnelForm] = useState<PersonnelFormInput>(EMPTY_PERSONNEL_FORM);
   const [clientForm, setClientForm] = useState<ClientFormInput>(EMPTY_CLIENT_FORM);
+
+  // Catalog (/activity_catalog) discipline form state inside Calendar tab
+  const [editingCatalogId, setEditingCatalogId] = useState<string | null>(null);
+  const [catalogName, setCatalogName] = useState<string>('');
+  const [catalogType, setCatalogType] = useState<ActivityType>('clase_fitness');
+  const [catalogDuration, setCatalogDuration] = useState<number>(
+    ACTIVITY_TYPE_DEFAULT_MINUTES.clase_fitness
+  );
+  const [catalogDescription, setCatalogDescription] = useState<string>('');
+  const [catalogActive, setCatalogActive] = useState<boolean>(true);
 
   // Touched maps
   const [trainerTouched, setTrainerTouched] = useState<Partial<Record<TrainerFieldKey, boolean>>>({});
@@ -806,7 +815,7 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
             ...(typeof d.dayOfMonth === 'number' ? { dayOfMonth: d.dayOfMonth } : {}),
             time: String(d.time || '09:00'),
             ...(typeof d.durationMinutes === 'number' ? { durationMinutes: d.durationMinutes } : {}),
-            activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
+            activityType: normalizeActivityType(d.activityType),
             activityName: String(d.activityName || ''),
             locationArea: String(d.locationArea || ''),
             ...(typeof d.expectedAttendees === 'number'
@@ -882,7 +891,7 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
           return {
             id: docSnap.id,
             name: String(d.name || ''),
-            activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
+            activityType: normalizeActivityType(d.activityType),
             defaultDurationMinutes: Number(d.defaultDurationMinutes ?? 20),
             ...(typeof d.description === 'string' ? { description: d.description } : {}),
             active: d.active !== false,
@@ -1075,18 +1084,112 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
         specialties: sanitized.specialties,
         active: sanitized.active,
       });
+
+      const missingCatalogItems = collectMissingCatalogItemsFromTrainers(
+        [{ specialties: sanitized.specialties }],
+        catalogList
+      );
+      if (missingCatalogItems.length > 0) {
+        await Promise.all(
+          missingCatalogItems.map((item) =>
+            saveActivityCatalogItemToFirestore(item, { onlyIfMissing: true })
+          )
+        );
+      }
+
       resetCategoryForm('trainers');
       setSaveFeedback({
         category: 'trainers',
         type: 'success',
         message: editingId
-          ? `Entrenador "${sanitized.name}" actualizado en /trainers.`
-          : `Entrenador "${sanitized.name}" guardado en /trainers.`,
+          ? `Entrenador "${sanitized.name}" actualizado en /trainers y sus especialidades quedaron disponibles para asignación de clases.`
+          : `Entrenador "${sanitized.name}" guardado en /trainers y sus especialidades quedaron disponibles para asignación de clases.`,
       });
     } catch (error) {
       setFatalFirestoreError(error as Error);
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const resetCatalogDisciplineForm = () => {
+    setEditingCatalogId(null);
+    setCatalogName('');
+    setCatalogType('clase_fitness');
+    setCatalogDuration(ACTIVITY_TYPE_DEFAULT_MINUTES.clase_fitness);
+    setCatalogDescription('');
+    setCatalogActive(true);
+  };
+
+  const startEditCatalogDiscipline = (cat: FirestoreActivityCatalogRecord) => {
+    setEditingCatalogId(cat.id);
+    setCatalogName(cat.name);
+    setCatalogType(normalizeActivityType(cat.activityType));
+    setCatalogDuration(cat.defaultDurationMinutes);
+    setCatalogDescription(cat.description || '');
+    setCatalogActive(cat.active !== false);
+    formCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+
+  const handleSubmitCatalogDiscipline = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setSaveFeedback(null);
+    const cleanedName = cleanDisciplineLabel(catalogName).slice(0, 150).trim();
+    if (cleanedName.length < 2) {
+      setSaveFeedback({
+        category: 'calendar',
+        type: 'error',
+        message: 'Ingresa un nombre válido (mínimo 2 caracteres) para la especialidad o disciplina.',
+      });
+      return;
+    }
+
+    const safeDuration = Number.isFinite(catalogDuration)
+      ? Math.min(480, Math.max(5, Math.round(catalogDuration)))
+      : ACTIVITY_TYPE_DEFAULT_MINUTES[catalogType];
+    const targetId = editingCatalogId || `cat_${Date.now()}`;
+
+    setIsSaving(true);
+    try {
+      await saveActivityCatalogItemToFirestore({
+        id: targetId,
+        name: cleanedName,
+        activityType: catalogType,
+        defaultDurationMinutes: safeDuration,
+        ...(catalogDescription.trim()
+          ? { description: catalogDescription.trim().slice(0, 500) }
+          : {}),
+        active: catalogActive,
+      });
+      resetCatalogDisciplineForm();
+      setSaveFeedback({
+        category: 'calendar',
+        type: 'success',
+        message: editingCatalogId
+          ? `Disciplina "${cleanedName}" actualizada en /activity_catalog y disponible en Panel Admin.`
+          : `Disciplina "${cleanedName}" añadida a /activity_catalog y lista para asignar clases en Panel Admin.`,
+      });
+    } catch (error) {
+      setFatalFirestoreError(error as Error);
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleDeleteCatalogDiscipline = async (id: string) => {
+    try {
+      await deleteActivityCatalogItemFromFirestore(id);
+      if (editingCatalogId === id) {
+        resetCatalogDisciplineForm();
+      }
+      setConfirmDeleteKey(null);
+      setSaveFeedback({
+        category: 'calendar',
+        type: 'success',
+        message: 'Disciplina eliminada de /activity_catalog en Firestore.',
+      });
+    } catch (error) {
+      setFatalFirestoreError(error as Error);
     }
   };
 
@@ -1415,11 +1518,27 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
     );
   }, [sedesList, searchQuery]);
 
+  const selectableDirectorySpecialties = useMemo(
+    () => collectAllSelectableSpecialties(trainersList, catalogList, trainerForm.specialties),
+    [trainersList, catalogList, trainerForm.specialties]
+  );
+
+  const filteredCatalog = useMemo(() => {
+    if (!searchQuery) return catalogList;
+    return catalogList.filter((cat) =>
+      [cat.name, ACTIVITY_TYPE_LABELS[cat.activityType], cat.description || '']
+        .join(' ')
+        .toLowerCase()
+        .includes(searchQuery)
+    );
+  }, [catalogList, searchQuery]);
+
   const filteredAssignments = useMemo(() => {
     if (!searchQuery) return assignmentsList;
     return assignmentsList.filter((a) =>
       [
         a.activityName,
+        ACTIVITY_TYPE_LABELS[a.activityType],
         a.companyName,
         a.sedeName,
         a.trainerName,
@@ -1904,51 +2023,187 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
             </div>
 
             {activeCategory === 'calendar' && (
-              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
-                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
-                  <div className="flex items-center justify-between text-xs font-bold text-slate-700">
-                    <span className="flex items-center gap-1.5">
-                      <Calendar className="w-4 h-4 text-red-600" />
-                      Asignaciones Programadas
-                    </span>
-                    <span className="font-mono tabular-nums text-sm text-slate-900">
-                      {assignmentsList.length}
-                    </span>
+              <div className="space-y-4">
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                    <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                      <span className="flex items-center gap-1.5">
+                        <Calendar className="w-4 h-4 text-red-600" />
+                        Asignaciones Programadas
+                      </span>
+                      <span className="font-mono tabular-nums text-sm text-slate-900">
+                        {assignmentsList.length}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      Colección <strong className="font-mono">/assignments</strong> (semanales, mensuales, fecha única, cierres e incumplimientos).
+                    </p>
                   </div>
-                  <p className="text-[11px] text-slate-500">
-                    Colección <strong className="font-mono">/assignments</strong> (Lunes a Domingo, mensuales, fecha única, cierres e incumplimientos).
-                  </p>
+
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                    <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                      <span className="flex items-center gap-1.5">
+                        <Clock className="w-4 h-4 text-emerald-600" />
+                        Ejecuciones y Check-ins
+                      </span>
+                      <span className="font-mono tabular-nums text-sm text-slate-900">
+                        {recordsList.length}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      Colección <strong className="font-mono">/records</strong> sincronizada con la pestaña Bitácora de Evidencias.
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                    <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                      <span className="flex items-center gap-1.5">
+                        <Layers className="w-4 h-4 text-blue-600" />
+                        Catálogo de Disciplinas
+                      </span>
+                      <span className="font-mono tabular-nums text-sm text-slate-900">
+                        {catalogList.length}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      Colección <strong className="font-mono">/activity_catalog</strong> (Pausa Activa, Clase Fitness, Gimnasio Corporativo y Masajes).
+                    </p>
+                  </div>
                 </div>
 
-                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
-                  <div className="flex items-center justify-between text-xs font-bold text-slate-700">
-                    <span className="flex items-center gap-1.5">
-                      <Clock className="w-4 h-4 text-emerald-600" />
-                      Ejecuciones y Check-ins
-                    </span>
-                    <span className="font-mono tabular-nums text-sm text-slate-900">
-                      {recordsList.length}
-                    </span>
+                {/* Direct CRUD for /activity_catalog disciplines */}
+                <form
+                  onSubmit={handleSubmitCatalogDiscipline}
+                  className="pt-4 border-t border-slate-200 space-y-3"
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h4 className="text-xs sm:text-sm font-bold text-slate-900">
+                        {editingCatalogId
+                          ? 'Editar Especialidad / Disciplina en Catálogo'
+                          : 'Añadir Especialidad o Disciplina para Asignación de Clases'}
+                      </h4>
+                      <p className="text-[11px] text-slate-500">
+                        Se guarda en <span className="font-mono">/activity_catalog</span> y queda seleccionable de inmediato al programar clases en el Panel Admin.
+                      </p>
+                    </div>
+                    {editingCatalogId && (
+                      <button
+                        type="button"
+                        onClick={resetCatalogDisciplineForm}
+                        className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
+                      >
+                        <RotateCcw className="w-3.5 h-3.5" />
+                        <span>Cancelar edición</span>
+                      </button>
+                    )}
                   </div>
-                  <p className="text-[11px] text-slate-500">
-                    Colección <strong className="font-mono">/records</strong> sincronizada con la pestaña Bitácora de Evidencias.
-                  </p>
-                </div>
 
-                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
-                  <div className="flex items-center justify-between text-xs font-bold text-slate-700">
-                    <span className="flex items-center gap-1.5">
-                      <Layers className="w-4 h-4 text-blue-600" />
-                      Catálogo de Modalidades
-                    </span>
-                    <span className="font-mono tabular-nums text-sm text-slate-900">
-                      {catalogList.length}
-                    </span>
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                    {ALL_ACTIVITY_TYPES.map((t) => {
+                      const active = catalogType === t;
+                      return (
+                        <button
+                          key={t}
+                          type="button"
+                          onClick={() => {
+                            setCatalogType(t);
+                            if (!editingCatalogId) {
+                              setCatalogDuration(ACTIVITY_TYPE_DEFAULT_MINUTES[t]);
+                            }
+                          }}
+                          className={`px-3 py-2 rounded-xl border text-xs font-bold transition cursor-pointer whitespace-nowrap truncate ${
+                            active
+                              ? 'bg-red-600 text-white border-red-600'
+                              : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
+                          }`}
+                        >
+                          {ACTIVITY_TYPE_LABELS[t]}
+                        </button>
+                      );
+                    })}
                   </div>
-                  <p className="text-[11px] text-slate-500">
-                    Colección <strong className="font-mono">/activity_catalog</strong> (duraciones por defecto y tipos de pausa/fitness).
-                  </p>
-                </div>
+
+                  <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+                    <div className="sm:col-span-5">
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        Nombre de la Especialidad o Disciplina *
+                      </label>
+                      <input
+                        type="text"
+                        value={catalogName}
+                        onChange={(e) => setCatalogName(e.target.value)}
+                        maxLength={150}
+                        placeholder="Ej. Spinning Corporativo, Shiatsu en Silla, Movilidad..."
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-red-600"
+                      />
+                    </div>
+
+                    <div className="sm:col-span-2">
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        Duración (min) *
+                      </label>
+                      <input
+                        type="number"
+                        min={5}
+                        max={480}
+                        value={catalogDuration}
+                        onChange={(e) => setCatalogDuration(Number(e.target.value))}
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono tabular-nums text-slate-900 focus:outline-none focus:border-red-600"
+                      />
+                    </div>
+
+                    <div className="sm:col-span-5">
+                      <label className="block text-[11px] font-bold text-slate-700 mb-1">
+                        Descripción (opcional)
+                      </label>
+                      <input
+                        type="text"
+                        value={catalogDescription}
+                        onChange={(e) => setCatalogDescription(e.target.value)}
+                        maxLength={500}
+                        placeholder="Breve detalle de la sesión o equipamiento..."
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-red-600"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="flex flex-wrap items-center justify-between gap-3 pt-1">
+                    <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={catalogActive}
+                        onChange={(e) => setCatalogActive(e.target.checked)}
+                        className="rounded border-slate-300 text-red-600 focus:ring-red-600"
+                      />
+                      <span>Activa para programación en Panel Admin</span>
+                    </label>
+
+                    <div className="flex items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={resetCatalogDisciplineForm}
+                        className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold cursor-pointer whitespace-nowrap shrink-0"
+                      >
+                        Limpiar
+                      </button>
+                      <button
+                        type="submit"
+                        disabled={isSaving}
+                        className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white text-xs font-bold inline-flex items-center gap-1.5 cursor-pointer whitespace-nowrap shrink-0"
+                      >
+                        <Save className="w-3.5 h-3.5" />
+                        <span>
+                          {isSaving
+                            ? 'Guardando...'
+                            : editingCatalogId
+                            ? 'Actualizar Disciplina'
+                            : 'Guardar en Catálogo'}
+                        </span>
+                      </button>
+                    </div>
+                  </div>
+                </form>
               </div>
             )}
 
@@ -2421,34 +2676,37 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                 {/* Specialties array */}
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <label className="text-xs font-bold text-slate-800">
-                      Especialidades y Disciplinas (`specialties`) *
-                    </label>
-                    <span className="text-[11px] font-mono tabular-nums text-slate-500">
+                    <div>
+                      <label className="text-xs font-bold text-slate-800 block">
+                        Especialidades y Disciplinas (`specialties`) *
+                      </label>
+                      <span className="text-[11px] text-slate-500">
+                        Toda especialidad añadida aquí se sincroniza con <span className="font-mono">/activity_catalog</span> para asignarse como clase en el Panel Admin.
+                      </span>
+                    </div>
+                    <span className="text-[11px] font-mono tabular-nums text-slate-500 shrink-0">
                       {trainerForm.specialties.length} / {DIRECTORY_LIMITS.specialtiesCount.max}
                     </span>
                   </div>
                   <div className="flex flex-wrap gap-1.5 p-3 bg-slate-50 border border-slate-200 rounded-xl">
-                    {Array.from(new Set([...PRESET_SPECIALTIES, ...trainerForm.specialties])).map(
-                      (spec) => {
-                        const selected = trainerForm.specialties.includes(spec);
-                        return (
-                          <button
-                            key={spec}
-                            type="button"
-                            onClick={() => toggleTrainerSpecialty(spec)}
-                            className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1 transition cursor-pointer ${
-                              selected
-                                ? 'bg-red-600 text-white'
-                                : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
-                            }`}
-                          >
-                            {selected && <Check className="w-3 h-3" />}
-                            <span>{spec}</span>
-                          </button>
-                        );
-                      }
-                    )}
+                    {selectableDirectorySpecialties.map((spec) => {
+                      const selected = trainerForm.specialties.includes(spec);
+                      return (
+                        <button
+                          key={spec}
+                          type="button"
+                          onClick={() => toggleTrainerSpecialty(spec)}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold flex items-center gap-1 transition cursor-pointer whitespace-nowrap ${
+                            selected
+                              ? 'bg-red-600 text-white'
+                              : 'bg-white text-slate-700 border border-slate-200 hover:bg-slate-100'
+                          }`}
+                        >
+                          {selected && <Check className="w-3 h-3" />}
+                          <span>{spec}</span>
+                        </button>
+                      );
+                    })}
                   </div>
                   <div className="flex items-center gap-2">
                     <input
@@ -2461,13 +2719,13 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                           addCustomTrainerSpecialty();
                         }
                       }}
-                      placeholder="Agregar especialidad personalizada..."
+                      placeholder="Agregar especialidad o disciplina personalizada..."
                       className="flex-1 bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 focus:outline-none focus:border-red-600"
                     />
                     <button
                       type="button"
                       onClick={addCustomTrainerSpecialty}
-                      className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 text-xs font-bold flex items-center gap-1"
+                      className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 text-xs font-bold flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
                     >
                       <Plus className="w-3.5 h-3.5" />
                       <span>Añadir</span>
@@ -3855,12 +4113,12 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                                   <span className="font-bold text-slate-900 text-xs sm:text-sm">
                                     {asg.activityName}
                                   </span>
-                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
-                                    {scheduleLabel}
+                                  <span className="text-[11px] text-slate-500">
+                                    {ACTIVITY_TYPE_LABELS[asg.activityType]} · {scheduleLabel}
                                   </span>
                                   {asg.durationMinutes && (
-                                    <span className="font-mono text-[10px] font-semibold text-slate-500">
-                                      {asg.durationMinutes} min
+                                    <span className="font-mono tabular-nums text-[10px] font-semibold text-slate-500">
+                                      · {asg.durationMinutes} min
                                     </span>
                                   )}
                                   <span
@@ -4036,13 +4294,14 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                     </div>
 
                     {/* Activity Catalog (/activity_catalog) */}
-                    {catalogList.length > 0 && (
-                      <div className="space-y-2">
-                        <h5 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
-                          Catálogo de Modalidades (`/activity_catalog`: {catalogList.length})
-                        </h5>
+                    <div className="space-y-2">
+                      <h5 className="text-xs font-extrabold text-slate-700">
+                        Catálogo de Especialidades y Disciplinas (`/activity_catalog`:{' '}
+                        <span className="font-mono tabular-nums">{filteredCatalog.length}</span>)
+                      </h5>
+                      {filteredCatalog.length > 0 ? (
                         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
-                          {catalogList.map((cat) => (
+                          {filteredCatalog.map((cat) => (
                             <div
                               key={cat.id}
                               className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs flex items-center justify-between gap-2"
@@ -4050,26 +4309,67 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                               <div className="min-w-0">
                                 <div className="font-bold text-slate-900 truncate">{cat.name}</div>
                                 <div className="text-[11px] text-slate-500 font-mono tabular-nums">
-                                  {cat.activityType === 'clase_fitness'
-                                    ? 'Clase Fitness'
-                                    : 'Pausa Activa'}{' '}
-                                  · {cat.defaultDurationMinutes} min
+                                  {ACTIVITY_TYPE_LABELS[cat.activityType]} · {cat.defaultDurationMinutes} min ·{' '}
+                                  <span
+                                    className={
+                                      cat.active
+                                        ? 'text-emerald-700 font-sans font-semibold'
+                                        : 'text-slate-400 font-sans'
+                                    }
+                                  >
+                                    {cat.active ? 'Activa' : 'Inactiva'}
+                                  </span>
                                 </div>
                               </div>
-                              <span
-                                className={`text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 ${
-                                  cat.active
-                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                    : 'bg-slate-100 text-slate-500 border-slate-200'
-                                }`}
-                              >
-                                {cat.active ? 'Activa' : 'Inactiva'}
-                              </span>
+
+                              <div className="flex items-center gap-1 shrink-0">
+                                {confirmDeleteKey === `catalog:${cat.id}` ? (
+                                  <div className="inline-flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => void handleDeleteCatalogDiscipline(cat.id)}
+                                      className="px-2 py-1 rounded-lg bg-rose-600 text-white text-[10px] font-bold cursor-pointer whitespace-nowrap"
+                                    >
+                                      Confirmar
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteKey(null)}
+                                      className="px-2 py-1 rounded-lg bg-slate-200 text-slate-700 text-[10px] font-semibold cursor-pointer whitespace-nowrap"
+                                    >
+                                      No
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <>
+                                    <button
+                                      type="button"
+                                      onClick={() => startEditCatalogDiscipline(cat)}
+                                      className="p-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-600 hover:text-slate-900 border border-slate-200 cursor-pointer"
+                                      title="Editar disciplina"
+                                    >
+                                      <Edit3 className="w-3.5 h-3.5" />
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteKey(`catalog:${cat.id}`)}
+                                      className="p-1.5 rounded-lg bg-white hover:bg-rose-50 text-slate-600 hover:text-rose-600 border border-slate-200 cursor-pointer"
+                                      title="Eliminar disciplina"
+                                    >
+                                      <Trash2 className="w-3.5 h-3.5" />
+                                    </button>
+                                  </>
+                                )}
+                              </div>
                             </div>
                           ))}
                         </div>
-                      </div>
-                    )}
+                      ) : (
+                        <div className="p-4 text-xs text-slate-500 text-center border border-slate-200 rounded-xl bg-slate-50/60">
+                          No hay disciplinas registradas que coincidan con la búsqueda. Usa el formulario superior para añadir una nueva especialidad o disciplina.
+                        </div>
+                      )}
+                    </div>
                   </div>
                 )}
 

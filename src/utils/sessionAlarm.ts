@@ -37,9 +37,14 @@ export function getDefaultDurationMinutes(
   activityName: string,
   catalog: ActivityCatalogItem[] = []
 ): number {
-  const match = catalog.find(
-    (item) => item.name.toLowerCase() === activityName.toLowerCase()
-  );
+  const normalizedTarget = activityName.trim().toLowerCase();
+  const match =
+    catalog.find((item) => item.name.trim().toLowerCase() === normalizedTarget) ||
+    catalog.find((item) => {
+      const colonIdx = item.name.indexOf(':');
+      if (colonIdx === -1) return false;
+      return item.name.slice(colonIdx + 1).trim().toLowerCase() === normalizedTarget;
+    });
   if (match && match.defaultDurationMinutes > 0) {
     return match.defaultDurationMinutes;
   }

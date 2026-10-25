@@ -65,6 +65,7 @@ import { PdfEvidenceLogModal } from './PdfEvidenceLogModal';
 import { EvidencePhotoLightbox } from './EvidencePhotoLightbox';
 import { PersonnelRegistryView } from './PersonnelRegistryView';
 import { FirestoreErrorBoundary } from './FirestoreErrorBoundary';
+import { collectAllSelectableSpecialties } from '../utils/specialtyDisciplines';
 
 interface AdminDashboardProps {
   records: AttendanceRecord[];
@@ -170,6 +171,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     record: AttendanceRecord;
     slot: EvidencePhotoSlot;
   } | null>(null);
+
+  const allDatabaseSpecialties = useMemo(
+    () => collectAllSelectableSpecialties(trainers, activityCatalog),
+    [trainers, activityCatalog]
+  );
 
   // Filter records based on report period
   const periodRecords = useMemo(() => {
@@ -1995,11 +2001,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       )}
 
-      {/* TAB: TIPOS DE ASIGNACIÓN (CLASES FITNESS Y PAUSAS ACTIVAS) */}
+      {/* TAB: TIPOS DE ASIGNACIÓN (MODALIDADES, ESPECIALIDADES Y DISCIPLINAS) */}
       {activeTab === 'activity_types' && (
         <AdminAssignmentTypesView
           activityCatalog={activityCatalog}
           assignments={assignments}
+          trainers={trainers}
           onAddCatalogItem={onAddCatalogItem}
           onUpdateCatalogItem={onUpdateCatalogItem}
           onDeleteCatalogItem={onDeleteCatalogItem}
@@ -2036,6 +2043,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {/* CRUD Modals */}
       <AdminTrainerModal
         trainer={editingTrainer}
+        existingSpecialties={allDatabaseSpecialties}
         isOpen={isTrainerModalOpen}
         onClose={() => {
           setIsTrainerModalOpen(false);
@@ -2091,6 +2099,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         activityCatalog={activityCatalog}
         isOpen={isAssignmentModalOpen}
         initialPreset={assignmentInitialPreset}
+        onAddCatalogItem={onAddCatalogItem}
         onManageActivityTypes={() => setActiveTab('activity_types')}
         onClose={() => {
           setIsAssignmentModalOpen(false);

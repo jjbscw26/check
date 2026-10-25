@@ -21,29 +21,21 @@ import {
   VideoDeviceOption,
 } from '../utils/cameraStream';
 import { validateFaceInRegistrationPhoto } from '../utils/faceVerification';
+import {
+  cleanDisciplineLabel,
+  normalizeDisciplineKey,
+  PRESET_SPECIALTIES,
+} from '../utils/specialtyDisciplines';
 
 interface AdminTrainerModalProps {
   trainer: Trainer | null; // null if creating a new one
+  existingSpecialties?: string[];
   isOpen: boolean;
   onClose: () => void;
   onSave: (trainer: Trainer) => void;
 }
 
 const OWNER_ID = 'admin-trainer-modal-camera';
-
-const PRESET_SPECIALTIES = [
-  'Pausas Activas',
-  'Entrenamiento Funcional',
-  'Ergonomía Laboral',
-  'Yoga Corporativo',
-  'Pilates Mat',
-  'Mindfulness y Respiración',
-  'HIIT & Cardio',
-  'Zumba / Ritmos Latinos',
-  'Movilidad Articular',
-  'Tonificación con Bandas',
-  'Gimnasia Cerebral',
-];
 
 const PRESET_AVATARS = [
   'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=360&auto=format&fit=crop&q=80',
@@ -77,6 +69,7 @@ function processImageFileToDataUrl(file: File): Promise<string> {
 
 export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
   trainer,
+  existingSpecialties = [],
   isOpen,
   onClose,
   onSave,
@@ -298,11 +291,33 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
   };
 
   const addCustomSpecialty = () => {
-    if (customSpecialty.trim() && !specialties.includes(customSpecialty.trim())) {
-      setSpecialties([...specialties, customSpecialty.trim()]);
-      setCustomSpecialty('');
+    const cleaned = cleanDisciplineLabel(customSpecialty).slice(0, 80).trim();
+    if (!cleaned) return;
+    const exists = specialties.some(
+      (s) => normalizeDisciplineKey(s) === normalizeDisciplineKey(cleaned)
+    );
+    if (!exists) {
+      setSpecialties([...specialties, cleaned]);
     }
+    setCustomSpecialty('');
   };
+
+  const allAvailableSpecialties = React.useMemo(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    const pushUnique = (raw: string) => {
+      const cleaned = cleanDisciplineLabel(raw).slice(0, 80).trim();
+      if (!cleaned) return;
+      const key = normalizeDisciplineKey(cleaned);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      list.push(cleaned);
+    };
+    PRESET_SPECIALTIES.forEach(pushUnique);
+    existingSpecialties.forEach(pushUnique);
+    specialties.forEach(pushUnique);
+    return list;
+  }, [existingSpecialties, specialties]);
 
   const handleCloseModal = () => {
     stopCameraStream();
@@ -645,17 +660,17 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
           {/* Specialties */}
           <div>
             <label className="block font-bold text-slate-700 mb-1.5">
-              Especialidades y Habilidades (Selecciona las que apliquen)
+              Especialidades y Disciplinas (Disponibles también para asignación de clases)
             </label>
-            <div className="flex flex-wrap gap-1.5 max-h-32 overflow-y-auto p-2 bg-slate-50 border border-slate-200 rounded-xl">
-              {PRESET_SPECIALTIES.map((spec) => {
+            <div className="flex flex-wrap gap-1.5 max-h-36 overflow-y-auto p-2 bg-slate-50 border border-slate-200 rounded-xl">
+              {allAvailableSpecialties.map((spec) => {
                 const selected = specialties.includes(spec);
                 return (
                   <button
                     key={spec}
                     type="button"
                     onClick={() => toggleSpecialty(spec)}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition flex items-center cursor-pointer ${
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition flex items-center whitespace-nowrap cursor-pointer ${
                       selected
                         ? 'bg-red-600 text-white font-bold shadow-xs'
                         : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
@@ -681,13 +696,13 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
                   addCustomSpecialty();
                 }
               }}
-              placeholder="Agregar otra especialidad..."
+              placeholder="Agregar nueva especialidad o disciplina..."
               className="flex-1 bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 focus:outline-none focus:border-red-500"
             />
             <button
               type="button"
               onClick={addCustomSpecialty}
-              className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl border border-slate-300 text-xs cursor-pointer"
+              className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl border border-slate-300 text-xs whitespace-nowrap cursor-pointer"
             >
               Agregar
             </button>
