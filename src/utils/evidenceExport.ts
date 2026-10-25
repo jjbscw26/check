@@ -1,6 +1,6 @@
 import { jsPDF } from 'jspdf';
 import * as XLSX from 'xlsx';
-import { AttendanceRecord } from '../types';
+import { ACTIVITY_TYPE_LABELS, AttendanceRecord, normalizeActivityType } from '../types';
 import { formatDistance } from './geo';
 
 export type EvidencePhotoSlot = 'entry' | 'exit' | 'facial';
@@ -223,7 +223,7 @@ export function exportEvidenceRecordsToExcel(
     Sede: r.sedeName,
     'Dirección Sede': r.sedeAddress,
     'Salón / Área': r.locationArea,
-    'Tipo Actividad': r.activityType === 'clase_fitness' ? 'Clase Fitness' : 'Pausa Activa',
+    'Tipo Actividad': ACTIVITY_TYPE_LABELS[normalizeActivityType(r.activityType)],
     Actividad: r.activityName,
     'Colaboradores Asistentes': r.attendeesCount,
     'GPS Entrada Latitud': Number(r.checkInGps.lat.toFixed(6)),

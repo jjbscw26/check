@@ -1,5 +1,15 @@
 import React, { useState, useMemo } from 'react';
-import { ClassAssignment, Company, Trainer, ActivityCatalogItem, AttendanceRecord } from '../types';
+import {
+  ACTIVITY_TYPE_LABELS,
+  ACTIVITY_TYPE_SHORT_LABELS,
+  ActivityCatalogItem,
+  ActivityType,
+  AttendanceRecord,
+  ClassAssignment,
+  Company,
+  normalizeActivityType,
+  Trainer,
+} from '../types';
 import {
   Calendar,
   CalendarDays,
@@ -58,6 +68,20 @@ function formatYYYYMMDD(d: Date): string {
   const day = String(d.getDate()).padStart(2, '0');
   return `${year}-${month}-${day}`;
 }
+
+const MONTH_CELL_MODALITY_CLASS: Record<ActivityType, string> = {
+  pausa_activa: 'bg-emerald-50/90 text-emerald-800 border-emerald-200/80 hover:bg-emerald-100',
+  clase_fitness: 'bg-blue-50/90 text-blue-800 border-blue-200/80 hover:bg-blue-100',
+  gimnasio_corporativo: 'bg-indigo-50/90 text-indigo-800 border-indigo-200/80 hover:bg-indigo-100',
+  masajes: 'bg-teal-50/90 text-teal-800 border-teal-200/80 hover:bg-teal-100',
+};
+
+const MODALITY_TEXT_CLASS: Record<ActivityType, string> = {
+  pausa_activa: 'text-emerald-700',
+  clase_fitness: 'text-blue-700',
+  gimnasio_corporativo: 'text-indigo-700',
+  masajes: 'text-teal-700',
+};
 
 // Convert JS getDay() (0=Sun, 1=Mon, ..., 6=Sat) to Monday-indexed (1=Mon, ..., 7=Sun)
 function getMondayIndexedDayOfWeek(d: Date): number {
@@ -547,8 +571,10 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
             className="bg-slate-50 border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-800 font-medium focus:outline-none focus:border-red-500"
           >
             <option value="all">Todas las Modalidades</option>
-            <option value="pausa_activa">Pausas Activas</option>
-            <option value="clase_fitness">Clases Fitness</option>
+            <option value="pausa_activa">Pausa Activa</option>
+            <option value="clase_fitness">Clase Fitness</option>
+            <option value="gimnasio_corporativo">Gimnasio Corporativo</option>
+            <option value="masajes">Masajes</option>
           </select>
 
           <select
@@ -578,26 +604,30 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center justify-center sm:justify-end gap-3 text-slate-500 font-medium">
-          <span className="flex items-center">
-            <span className="w-2 h-2 rounded-full bg-blue-500 mr-1.5"></span>
-            Fitness
-          </span>
-          <span className="flex items-center">
-            <span className="w-2 h-2 rounded-full bg-emerald-500 mr-1.5"></span>
-            Pausa Activa
-          </span>
+        <div className="flex flex-wrap items-center justify-center sm:justify-end gap-x-2.5 gap-y-1 text-slate-500 font-medium">
+          <span className="text-emerald-700 font-semibold">Pausa Activa</span>
+          <span aria-hidden="true">·</span>
+          <span className="text-blue-700 font-semibold">Fitness</span>
+          <span aria-hidden="true">·</span>
+          <span className="text-indigo-700 font-semibold">Gimnasio Corp.</span>
+          <span aria-hidden="true">·</span>
+          <span className="text-teal-700 font-semibold">Masajes</span>
+          <span aria-hidden="true">·</span>
           <span className="flex items-center text-slate-700 font-semibold">
             <Lock className="w-3 h-3 mr-1 text-slate-700" />
             Cerrada
           </span>
+          <span aria-hidden="true">·</span>
           <span className="flex items-center text-rose-700 font-semibold">
             <Ban className="w-3 h-3 mr-1 text-rose-600" />
             No Cerrada / Bloqueada
           </span>
           <span className="text-slate-400">|</span>
           <span className="text-slate-700">
-            Total Asignaciones: <strong className="text-slate-900">{filteredAssignments.length}</strong>
+            Total Asignaciones:{' '}
+            <strong className="text-slate-900 font-mono tabular-nums">
+              {filteredAssignments.length}
+            </strong>
           </span>
         </div>
       </div>
@@ -675,7 +705,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                     {/* Classes inside cell */}
                     <div className="space-y-1 my-1 flex-1 overflow-hidden">
                       {cell.classes.slice(0, 2).map((asg) => {
-                        const isFitness = asg.activityType === 'clase_fitness';
+                        const normType = normalizeActivityType(asg.activityType);
                         const trainerInitial = asg.trainerName.split(' ')[0] || asg.trainerName;
                         const durMins = getAssignmentDurationMinutes(asg, activityCatalog);
                         const cellLock = getAssignmentOccurrenceStatus(
@@ -701,11 +731,9 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                                   ? 'bg-slate-200/90 text-slate-700 border-slate-300 hover:bg-slate-200'
                                   : cellLock.state === 'en_curso'
                                     ? 'bg-amber-100/90 text-amber-900 border-amber-300 hover:bg-amber-100'
-                                    : isFitness
-                                      ? 'bg-blue-50/90 text-blue-800 border-blue-200/80 hover:bg-blue-100'
-                                      : 'bg-emerald-50/90 text-emerald-800 border-emerald-200/80 hover:bg-emerald-100'
+                                    : MONTH_CELL_MODALITY_CLASS[normType]
                             }`}
-                            title={`${asg.time} (${durMins} min) - ${asg.trainerName} en ${asg.companyName} (${asg.activityName}) — ${cellLock.statusLabel}`}
+                            title={`${asg.time} (${durMins} min) - ${asg.trainerName} en ${asg.companyName} (${ACTIVITY_TYPE_LABELS[normType]} · ${asg.activityName}) — ${cellLock.statusLabel}`}
                           >
                             <span
                               className={`font-mono font-bold shrink-0 flex items-center gap-0.5 ${
@@ -809,7 +837,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
                 {selectedDayClasses.map((asg) => {
                   const tr = trainers.find((t) => t.id === asg.trainerId);
-                  const isFitness = asg.activityType === 'clase_fitness';
+                  const normType = normalizeActivityType(asg.activityType);
                   const durMins = getAssignmentDurationMinutes(asg, activityCatalog);
                   const endHHMM = calculateEndTimeHHMM(asg.time, durMins);
                   const selectedDateStr = formatYYYYMMDD(selectedDate);
@@ -867,13 +895,9 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                           </span>
                         ) : (
                           <span
-                            className={`text-[9px] font-bold px-2 py-0.5 rounded-md shrink-0 ${
-                              isFitness
-                                ? 'bg-blue-100 text-blue-800'
-                                : 'bg-emerald-100 text-emerald-800'
-                            }`}
+                            className={`text-[10px] font-bold shrink-0 ${MODALITY_TEXT_CLASS[normType]}`}
                           >
-                            {isFitness ? 'Clase Fitness' : 'Pausa Activa'}
+                            {ACTIVITY_TYPE_LABELS[normType]}
                           </span>
                         )}
                       </div>
@@ -1075,7 +1099,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                   ) : (
                     day.classes.map((asg) => {
                       const tr = trainers.find((t) => t.id === asg.trainerId);
-                      const isFitness = asg.activityType === 'clase_fitness';
+                      const normType = normalizeActivityType(asg.activityType);
                       const durMins = getAssignmentDurationMinutes(asg, activityCatalog);
                       const dayLock = getAssignmentOccurrenceStatus(
                         asg,
@@ -1130,13 +1154,9 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                               </span>
                             ) : (
                               <span
-                                className={`text-[9px] font-bold px-1.5 py-0.2 rounded ${
-                                  isFitness
-                                    ? 'bg-blue-50 text-blue-700 border border-blue-200'
-                                    : 'bg-emerald-50 text-emerald-700 border border-emerald-200'
-                                }`}
+                                className={`text-[10px] font-bold ${MODALITY_TEXT_CLASS[normType]}`}
                               >
-                                {isFitness ? 'Fitness' : 'Pausa'}
+                                {ACTIVITY_TYPE_SHORT_LABELS[normType]}
                               </span>
                             )}
                           </div>
@@ -1317,7 +1337,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
             <div className="space-y-3">
               {selectedDayClasses.map((asg) => {
                 const tr = trainers.find((t) => t.id === asg.trainerId);
-                const isFitness = asg.activityType === 'clase_fitness';
+                const normType = normalizeActivityType(asg.activityType);
                 const durMins = getAssignmentDurationMinutes(asg, activityCatalog);
                 const endHHMM = calculateEndTimeHHMM(asg.time, durMins);
                 const dayViewDateStr = formatYYYYMMDD(selectedDate);
@@ -1396,13 +1416,9 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                             </span>
                           )}
                           <span
-                            className={`text-[10px] font-extrabold px-2.5 py-0.5 rounded-md ${
-                              isFitness
-                                ? 'bg-blue-100 text-blue-800 border border-blue-200'
-                                : 'bg-emerald-100 text-emerald-800 border border-emerald-200'
-                            }`}
+                            className={`text-[11px] font-extrabold ${MODALITY_TEXT_CLASS[normType]}`}
                           >
-                            {isFitness ? 'Clase Fitness' : 'Pausa Activa'}
+                            {ACTIVITY_TYPE_LABELS[normType]}
                           </span>
 
                           <span className="text-[11px] font-mono font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 flex items-center">

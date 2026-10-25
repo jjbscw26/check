@@ -503,8 +503,8 @@
         },
         "activityType": {
           "type": "string",
-          "enum": ["pausa_activa", "clase_fitness"],
-          "maxLength": 20
+          "enum": ["pausa_activa", "clase_fitness", "gimnasio_corporativo", "masajes"],
+          "maxLength": 30
         },
         "activityName": {
           "type": "string",
@@ -705,8 +705,8 @@
         },
         "activityType": {
           "type": "string",
-          "enum": ["pausa_activa", "clase_fitness"],
-          "maxLength": 20
+          "enum": ["pausa_activa", "clase_fitness", "gimnasio_corporativo", "masajes"],
+          "maxLength": 30
         },
         "activityName": {
           "type": "string",
@@ -831,8 +831,8 @@
         },
         "activityType": {
           "type": "string",
-          "enum": ["pausa_activa", "clase_fitness"],
-          "maxLength": 20
+          "enum": ["pausa_activa", "clase_fitness", "gimnasio_corporativo", "masajes"],
+          "maxLength": 30
         },
         "defaultDurationMinutes": {
           "type": "number"

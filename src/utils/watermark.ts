@@ -36,8 +36,8 @@ export function burnWatermarkOnImage(
         ? sourceImage.naturalHeight || sourceImage.height || 480
         : sourceImage.height || 480;
 
-  // Cap max side to 920px so stamped JPEG stays crisp yet well under Firestore's 280KB base64 limit
-  const maxDim = 920;
+  // Cap max side to 820px so stamped JPEG stays crisp yet compact for multi-photo Firestore records
+  const maxDim = 820;
   const scale = Math.min(1, maxDim / Math.max(rawWidth, rawHeight));
   const width = Math.max(320, Math.round(rawWidth * scale));
   const height = Math.max(240, Math.round(rawHeight * scale));
@@ -121,6 +121,6 @@ export function burnWatermarkOnImage(
 
   ctx.restore();
 
-  // Strictly below 240,000 chars (Firestore rule limit is 280,000)
-  return compressCanvasToMaxDataUrlLength(canvas, 240000, 0.84);
+  // Strictly below 145,000 chars so photoUrl + exitPhotoUrl + facePhotoUrl stay well below 1MB total
+  return compressCanvasToMaxDataUrlLength(canvas, 145000, 0.82);
 }

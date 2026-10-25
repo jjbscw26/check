@@ -35,6 +35,8 @@ import {
   Ban
 } from 'lucide-react';
 import { 
+  ACTIVITY_TYPE_LABELS,
+  ACTIVITY_TYPE_SHORT_LABELS,
   AttendanceRecord, 
   Company, 
   Sede, 
@@ -44,6 +46,7 @@ import {
   PunctualityStatus,
   ClassAssignment,
   ActivityCatalogItem,
+  normalizeActivityType,
   TrainerBiometricSession,
 } from '../types';
 import { GpsVisualizer } from './GpsVisualizer';
@@ -1713,7 +1716,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                                       </span>
                                     ) : (
                                       <span className="text-[9px] font-bold text-slate-500">
-                                        {asg.activityType === 'pausa_activa' ? 'Pausa' : 'Fitness'}
+                                        {ACTIVITY_TYPE_SHORT_LABELS[normalizeActivityType(asg.activityType)]}
                                       </span>
                                     )}
                                   </div>
@@ -2029,11 +2032,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                   readOnly
                   disabled={!loadedAssignment}
                   value={
-                    activityType === 'pausa_activa'
-                      ? 'Pausa Activa'
-                      : activityType === 'clase_fitness'
-                        ? 'Clase Fitness'
-                        : ''
+                    loadedAssignment ? ACTIVITY_TYPE_LABELS[normalizeActivityType(activityType)] : ''
                   }
                   placeholder=""
                   className="w-full min-h-[44px] bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2 text-sm text-slate-900 font-medium text-center sm:text-left focus:outline-none disabled:bg-slate-50/80 disabled:text-slate-500 shadow-xs"

@@ -37,6 +37,8 @@ import {
   INITIAL_TRAINERS,
 } from '../data/mockData';
 import {
+  ACTIVITY_TYPE_DEFAULT_MINUTES,
+  ACTIVITY_TYPE_LABELS,
   ActivityCatalogItem,
   AttendanceRecord,
   ClassAssignment,
@@ -44,6 +46,8 @@ import {
   FacialVerificationData,
   FirestoreAttendanceRecord,
   GpsData,
+  isValidActivityType,
+  normalizeActivityType,
   Sede,
   Trainer,
 } from '../types';
@@ -253,21 +257,81 @@ function enqueueWorkspaceSync<T>(task: () => Promise<T>): Promise<T> {
   return next;
 }
 
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isQuotaExceededError(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.toLowerCase().includes('quota exceeded') || msg.toLowerCase().includes('resource-exhausted');
+}
+
+function isTransientFirestoreError(err: unknown): boolean {
+  if (isQuotaExceededError(err)) return false;
+  const code = String((err as { code?: unknown } | null)?.code ?? '').toLowerCase();
+  const msg = (err instanceof Error ? err.message : String(err)).toLowerCase();
+  return (
+    code === 'unavailable' ||
+    code === 'deadline-exceeded' ||
+    code === 'aborted' ||
+    code === 'internal' ||
+    code === 'unknown' ||
+    code === 'cancelled' ||
+    msg.includes('offline') ||
+    msg.includes('unavailable') ||
+    msg.includes('failed to get document') ||
+    msg.includes('network') ||
+    msg.includes('fetch') ||
+    msg.includes('deadline') ||
+    msg.includes('aborted') ||
+    msg.includes('transport')
+  );
+}
+
+async function withFirestoreRetry<T>(operation: () => Promise<T>, maxAttempts = 3): Promise<T> {
+  const delays = [550, 1300, 2400];
+  let lastError: unknown;
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await operation();
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxAttempts - 1 && isTransientFirestoreError(err)) {
+        await sleepMs(delays[attempt] ?? 1500);
+        continue;
+      }
+      throw err;
+    }
+  }
+  throw lastError;
+}
+
 async function readFreshDocSnapshot(
   docRef: DocumentReference<DocumentData>
-): Promise<DocumentSnapshot<DocumentData>> {
+): Promise<DocumentSnapshot<DocumentData> | null> {
   try {
     return await getDocFromServer(docRef);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
-    if (
-      msg.includes('offline') ||
-      msg.includes('unavailable') ||
-      msg.includes('failed to get document')
-    ) {
-      return await getDoc(docRef);
+  } catch (firstErr) {
+    if (!isTransientFirestoreError(firstErr)) {
+      throw firstErr;
     }
-    throw err;
+    await sleepMs(400);
+    try {
+      return await getDocFromServer(docRef);
+    } catch (secondErr) {
+      if (!isTransientFirestoreError(secondErr)) {
+        throw secondErr;
+      }
+      try {
+        return await getDoc(docRef);
+      } catch (cacheErr) {
+        if (isTransientFirestoreError(cacheErr)) {
+          // Document is not yet in local memory cache while client reconnects; caller can write directly
+          return null;
+        }
+        throw cacheErr;
+      }
+    }
   }
 }
 
@@ -298,9 +362,9 @@ function hasValidServerAuditAndKeys(
     EMAIL_PATTERN_REGEX.test(d.createdByEmail);
 
   const validCreatedAt =
-    snap.metadata.hasPendingWrites ||
-    (d.createdAt instanceof Timestamp &&
-      d.createdAt.toMillis() >= FIRESTORE_MIN_CREATED_AT.toMillis());
+    !snap.metadata.hasPendingWrites &&
+    d.createdAt instanceof Timestamp &&
+    d.createdAt.toMillis() >= FIRESTORE_MIN_CREATED_AT.toMillis();
 
   return validUid && validEmail && validCreatedAt;
 }
@@ -365,6 +429,30 @@ function areOperationalFieldsUnchanged(
   return true;
 }
 
+async function replaceDocCleanly(
+  docRef: DocumentReference<DocumentData>,
+  sanitizedPayload: Record<string, unknown>,
+  meta: { createdByUid: string; createdByEmail: string }
+): Promise<void> {
+  await withFirestoreRetry(async () => {
+    try {
+      await deleteDoc(docRef);
+    } catch (delErr) {
+      const code = String((delErr as { code?: unknown } | null)?.code ?? '').toLowerCase();
+      if (code !== 'not-found') {
+        throw delErr;
+      }
+    }
+    await setDoc(docRef, {
+      ...sanitizedPayload,
+      createdByUid: meta.createdByUid,
+      createdByEmail: meta.createdByEmail,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+  });
+}
+
 async function upsertOperationalDoc(params: {
   docRef: DocumentReference<DocumentData>;
   path: string;
@@ -383,25 +471,38 @@ async function upsertOperationalDoc(params: {
   } = params;
   const meta = getAutoDeviceMetadata();
 
-  let snap: DocumentSnapshot<DocumentData>;
+  let snap: DocumentSnapshot<DocumentData> | null = null;
   try {
     snap = await readFreshDocSnapshot(docRef);
   } catch (error) {
     handleFirestoreError(error, OperationType.GET, path);
   }
 
-  if (!snap.exists()) {
+  // Brand-new document or snapshot unreachable while WebChannel reconnects
+  if (snap === null || !snap.exists()) {
     try {
-      await setDoc(docRef, {
-        ...sanitizedPayload,
-        createdByUid: meta.createdByUid,
-        createdByEmail: meta.createdByEmail,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
+      await withFirestoreRetry(() =>
+        setDoc(docRef, {
+          ...sanitizedPayload,
+          createdByUid: meta.createdByUid,
+          createdByEmail: meta.createdByEmail,
+          createdAt: serverTimestamp(),
+          updatedAt: serverTimestamp(),
+        })
+      );
       return 'created';
-    } catch (error) {
-      handleFirestoreError(error, OperationType.CREATE, path);
+    } catch (createErr) {
+      if (snap !== null || isQuotaExceededError(createErr)) {
+        handleFirestoreError(createErr, OperationType.CREATE, path);
+      }
+      // If snap was null because we were briefly reconnecting and the doc already existed on server,
+      // recover cleanly via replaceDocCleanly below.
+      try {
+        await replaceDocCleanly(docRef, sanitizedPayload, meta);
+        return 'updated';
+      } catch (replaceErr) {
+        handleFirestoreError(replaceErr, OperationType.WRITE, path);
+      }
     }
   }
 
@@ -414,27 +515,23 @@ async function upsertOperationalDoc(params: {
       return 'unchanged';
     }
     try {
-      await updateDoc(
-        docRef,
-        buildUpdatePayloadWithOptionalDeletes(sanitizedPayload, optionalKeys, existingData)
+      await withFirestoreRetry(() =>
+        updateDoc(
+          docRef,
+          buildUpdatePayloadWithOptionalDeletes(sanitizedPayload, optionalKeys, existingData)
+        )
       );
       return 'updated';
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, path);
+    } catch (updateErr) {
+      if (isQuotaExceededError(updateErr)) {
+        handleFirestoreError(updateErr, OperationType.UPDATE, path);
+      }
+      // Recover automatically via delete + create if an existing server doc had a legacy field or timestamp mismatch
     }
   }
 
-  // Legacy or corrupted document lacking valid audit metadata or containing unauthorized keys:
-  // replace via delete + create so strict immutable-field update rules remain intact.
   try {
-    await deleteDoc(docRef);
-    await setDoc(docRef, {
-      ...sanitizedPayload,
-      createdByUid: meta.createdByUid,
-      createdByEmail: meta.createdByEmail,
-      createdAt: serverTimestamp(),
-      updatedAt: serverTimestamp(),
-    });
+    await replaceDocCleanly(docRef, sanitizedPayload, meta);
     return 'updated';
   } catch (error) {
     handleFirestoreError(error, OperationType.WRITE, path);
@@ -467,7 +564,7 @@ export function normalizeHHMM(raw: unknown, fallback = '09:00'): string {
 
 function cleanBoundedText(val: unknown, fallback: string, minLen: number, maxLen: number): string {
   const s = String(val ?? '')
-    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[\r\n\t\u00A0\u202F]+/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim()
     .slice(0, maxLen)
@@ -478,9 +575,17 @@ function cleanBoundedText(val: unknown, fallback: string, minLen: number, maxLen
   return fallback;
 }
 
+function formatFallbackLocalDateYMD(): string {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+}
+
 function sanitizePhoneOrDefault(rawPhone: unknown, fallback = '+52 55 0000 0000'): string {
   const s = String(rawPhone ?? '')
-    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/[\r\n\t\u00A0\u202F]+/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim()
     .slice(0, 25)
@@ -517,8 +622,8 @@ function sanitizeEmailOrDefault(rawEmail: unknown, fallbackLocalPart: string): s
 }
 
 /**
- * Compresses raster data:image/* strings if they exceed maxChars so documents
- * always stay comfortably below Firestore's field & 1MB document limits.
+ * Compresses raster data:image/* strings using progressive multi-step dimension & quality scaling
+ * so every photo stays valid (never truncated mid-base64) and well below Firestore's 1MB doc limit.
  */
 async function compressEvidenceDataUrlIfNeeded(
   rawUrl: string | undefined,
@@ -532,45 +637,52 @@ async function compressEvidenceDataUrlIfNeeded(
   if (trimmed.length <= maxChars) {
     return trimmed;
   }
+  if (/^https?:\/\/\S+$/i.test(trimmed)) {
+    return trimmed.slice(0, maxChars);
+  }
   if (typeof document === 'undefined' || !trimmed.startsWith('data:image/')) {
-    return fallbackUrl || trimmed.slice(0, maxChars);
+    return fallbackUrl && fallbackUrl.length <= maxChars ? fallbackUrl : '';
   }
   if (trimmed.startsWith('data:image/svg+xml')) {
-    return fallbackUrl && fallbackUrl.length <= maxChars ? fallbackUrl : trimmed.slice(0, maxChars);
+    return fallbackUrl && fallbackUrl.length <= maxChars ? fallbackUrl : '';
   }
 
   return new Promise<string>((resolve) => {
     const img = new Image();
     img.onload = () => {
       try {
-        const maxSide = 780;
-        const scale = Math.min(1, maxSide / Math.max(img.width || 1, img.height || 1));
-        const width = Math.max(1, Math.round(img.width * scale));
-        const height = Math.max(1, Math.round(img.height * scale));
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          resolve(fallbackUrl || trimmed.slice(0, maxChars));
-          return;
+        const srcW = Math.max(1, img.naturalWidth || img.width || 640);
+        const srcH = Math.max(1, img.naturalHeight || img.height || 480);
+        const maxSides = [740, 580, 440, 320, 220];
+        const qualities = [0.74, 0.6, 0.46, 0.34];
+
+        for (const maxSide of maxSides) {
+          const scale = Math.min(1, maxSide / Math.max(srcW, srcH));
+          const width = Math.max(120, Math.round(srcW * scale));
+          const height = Math.max(90, Math.round(srcH * scale));
+          const canvas = document.createElement('canvas');
+          canvas.width = width;
+          canvas.height = height;
+          const ctx = canvas.getContext('2d');
+          if (!ctx) continue;
+
+          ctx.drawImage(img, 0, 0, width, height);
+          for (const q of qualities) {
+            const compressed = canvas.toDataURL('image/jpeg', q);
+            if (compressed.length >= 5 && compressed.length <= maxChars) {
+              resolve(compressed);
+              return;
+            }
+          }
         }
-        ctx.drawImage(img, 0, 0, width, height);
-        let quality = 0.7;
-        let compressed = canvas.toDataURL('image/jpeg', quality);
-        while (compressed.length > maxChars && quality > 0.3) {
-          quality -= 0.15;
-          compressed = canvas.toDataURL('image/jpeg', quality);
-        }
-        resolve(
-          compressed.length <= maxChars ? compressed : fallbackUrl || compressed.slice(0, maxChars)
-        );
+
+        resolve(fallbackUrl && fallbackUrl.length <= maxChars ? fallbackUrl : '');
       } catch {
-        resolve(fallbackUrl || trimmed.slice(0, maxChars));
+        resolve(fallbackUrl && fallbackUrl.length <= maxChars ? fallbackUrl : '');
       }
     };
     img.onerror = () => {
-      resolve(fallbackUrl || trimmed.slice(0, maxChars));
+      resolve(fallbackUrl && fallbackUrl.length <= maxChars ? fallbackUrl : '');
     };
     img.src = trimmed;
   });
@@ -1039,10 +1151,7 @@ function sanitizeAssignmentFields(asg: ClassAssignment): Record<string, unknown>
       ? asg.frequency
       : 'semanal';
 
-  const actType =
-    asg.activityType === 'pausa_activa' || asg.activityType === 'clase_fitness'
-      ? asg.activityType
-      : 'pausa_activa';
+  const actType = normalizeActivityType(asg.activityType);
 
   const locArea = cleanBoundedText(asg.locationArea, 'Área General', 1, 150);
   const safeCompanyId = toSafeDocId(asg.companyId, 'comp');
@@ -1070,7 +1179,7 @@ function sanitizeAssignmentFields(asg: ClassAssignment): Record<string, unknown>
     frequency: freq,
     time: safeTime,
     activityType: actType,
-    activityName: cleanBoundedText(asg.activityName, 'Pausa Activa', 2, 150),
+    activityName: cleanBoundedText(asg.activityName, ACTIVITY_TYPE_LABELS[actType], 2, 150),
     locationArea: locArea,
     active: asg.active !== false,
   };
@@ -1142,6 +1251,7 @@ function isExistingAssignmentValid(
     d.trainerName.length >= 2 &&
     typeof d.activityName === 'string' &&
     d.activityName.length >= 2 &&
+    isValidActivityType(d.activityType) &&
     typeof d.time === 'string' &&
     /^[0-2][0-9]:[0-5][0-9]$/.test(d.time) &&
     typeof d.active === 'boolean'
@@ -1261,10 +1371,10 @@ async function sanitizeFacialVerification(
   if (!fv || typeof fv !== 'object') return undefined;
   const facePhotoUrl = await compressEvidenceDataUrlIfNeeded(
     fv.facePhotoUrl,
-    200000,
+    95000,
     generateInitialsAvatarDataUrl(fv.trainerName || fallbackTrainerName)
   );
-  if (!facePhotoUrl || facePhotoUrl.length < 5) return undefined;
+  if (!facePhotoUrl || facePhotoUrl.length < 5 || facePhotoUrl.length > 250000) return undefined;
 
   return {
     verified: Boolean(fv.verified),
@@ -1283,10 +1393,10 @@ async function sanitizeAttendanceRecordFields(
   rec: AttendanceRecord
 ): Promise<Record<string, unknown>> {
   const safeTrainerName = cleanBoundedText(rec.trainerName, 'Entrenador BSCW', 2, 120);
-  const safeDate =
-    typeof rec.date === 'string' && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(rec.date)
-      ? rec.date
-      : new Date().toISOString().slice(0, 10);
+  const trimmedDate = typeof rec.date === 'string' ? rec.date.trim() : '';
+  const safeDate = /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(trimmedDate)
+    ? trimmedDate
+    : formatFallbackLocalDateYMD();
 
   const safeScheduledTime = normalizeHHMM(rec.scheduledTime, '09:00');
   const safeCheckInTime = cleanBoundedText(rec.checkInTime, `${safeScheduledTime}:00`, 4, 20);
@@ -1313,11 +1423,10 @@ async function sanitizeAttendanceRecordFields(
     ? Math.min(1440, Math.max(-1440, Math.round(rec.punctualityDiffMinutes)))
     : 0;
 
-  const safeActType =
-    rec.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa';
+  const safeActType = normalizeActivityType(rec.activityType);
 
   const fallbackPhoto = generateInitialsAvatarDataUrl(safeTrainerName);
-  const safePhotoUrl = await compressEvidenceDataUrlIfNeeded(rec.photoUrl, 220000, fallbackPhoto);
+  const safePhotoUrl = await compressEvidenceDataUrlIfNeeded(rec.photoUrl, 145000, fallbackPhoto);
 
   const safeCompanyId = toSafeDocId(rec.companyId, 'comp');
   const rawSedeId = String(rec.sedeId || '').trim();
@@ -1342,23 +1451,29 @@ async function sanitizeAttendanceRecordFields(
     punctualityStatus: safePunctuality,
     punctualityDiffMinutes: safeDiff,
     activityType: safeActType,
-    activityName: cleanBoundedText(rec.activityName, 'Pausa Activa', 2, 150),
+    activityName: cleanBoundedText(rec.activityName, ACTIVITY_TYPE_LABELS[safeActType], 2, 150),
     attendeesCount: Number.isFinite(rec.attendeesCount)
       ? Math.min(10000, Math.max(0, Math.round(rec.attendeesCount)))
       : 0,
     locationArea: cleanBoundedText(rec.locationArea, 'Área General', 1, 150),
     checkInGps: sanitizeGpsData(rec.checkInGps),
-    photoUrl: safePhotoUrl && safePhotoUrl.length >= 5 ? safePhotoUrl : fallbackPhoto,
+    photoUrl:
+      safePhotoUrl && safePhotoUrl.length >= 5 && safePhotoUrl.length <= 280000
+        ? safePhotoUrl
+        : fallbackPhoto,
     adminVerified: Boolean(rec.adminVerified),
   };
 
-  if (rec.assignmentId) {
+  if (typeof rec.assignmentId === 'string' && rec.assignmentId.trim()) {
     payload.assignmentId = toSafeDocId(rec.assignmentId, 'asg');
   }
   if (rec.checkOutTime === null) {
     payload.checkOutTime = null;
   } else if (typeof rec.checkOutTime === 'string' && rec.checkOutTime.trim()) {
-    payload.checkOutTime = rec.checkOutTime.trim().slice(0, 20);
+    payload.checkOutTime = rec.checkOutTime
+      .replace(/[\r\n\t\u00A0\u202F]+/g, ' ')
+      .trim()
+      .slice(0, 20);
   }
   if (rec.checkOutIso === null) {
     payload.checkOutIso = null;
@@ -1373,7 +1488,10 @@ async function sanitizeAttendanceRecordFields(
     payload.nonComplianceReason = rec.nonComplianceReason;
   }
   if (typeof rec.markedNonCompliantAt === 'string' && rec.markedNonCompliantAt.trim()) {
-    payload.markedNonCompliantAt = rec.markedNonCompliantAt.trim().slice(0, 40);
+    payload.markedNonCompliantAt = rec.markedNonCompliantAt
+      .replace(/[\r\n\t\u00A0\u202F]+/g, ' ')
+      .trim()
+      .slice(0, 40);
   }
   if (typeof rec.observations === 'string') {
     payload.observations = rec.observations.slice(0, 1000);
@@ -1382,8 +1500,8 @@ async function sanitizeAttendanceRecordFields(
     payload.checkOutGps = sanitizeGpsData(rec.checkOutGps);
   }
   if (typeof rec.exitPhotoUrl === 'string' && rec.exitPhotoUrl.trim()) {
-    const compressedExit = await compressEvidenceDataUrlIfNeeded(rec.exitPhotoUrl, 220000);
-    if (compressedExit) {
+    const compressedExit = await compressEvidenceDataUrlIfNeeded(rec.exitPhotoUrl, 145000);
+    if (compressedExit && compressedExit.length >= 5 && compressedExit.length <= 280000) {
       payload.exitPhotoUrl = compressedExit;
     }
   }
@@ -1432,6 +1550,7 @@ function isExistingRecordValid(d: Record<string, unknown>): boolean {
     /^[0-2][0-9]:[0-5][0-9]$/.test(d.scheduledTime) &&
     typeof d.status === 'string' &&
     (d.status === 'en_curso' || d.status === 'completado' || d.status === 'incumplido') &&
+    isValidActivityType(d.activityType) &&
     typeof d.photoUrl === 'string' &&
     d.photoUrl.length >= 5 &&
     typeof d.adminVerified === 'boolean'
@@ -1540,7 +1659,7 @@ export function parseFirestoreAttendanceRecord(
         ? d.punctualityStatus
         : 'a_tiempo',
     punctualityDiffMinutes: Number(d.punctualityDiffMinutes ?? 0),
-    activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
+    activityType: normalizeActivityType(d.activityType),
     activityName: String(d.activityName || ''),
     attendeesCount: Number(d.attendeesCount ?? 0),
     locationArea: String(d.locationArea || ''),
@@ -1590,12 +1709,13 @@ export async function deleteRecordFromFirestore(recordId: string): Promise<void>
 // ============================================================================
 
 function sanitizeActivityCatalogFields(item: ActivityCatalogItem): Record<string, unknown> {
+  const actType = normalizeActivityType(item.activityType);
   const payload: Record<string, unknown> = {
-    name: cleanBoundedText(item.name, 'Pausa Activa General', 2, 150),
-    activityType: item.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
+    name: cleanBoundedText(item.name, `${ACTIVITY_TYPE_LABELS[actType]} General`, 2, 150),
+    activityType: actType,
     defaultDurationMinutes: Number.isFinite(item.defaultDurationMinutes)
       ? Math.min(480, Math.max(5, Math.round(item.defaultDurationMinutes)))
-      : 20,
+      : ACTIVITY_TYPE_DEFAULT_MINUTES[actType],
     active: item.active !== false,
   };
   if (typeof item.description === 'string') {
@@ -1610,7 +1730,7 @@ function isExistingCatalogValid(d: Record<string, unknown>): boolean {
     d.name.length >= 2 &&
     d.name.length <= 150 &&
     NON_EMPTY_TEXT_REGEX.test(d.name) &&
-    (d.activityType === 'pausa_activa' || d.activityType === 'clase_fitness') &&
+    isValidActivityType(d.activityType) &&
     typeof d.defaultDurationMinutes === 'number' &&
     Number.isFinite(d.defaultDurationMinutes) &&
     d.defaultDurationMinutes >= 5 &&

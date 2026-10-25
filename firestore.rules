@@ -189,6 +189,12 @@ service cloud.firestore {
         );
     }
 
+    function isValidActivityType(val) {
+      return val is string &&
+        val.size() <= 30 &&
+        val in ['pausa_activa', 'clase_fitness', 'gimnasio_corporativo', 'masajes'];
+    }
+
     // 1. Trainer Schema Validator (/trainers/{trainerId})
     function isValidTrainer(data) {
       return data is map &&
@@ -483,9 +489,7 @@ service cloud.firestore {
         data.time is string &&
         data.time.size() == 5 &&
         data.time.matches('^[0-2][0-9]:[0-5][0-9]$') &&
-        data.activityType is string &&
-        data.activityType.size() <= 20 &&
-        data.activityType in ['pausa_activa', 'clase_fitness'] &&
+        isValidActivityType(data.activityType) &&
         data.activityName is string &&
         data.activityName.size() >= 2 &&
         data.activityName.size() <= 150 &&
@@ -713,9 +717,7 @@ service cloud.firestore {
         !math.isNaN(data.punctualityDiffMinutes) &&
         data.punctualityDiffMinutes >= -1440 &&
         data.punctualityDiffMinutes <= 1440 &&
-        data.activityType is string &&
-        data.activityType.size() <= 20 &&
-        data.activityType in ['pausa_activa', 'clase_fitness'] &&
+        isValidActivityType(data.activityType) &&
         data.activityName is string &&
         data.activityName.size() >= 2 &&
         data.activityName.size() <= 150 &&
@@ -812,9 +814,7 @@ service cloud.firestore {
         data.name.size() >= 2 &&
         data.name.size() <= 150 &&
         data.name.matches('^\\S(.*\\S)?$') &&
-        data.activityType is string &&
-        data.activityType.size() <= 20 &&
-        data.activityType in ['pausa_activa', 'clase_fitness'] &&
+        isValidActivityType(data.activityType) &&
         data.defaultDurationMinutes is number &&
         !math.isNaN(data.defaultDurationMinutes) &&
         data.defaultDurationMinutes >= 5 &&

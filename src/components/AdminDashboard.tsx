@@ -30,7 +30,16 @@ import {
   RefreshCw,
   ZoomIn,
 } from 'lucide-react';
-import { AttendanceRecord, Company, Sede, Trainer, ClassAssignment, ActivityCatalogItem } from '../types';
+import {
+  ACTIVITY_TYPE_LABELS,
+  ActivityCatalogItem,
+  AttendanceRecord,
+  ClassAssignment,
+  Company,
+  normalizeActivityType,
+  Sede,
+  Trainer,
+} from '../types';
 import { formatDistance } from '../utils/geo';
 import { getSessionAlarmStatus, formatSecondsClock } from '../utils/sessionAlarm';
 import {
@@ -249,8 +258,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     const totalMinutes = periodRecords.reduce((acc, r) => acc + (r.durationMinutes || 45), 0);
     const totalHours = (totalMinutes / 60).toFixed(1);
 
-    const pausasCount = periodRecords.filter((r) => r.activityType === 'pausa_activa').length;
-    const fitnessCount = periodRecords.filter((r) => r.activityType === 'clase_fitness').length;
+    const pausasCount = periodRecords.filter(
+      (r) => normalizeActivityType(r.activityType) === 'pausa_activa'
+    ).length;
+    const fitnessCount = periodRecords.filter(
+      (r) => normalizeActivityType(r.activityType) === 'clase_fitness'
+    ).length;
+    const gimnasioCount = periodRecords.filter(
+      (r) => normalizeActivityType(r.activityType) === 'gimnasio_corporativo'
+    ).length;
+    const masajesCount = periodRecords.filter(
+      (r) => normalizeActivityType(r.activityType) === 'masajes'
+    ).length;
 
     return {
       total,
@@ -264,6 +283,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       totalHours,
       pausasCount,
       fitnessCount,
+      gimnasioCount,
+      masajesCount,
     };
   }, [periodRecords]);
 
@@ -299,8 +320,18 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return companies.map((comp) => {
       const compRecords = periodRecords.filter((r) => r.companyId === comp.id);
       const totalSessions = compRecords.length;
-      const pausas = compRecords.filter((r) => r.activityType === 'pausa_activa').length;
-      const fitness = compRecords.filter((r) => r.activityType === 'clase_fitness').length;
+      const pausas = compRecords.filter(
+        (r) => normalizeActivityType(r.activityType) === 'pausa_activa'
+      ).length;
+      const fitness = compRecords.filter(
+        (r) => normalizeActivityType(r.activityType) === 'clase_fitness'
+      ).length;
+      const gimnasio = compRecords.filter(
+        (r) => normalizeActivityType(r.activityType) === 'gimnasio_corporativo'
+      ).length;
+      const masajes = compRecords.filter(
+        (r) => normalizeActivityType(r.activityType) === 'masajes'
+      ).length;
       const attendees = compRecords.reduce((acc, r) => acc + (r.attendeesCount || 0), 0);
 
       return {
@@ -308,6 +339,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         totalSessions,
         pausas,
         fitness,
+        gimnasio,
+        masajes,
         attendees,
       };
     });
@@ -318,7 +351,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return records.filter((r) => {
       if (filterTrainerId !== 'all' && r.trainerId !== filterTrainerId) return false;
       if (filterCompanyId !== 'all' && r.companyId !== filterCompanyId) return false;
-      if (filterActivityType !== 'all' && r.activityType !== filterActivityType) return false;
+      if (
+        filterActivityType !== 'all' &&
+        normalizeActivityType(r.activityType) !== filterActivityType
+      ) {
+        return false;
+      }
       if (logDateFilter && r.date !== logDateFilter) return false;
       if (!logDateFilter && logMonthFilter && !r.date.startsWith(logMonthFilter)) return false;
 
@@ -757,11 +795,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
 
             <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm flex flex-col justify-between col-span-2 lg:col-span-1">
-              <span className="text-xs font-semibold text-slate-500">Pausas vs Clases</span>
-              <div className="mt-2 flex items-center justify-between text-xs font-bold">
-                <span className="text-red-600">{stats.pausasCount} Pausas</span>
-                <span className="text-slate-300">/</span>
-                <span className="text-slate-800">{stats.fitnessCount} Fitness</span>
+              <span className="text-xs font-semibold text-slate-500">Modalidades Impartidas</span>
+              <div className="mt-2 grid grid-cols-2 gap-x-2 gap-y-1 text-[11px] font-bold font-mono tabular-nums">
+                <span className="text-amber-700">{stats.pausasCount} Pausas</span>
+                <span className="text-red-600">{stats.fitnessCount} Fitness</span>
+                <span className="text-indigo-700">{stats.gimnasioCount} Gimnasio</span>
+                <span className="text-teal-700">{stats.masajesCount} Masajes</span>
               </div>
             </div>
           </div>
@@ -889,39 +928,45 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <tr>
                     <th className="py-3 px-4">Empresa Cliente</th>
                     <th className="py-3 px-3">Industria</th>
-                    <th className="py-3 px-3 text-center">Sedes Registradas</th>
+                    <th className="py-3 px-3 text-center">Sedes</th>
                     <th className="py-3 px-3 text-center">Total Sesiones</th>
                     <th className="py-3 px-3 text-center">Pausas Activas</th>
                     <th className="py-3 px-3 text-center">Clases Fitness</th>
+                    <th className="py-3 px-3 text-center">Gimnasio Corp.</th>
+                    <th className="py-3 px-3 text-center">Masajes</th>
                     <th className="py-3 px-4 text-right">Colaboradores Beneficiados</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-100">
-                  {companySummaries.map(({ company, totalSessions, pausas, fitness, attendees }) => (
-                    <tr key={company.id} className="hover:bg-slate-50 transition">
-                      <td className="py-3.5 px-4 font-bold text-slate-900">
-                        {company.name}
-                      </td>
-                      <td className="py-3.5 px-3 text-slate-500">
-                        {company.industry}
-                      </td>
-                      <td className="py-3.5 px-3 text-center font-mono font-semibold text-slate-700">
-                        {company.sedes.length} sedes
-                      </td>
-                      <td className="py-3.5 px-3 text-center font-mono font-black text-red-600">
-                        {totalSessions}
-                      </td>
-                      <td className="py-3.5 px-3 text-center font-mono font-medium text-slate-800">
-                        {pausas}
-                      </td>
-                      <td className="py-3.5 px-3 text-center font-mono font-medium text-slate-800">
-                        {fitness}
-                      </td>
-                      <td className="py-3.5 px-4 text-right font-mono font-bold text-slate-900">
-                        {attendees} personas
-                      </td>
-                    </tr>
-                  ))}
+                  {companySummaries.map(
+                    ({ company, totalSessions, pausas, fitness, gimnasio, masajes, attendees }) => (
+                      <tr key={company.id} className="hover:bg-slate-50 transition">
+                        <td className="py-3.5 px-4 font-bold text-slate-900">{company.name}</td>
+                        <td className="py-3.5 px-3 text-slate-500">{company.industry}</td>
+                        <td className="py-3.5 px-3 text-center font-mono tabular-nums font-semibold text-slate-700">
+                          {company.sedes.length} sedes
+                        </td>
+                        <td className="py-3.5 px-3 text-center font-mono tabular-nums font-black text-red-600">
+                          {totalSessions}
+                        </td>
+                        <td className="py-3.5 px-3 text-center font-mono tabular-nums font-medium text-slate-800">
+                          {pausas}
+                        </td>
+                        <td className="py-3.5 px-3 text-center font-mono tabular-nums font-medium text-slate-800">
+                          {fitness}
+                        </td>
+                        <td className="py-3.5 px-3 text-center font-mono tabular-nums font-medium text-slate-800">
+                          {gimnasio}
+                        </td>
+                        <td className="py-3.5 px-3 text-center font-mono tabular-nums font-medium text-slate-800">
+                          {masajes}
+                        </td>
+                        <td className="py-3.5 px-4 text-right font-mono tabular-nums font-bold text-slate-900">
+                          {attendees} personas
+                        </td>
+                      </tr>
+                    )
+                  )}
                 </tbody>
               </table>
             </div>
@@ -1110,9 +1155,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   onChange={(e) => setFilterActivityType(e.target.value)}
                   className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-red-500 cursor-pointer font-medium"
                 >
-                  <option value="all">Todas las Actividades</option>
+                  <option value="all">Todas las Modalidades</option>
                   <option value="pausa_activa">Pausa Activa</option>
                   <option value="clase_fitness">Clase Fitness</option>
+                  <option value="gimnasio_corporativo">Gimnasio Corporativo</option>
+                  <option value="masajes">Masajes</option>
                 </select>
 
                 <select
@@ -1263,11 +1310,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                           {/* Activity */}
                           <td className="py-3 px-3">
-                            <span className="font-bold text-slate-900 block truncate max-w-[160px]">
+                            <span className="font-bold text-slate-900 block truncate max-w-[175px]">
                               {rec.activityName}
                             </span>
                             <span className="text-[10px] text-slate-500 font-mono tabular-nums">
-                              {rec.attendeesCount} participantes
+                              {ACTIVITY_TYPE_LABELS[normalizeActivityType(rec.activityType)]} ·{' '}
+                              {rec.attendeesCount} part.
                             </span>
                           </td>
 

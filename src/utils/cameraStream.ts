@@ -321,26 +321,32 @@ export async function attachStreamToVideoElement(
 export function compressCanvasToMaxDataUrlLength(
   canvas: HTMLCanvasElement,
   maxChars: number,
-  initialQuality = 0.86
+  initialQuality = 0.84
 ): string {
-  const qualities = [initialQuality, 0.78, 0.7, 0.62, 0.52, 0.42];
+  const qualities = [initialQuality, 0.76, 0.66, 0.54, 0.42];
   let dataUrl = canvas.toDataURL('image/jpeg', initialQuality);
+  if (dataUrl.length <= maxChars) {
+    return dataUrl;
+  }
 
-  for (const q of qualities) {
+  for (const q of qualities.slice(1)) {
     dataUrl = canvas.toDataURL('image/jpeg', q);
     if (dataUrl.length <= maxChars) {
       return dataUrl;
     }
   }
 
-  // If still above maxChars, scale down canvas dimensions proportionally
-  const scaled = document.createElement('canvas');
-  scaled.width = Math.max(200, Math.round(canvas.width * 0.72));
-  scaled.height = Math.max(200, Math.round(canvas.height * 0.72));
-  const ctx = scaled.getContext('2d');
-  if (ctx) {
+  // Progressively scale down canvas dimensions until output strictly satisfies maxChars
+  const scaleFactors = [0.76, 0.58, 0.44, 0.32, 0.22];
+  for (const factor of scaleFactors) {
+    const scaled = document.createElement('canvas');
+    scaled.width = Math.max(160, Math.round(canvas.width * factor));
+    scaled.height = Math.max(120, Math.round(canvas.height * factor));
+    const ctx = scaled.getContext('2d');
+    if (!ctx) continue;
+
     ctx.drawImage(canvas, 0, 0, scaled.width, scaled.height);
-    for (const q of [0.74, 0.62, 0.5]) {
+    for (const q of [0.72, 0.58, 0.44, 0.34]) {
       dataUrl = scaled.toDataURL('image/jpeg', q);
       if (dataUrl.length <= maxChars) {
         return dataUrl;

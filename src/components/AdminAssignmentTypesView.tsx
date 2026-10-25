@@ -1,8 +1,12 @@
 import React, { useState } from 'react';
 import {
+  ACTIVITY_TYPE_DEFAULT_MINUTES,
+  ACTIVITY_TYPE_LABELS,
   ActivityCatalogItem,
   ActivityType,
+  ALL_ACTIVITY_TYPES,
   ClassAssignment,
+  normalizeActivityType,
 } from '../types';
 import {
   Activity,
@@ -34,6 +38,108 @@ interface AdminAssignmentTypesViewProps {
   onEditFullAssignment: (assignment: ClassAssignment) => void;
 }
 
+interface ModalityMeta {
+  type: ActivityType;
+  indexLabel: string;
+  catalogTitle: string;
+  shortButtonLabel: string;
+  createButtonLabel: string;
+  prefix: string;
+  fallbackActivityName: string;
+  activeTabClass: string;
+  createBtnClass: string;
+  addCardBtnClass: string;
+  cardItemActiveClass: string;
+  clockIconClass: string;
+  editHoverClass: string;
+  modalActiveBtnClass: string;
+  kpiCardClass: string;
+  kpiTitleClass: string;
+  kickerTextClass: string;
+}
+
+const MODALITY_CONFIG: Record<ActivityType, ModalityMeta> = {
+  pausa_activa: {
+    type: 'pausa_activa',
+    indexLabel: '01 · Modalidad 1',
+    catalogTitle: 'Catálogo de Pausas Activas',
+    shortButtonLabel: 'Pausa Activa',
+    createButtonLabel: 'Nueva Pausa Activa',
+    prefix: 'Pausa Activa: ',
+    fallbackActivityName: 'Pausa Activa: Ergonomía y Estiramientos',
+    activeTabClass: 'bg-amber-500 text-white shadow-2xs font-bold',
+    createBtnClass:
+      'bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200',
+    addCardBtnClass: 'bg-amber-500 hover:bg-amber-600 text-white',
+    cardItemActiveClass: 'bg-amber-50/30 border-amber-200/80',
+    clockIconClass: 'text-amber-600',
+    editHoverClass: 'hover:bg-amber-50 hover:text-amber-700',
+    modalActiveBtnClass: 'bg-amber-500 border-amber-500 text-white shadow-sm',
+    kpiCardClass: 'bg-amber-50/60 border-amber-200',
+    kpiTitleClass: 'text-amber-800',
+    kickerTextClass: 'text-amber-700',
+  },
+  clase_fitness: {
+    type: 'clase_fitness',
+    indexLabel: '02 · Modalidad 2',
+    catalogTitle: 'Catálogo de Clases Fitness',
+    shortButtonLabel: 'Clase Fitness',
+    createButtonLabel: 'Nueva Clase Fitness',
+    prefix: 'Clase Fitness: ',
+    fallbackActivityName: 'Clase Fitness: Entrenamiento Funcional',
+    activeTabClass: 'bg-red-600 text-white shadow-2xs font-bold',
+    createBtnClass: 'bg-red-600 hover:bg-red-700 text-white shadow-xs',
+    addCardBtnClass: 'bg-red-600 hover:bg-red-700 text-white',
+    cardItemActiveClass: 'bg-red-50/30 border-red-200/80',
+    clockIconClass: 'text-red-600',
+    editHoverClass: 'hover:bg-red-50 hover:text-red-700',
+    modalActiveBtnClass: 'bg-red-600 border-red-600 text-white shadow-sm',
+    kpiCardClass: 'bg-red-50/60 border-red-200',
+    kpiTitleClass: 'text-red-800',
+    kickerTextClass: 'text-red-700',
+  },
+  gimnasio_corporativo: {
+    type: 'gimnasio_corporativo',
+    indexLabel: '03 · Modalidad 3',
+    catalogTitle: 'Catálogo de Gimnasio Corporativo',
+    shortButtonLabel: 'Gimnasio Corp.',
+    createButtonLabel: 'Nuevo Gimnasio Corp.',
+    prefix: 'Gimnasio Corporativo: ',
+    fallbackActivityName: 'Gimnasio Corporativo: Acondicionamiento y Pesas',
+    activeTabClass: 'bg-indigo-600 text-white shadow-2xs font-bold',
+    createBtnClass:
+      'bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200',
+    addCardBtnClass: 'bg-indigo-600 hover:bg-indigo-700 text-white',
+    cardItemActiveClass: 'bg-indigo-50/30 border-indigo-200/80',
+    clockIconClass: 'text-indigo-600',
+    editHoverClass: 'hover:bg-indigo-50 hover:text-indigo-700',
+    modalActiveBtnClass: 'bg-indigo-600 border-indigo-600 text-white shadow-sm',
+    kpiCardClass: 'bg-indigo-50/60 border-indigo-200',
+    kpiTitleClass: 'text-indigo-800',
+    kickerTextClass: 'text-indigo-700',
+  },
+  masajes: {
+    type: 'masajes',
+    indexLabel: '04 · Modalidad 4',
+    catalogTitle: 'Catálogo de Masajes',
+    shortButtonLabel: 'Masajes',
+    createButtonLabel: 'Nuevo Masaje',
+    prefix: 'Masajes: ',
+    fallbackActivityName: 'Masajes: Masaje Descontracturante en Silla',
+    activeTabClass: 'bg-teal-600 text-white shadow-2xs font-bold',
+    createBtnClass:
+      'bg-teal-50 hover:bg-teal-100 text-teal-800 border border-teal-200',
+    addCardBtnClass: 'bg-teal-600 hover:bg-teal-700 text-white',
+    cardItemActiveClass: 'bg-teal-50/30 border-teal-200/80',
+    clockIconClass: 'text-teal-600',
+    editHoverClass: 'hover:bg-teal-50 hover:text-teal-700',
+    modalActiveBtnClass: 'bg-teal-600 border-teal-600 text-white shadow-sm',
+    kpiCardClass: 'bg-teal-50/60 border-teal-200',
+    kpiTitleClass: 'text-teal-800',
+    kickerTextClass: 'text-teal-700',
+  },
+};
+
 export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> = ({
   activityCatalog,
   assignments,
@@ -43,7 +149,6 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
   onUpdateAssignment,
   onEditFullAssignment,
 }) => {
-  // Modal / Form state for creating or editing a catalog item
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [editingItem, setEditingItem] = useState<ActivityCatalogItem | null>(null);
   const [itemName, setItemName] = useState('');
@@ -52,42 +157,70 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
   const [itemDescription, setItemDescription] = useState('');
   const [itemActive, setItemActive] = useState(true);
 
-  // Filter for assignments quick-type editor
   const [searchAssignment, setSearchAssignment] = useState('');
   const [filterType, setFilterType] = useState<'all' | ActivityType>('all');
   const [savedToastId, setSavedToastId] = useState<string | null>(null);
 
-  const pausaCatalog = activityCatalog.filter((c) => c.activityType === 'pausa_activa');
-  const fitnessCatalog = activityCatalog.filter((c) => c.activityType === 'clase_fitness');
+  const catalogByType: Record<ActivityType, ActivityCatalogItem[]> = {
+    pausa_activa: activityCatalog.filter(
+      (c) => normalizeActivityType(c.activityType) === 'pausa_activa'
+    ),
+    clase_fitness: activityCatalog.filter(
+      (c) => normalizeActivityType(c.activityType) === 'clase_fitness'
+    ),
+    gimnasio_corporativo: activityCatalog.filter(
+      (c) => normalizeActivityType(c.activityType) === 'gimnasio_corporativo'
+    ),
+    masajes: activityCatalog.filter((c) => normalizeActivityType(c.activityType) === 'masajes'),
+  };
 
-  const activePausaNames = pausaCatalog.filter((c) => c.active).map((c) => c.name);
-  const activeFitnessNames = fitnessCatalog.filter((c) => c.active).map((c) => c.name);
+  const getActiveNamesForType = (type: ActivityType): string[] => {
+    const activeNames = catalogByType[type].filter((c) => c.active).map((c) => c.name);
+    return activeNames.length > 0 ? activeNames : [MODALITY_CONFIG[type].fallbackActivityName];
+  };
 
   const openCreateForm = (presetType: ActivityType = 'pausa_activa') => {
     setEditingItem(null);
     setItemType(presetType);
-    setItemName(presetType === 'pausa_activa' ? 'Pausa Activa: ' : 'Clase Fitness: ');
-    setItemDurationInput(presetType === 'pausa_activa' ? '20' : '50');
+    setItemName(MODALITY_CONFIG[presetType].prefix);
+    setItemDurationInput(String(ACTIVITY_TYPE_DEFAULT_MINUTES[presetType]));
     setItemDescription('');
     setItemActive(true);
     setIsFormOpen(true);
   };
 
   const openEditForm = (item: ActivityCatalogItem) => {
+    const normalizedType = normalizeActivityType(item.activityType);
     setEditingItem(item);
     setItemName(item.name);
-    setItemType(item.activityType);
-    setItemDurationInput(String(item.defaultDurationMinutes || 30));
+    setItemType(normalizedType);
+    setItemDurationInput(
+      String(item.defaultDurationMinutes || ACTIVITY_TYPE_DEFAULT_MINUTES[normalizedType])
+    );
     setItemDescription(item.description || '');
     setItemActive(item.active !== false);
     setIsFormOpen(true);
+  };
+
+  const handleSelectModalType = (nextType: ActivityType) => {
+    const prevPrefix = MODALITY_CONFIG[itemType].prefix;
+    setItemType(nextType);
+    if (!editingItem) {
+      if (!itemName.trim() || itemName === prevPrefix) {
+        setItemName(MODALITY_CONFIG[nextType].prefix);
+      }
+      setItemDurationInput(String(ACTIVITY_TYPE_DEFAULT_MINUTES[nextType]));
+    }
   };
 
   const handleSaveCatalogForm = (e: React.FormEvent) => {
     e.preventDefault();
     if (!itemName.trim()) return;
 
-    const duration = Math.max(5, parseInt(itemDurationInput, 10) || 20);
+    const duration = Math.max(
+      5,
+      parseInt(itemDurationInput, 10) || ACTIVITY_TYPE_DEFAULT_MINUTES[itemType]
+    );
 
     const payload: ActivityCatalogItem = {
       id: editingItem ? editingItem.id : `cat_${Date.now()}`,
@@ -116,13 +249,9 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
   };
 
   const handleQuickSwitchAssignmentType = (asg: ClassAssignment, newType: ActivityType) => {
-    if (asg.activityType === newType) return;
-    const options = newType === 'pausa_activa' ? activePausaNames : activeFitnessNames;
-    const defaultName =
-      options[0] ||
-      (newType === 'pausa_activa'
-        ? 'Pausa Activa: Ergonomía y Estiramientos'
-        : 'Clase Fitness: Entrenamiento Funcional');
+    if (normalizeActivityType(asg.activityType) === newType) return;
+    const options = getActiveNamesForType(newType);
+    const defaultName = options[0] || MODALITY_CONFIG[newType].fallbackActivityName;
 
     onUpdateAssignment({
       ...asg,
@@ -134,16 +263,18 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
   };
 
   const handleQuickChangeActivityName = (asg: ClassAssignment, newName: string) => {
+    const normType = normalizeActivityType(asg.activityType);
     onUpdateAssignment({
       ...asg,
+      activityType: normType,
       activityName: newName,
-      durationMinutes: getDefaultDurationMinutes(asg.activityType, newName, activityCatalog),
+      durationMinutes: getDefaultDurationMinutes(normType, newName, activityCatalog),
     });
     triggerSavedBadge(asg.id);
   };
 
   const filteredAssignments = assignments.filter((a) => {
-    if (filterType !== 'all' && a.activityType !== filterType) return false;
+    if (filterType !== 'all' && normalizeActivityType(a.activityType) !== filterType) return false;
     if (searchAssignment.trim()) {
       const q = searchAssignment.toLowerCase();
       return (
@@ -156,110 +287,115 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
     return true;
   });
 
-  const pausasAssignedCount = assignments.filter((a) => a.activityType === 'pausa_activa').length;
-  const fitnessAssignedCount = assignments.filter((a) => a.activityType === 'clase_fitness').length;
-
   return (
     <div className="space-y-6">
       {/* Top Header & KPI Cards */}
       <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-4">
           <div className="flex items-start space-x-3">
             <div className="w-11 h-11 rounded-2xl bg-red-50 text-red-600 border border-red-200 flex items-center justify-center shrink-0">
               <Activity className="w-6 h-6" />
             </div>
             <div>
               <h3 className="text-base sm:text-lg font-bold text-slate-900">
-                Tipos de Asignación: Clases Fitness y Pausas Activas
+                Tipos de Asignación y Catálogo Oficial en Base de Datos
               </h3>
               <p className="text-xs text-slate-500 mt-0.5">
-                Edita rápidamente si una asignación es Clase Fitness o Pausa Activa, y personaliza el catálogo de actividades disponibles para entrenadores y administración.
+                Gestiona las 4 modalidades corporativas sincronizadas en Firestore:{' '}
+                <strong>Pausa Activa</strong>, <strong>Clase Fitness</strong>,{' '}
+                <strong>Gimnasio Corporativo</strong> y <strong>Masajes</strong>.
               </p>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <button
-              type="button"
-              onClick={() => openCreateForm('pausa_activa')}
-              className="px-3.5 py-2 rounded-xl bg-amber-50 hover:bg-amber-100 text-amber-800 border border-amber-200 text-xs font-bold flex items-center space-x-1.5 transition"
-            >
-              <Plus className="w-4 h-4 text-amber-600" />
-              <span>Nueva Pausa Activa</span>
-            </button>
-            <button
-              type="button"
-              onClick={() => openCreateForm('clase_fitness')}
-              className="px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center space-x-1.5 shadow-sm transition"
-            >
-              <Plus className="w-4 h-4" />
-              <span>Nueva Clase Fitness</span>
-            </button>
+            {ALL_ACTIVITY_TYPES.map((type) => {
+              const meta = MODALITY_CONFIG[type];
+              return (
+                <button
+                  key={type}
+                  type="button"
+                  onClick={() => openCreateForm(type)}
+                  className={`px-3 py-2 rounded-xl text-xs font-bold flex items-center space-x-1.5 transition whitespace-nowrap shrink-0 cursor-pointer ${meta.createBtnClass}`}
+                >
+                  <Plus className="w-3.5 h-3.5 shrink-0" />
+                  <span>{meta.createButtonLabel}</span>
+                </button>
+              );
+            })}
           </div>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
-          <div className="p-3.5 rounded-xl bg-amber-50/70 border border-amber-200">
-            <span className="text-[11px] font-bold text-amber-800 block">Catálogo Pausas Activas</span>
-            <span className="text-xl font-black text-slate-900 font-mono">{pausaCatalog.length}</span>
-          </div>
-          <div className="p-3.5 rounded-xl bg-red-50/70 border border-red-200">
-            <span className="text-[11px] font-bold text-red-800 block">Catálogo Clases Fitness</span>
-            <span className="text-xl font-black text-slate-900 font-mono">{fitnessCatalog.length}</span>
-          </div>
-          <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
-            <span className="text-[11px] font-bold text-slate-600 block">Asignaciones Pausa Activa</span>
-            <span className="text-xl font-black text-slate-900 font-mono">{pausasAssignedCount}</span>
-          </div>
-          <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
-            <span className="text-[11px] font-bold text-slate-600 block">Asignaciones Clase Fitness</span>
-            <span className="text-xl font-black text-slate-900 font-mono">{fitnessAssignedCount}</span>
-          </div>
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 pt-2">
+          {ALL_ACTIVITY_TYPES.map((type) => {
+            const meta = MODALITY_CONFIG[type];
+            const catalogCount = catalogByType[type].length;
+            const assignedCount = assignments.filter(
+              (a) => normalizeActivityType(a.activityType) === type
+            ).length;
+            return (
+              <div key={type} className={`p-3.5 rounded-xl border ${meta.kpiCardClass}`}>
+                <span className={`text-[11px] font-bold block ${meta.kpiTitleClass}`}>
+                  {ACTIVITY_TYPE_LABELS[type]}
+                </span>
+                <div className="mt-1.5 flex items-baseline justify-between gap-2">
+                  <span className="text-xl font-black text-slate-900 font-mono tabular-nums">
+                    {catalogCount}
+                  </span>
+                  <span className="text-[11px] text-slate-600 font-medium font-mono tabular-nums">
+                    en catálogo · {assignedCount} asign.
+                  </span>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </div>
 
-      {/* SECTION 1: Quick Editor for Existing Assignments (Switch between Clase or Pausa Activa) */}
+      {/* SECTION 1: Quick Editor for Existing Assignments */}
       <div className="bg-white border border-slate-200/90 rounded-2xl p-5 sm:p-6 shadow-sm space-y-4">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-200 pb-4">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 border-b border-slate-200 pb-4">
           <div>
             <h4 className="text-sm sm:text-base font-bold text-slate-900 flex items-center">
-              <Layers className="w-4 h-4 mr-2 text-red-600" />
-              Editar Tipo de Asignación en Clases Programadas ({filteredAssignments.length})
+              <Layers className="w-4 h-4 mr-2 text-red-600 shrink-0" />
+              Editar Tipo de Asignación en Sesiones Programadas (
+              <span className="font-mono tabular-nums">{filteredAssignments.length}</span>)
             </h4>
             <p className="text-xs text-slate-500 mt-0.5">
-              Cambia con un clic cualquier asignación activa entre <strong>Pausa Activa</strong> o <strong>Clase Fitness</strong> y elige su sub-actividad específica.
+              Cambia con un clic cualquier asignación entre Pausa Activa, Clase Fitness, Gimnasio Corporativo o Masajes y selecciona su actividad específica.
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <div className="bg-slate-100 p-1 rounded-xl border border-slate-200 flex text-xs font-semibold">
+            <div className="bg-slate-100 p-1 rounded-xl border border-slate-200 flex flex-wrap gap-1 text-xs font-semibold">
               <button
                 type="button"
                 onClick={() => setFilterType('all')}
-                className={`px-2.5 py-1 rounded-lg transition ${
-                  filterType === 'all' ? 'bg-white text-slate-900 shadow-2xs font-bold' : 'text-slate-600'
+                className={`px-2.5 py-1 rounded-lg transition whitespace-nowrap shrink-0 cursor-pointer ${
+                  filterType === 'all'
+                    ? 'bg-white text-slate-900 shadow-2xs font-bold'
+                    : 'text-slate-600 hover:text-slate-900'
                 }`}
               >
                 Todas
               </button>
-              <button
-                type="button"
-                onClick={() => setFilterType('pausa_activa')}
-                className={`px-2.5 py-1 rounded-lg transition ${
-                  filterType === 'pausa_activa' ? 'bg-amber-500 text-white shadow-2xs font-bold' : 'text-slate-600'
-                }`}
-              >
-                Pausa Activa
-              </button>
-              <button
-                type="button"
-                onClick={() => setFilterType('clase_fitness')}
-                className={`px-2.5 py-1 rounded-lg transition ${
-                  filterType === 'clase_fitness' ? 'bg-red-600 text-white shadow-2xs font-bold' : 'text-slate-600'
-                }`}
-              >
-                Clase Fitness
-              </button>
+              {ALL_ACTIVITY_TYPES.map((type) => {
+                const meta = MODALITY_CONFIG[type];
+                return (
+                  <button
+                    key={type}
+                    type="button"
+                    onClick={() => setFilterType(type)}
+                    className={`px-2.5 py-1 rounded-lg transition whitespace-nowrap shrink-0 cursor-pointer ${
+                      filterType === type
+                        ? meta.activeTabClass
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    {meta.shortButtonLabel}
+                  </button>
+                );
+              })}
             </div>
 
             <div className="relative">
@@ -282,8 +418,8 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
         ) : (
           <div className="space-y-2.5">
             {filteredAssignments.map((asg) => {
-              const options =
-                asg.activityType === 'pausa_activa' ? activePausaNames : activeFitnessNames;
+              const currentType = normalizeActivityType(asg.activityType);
+              const options = getActiveNamesForType(currentType);
               const selectOptions = options.includes(asg.activityName)
                 ? options
                 : [asg.activityName, ...options];
@@ -295,7 +431,7 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
               return (
                 <div
                   key={asg.id}
-                  className={`p-3.5 rounded-xl border flex flex-col lg:flex-row lg:items-center justify-between gap-3 transition ${
+                  className={`p-3.5 rounded-xl border flex flex-col xl:flex-row xl:items-center justify-between gap-3 transition ${
                     isNonCompliant
                       ? 'border-rose-300 bg-rose-50/60'
                       : isClosed
@@ -305,43 +441,51 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
                 >
                   {/* Left Info */}
                   <div className="space-y-1 min-w-0 flex-1">
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2 text-xs">
                       {isNonCompliant && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-black uppercase bg-rose-700 text-white">
-                          <Ban className="w-3 h-3 mr-1 text-rose-200" />
-                          Incumplida • Bloqueada
+                        <span className="inline-flex items-center font-extrabold text-rose-700">
+                          <Ban className="w-3.5 h-3.5 mr-1 shrink-0" />
+                          No Cerrada / Bloqueada ·
                         </span>
                       )}
                       {isClosed && !isNonCompliant && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-black uppercase bg-slate-800 text-white">
-                          <Lock className="w-3 h-3 mr-1 text-emerald-400" />
-                          Completada y Cerrada
+                        <span className="inline-flex items-center font-extrabold text-emerald-800">
+                          <Lock className="w-3.5 h-3.5 mr-1 shrink-0" />
+                          Completada y Cerrada ·
                         </span>
                       )}
-                      <span className="inline-flex items-center text-xs font-bold text-slate-900">
-                        <User className="w-3.5 h-3.5 mr-1 text-red-600" />
+                      <span className="inline-flex items-center font-bold text-slate-900">
+                        <User className="w-3.5 h-3.5 mr-1 text-red-600 shrink-0" />
                         {asg.trainerName}
                       </span>
-                      <span className="text-slate-300">•</span>
-                      <span className="inline-flex items-center text-xs font-semibold text-slate-700">
-                        <Building2 className="w-3.5 h-3.5 mr-1 text-slate-400" />
+                      <span className="text-slate-300" aria-hidden="true">
+                        ·
+                      </span>
+                      <span className="inline-flex items-center font-semibold text-slate-700">
+                        <Building2 className="w-3.5 h-3.5 mr-1 text-slate-400 shrink-0" />
                         {asg.companyName} — {asg.sedeName}
                       </span>
+                      <span className="text-slate-300" aria-hidden="true">
+                        ·
+                      </span>
                       <span
-                        className={`font-mono text-[11px] font-bold bg-white px-2 py-0.5 rounded border border-slate-200 ${
+                        className={`font-mono tabular-nums font-bold ${
                           isLockedRow ? 'text-slate-500 line-through' : 'text-red-600'
                         }`}
                       >
                         {asg.time} hrs
                       </span>
-                      <span className="inline-flex items-center font-mono text-[11px] font-bold text-slate-700 bg-white px-2 py-0.5 rounded border border-slate-200">
-                        <Timer className="w-3 h-3 mr-1 text-red-500" />
+                      <span className="text-slate-300" aria-hidden="true">
+                        ·
+                      </span>
+                      <span className="inline-flex items-center font-mono tabular-nums font-bold text-slate-700">
+                        <Timer className="w-3 h-3 mr-1 text-red-500 shrink-0" />
                         {getAssignmentDurationMinutes(asg, activityCatalog)} min
                       </span>
                       {savedToastId === asg.id && (
-                        <span className="inline-flex items-center text-[11px] font-bold text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md">
-                          <CheckCircle2 className="w-3 h-3 mr-1" />
-                          Guardado
+                        <span className="inline-flex items-center text-[11px] font-bold text-emerald-700">
+                          <CheckCircle2 className="w-3.5 h-3.5 mr-1 shrink-0" />
+                          Guardado en Firestore
                         </span>
                       )}
                     </div>
@@ -349,36 +493,31 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
 
                   {/* Right Direct Type & Sub-activity Controls */}
                   <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 shrink-0">
-                    {/* Toggle Tipo: Pausa Activa vs Clase Fitness */}
+                    {/* 4-Modality Segmented Control */}
                     <div
-                      className={`grid grid-cols-2 bg-white p-1 rounded-xl border border-slate-300 text-xs font-bold shrink-0 ${
+                      className={`grid grid-cols-2 sm:grid-cols-4 gap-1 bg-white p-1 rounded-xl border border-slate-300 text-xs font-bold shrink-0 ${
                         isLockedRow ? 'opacity-60' : ''
                       }`}
                     >
-                      <button
-                        type="button"
-                        disabled={isLockedRow}
-                        onClick={() => handleQuickSwitchAssignmentType(asg, 'pausa_activa')}
-                        className={`px-3 py-1.5 rounded-lg transition disabled:cursor-not-allowed ${
-                          asg.activityType === 'pausa_activa'
-                            ? 'bg-amber-500 text-white shadow-xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        Pausa Activa
-                      </button>
-                      <button
-                        type="button"
-                        disabled={isLockedRow}
-                        onClick={() => handleQuickSwitchAssignmentType(asg, 'clase_fitness')}
-                        className={`px-3 py-1.5 rounded-lg transition disabled:cursor-not-allowed ${
-                          asg.activityType === 'clase_fitness'
-                            ? 'bg-red-600 text-white shadow-xs'
-                            : 'text-slate-600 hover:text-slate-900'
-                        }`}
-                      >
-                        Clase Fitness
-                      </button>
+                      {ALL_ACTIVITY_TYPES.map((type) => {
+                        const meta = MODALITY_CONFIG[type];
+                        const isSelected = currentType === type;
+                        return (
+                          <button
+                            key={type}
+                            type="button"
+                            disabled={isLockedRow}
+                            onClick={() => handleQuickSwitchAssignmentType(asg, type)}
+                            className={`px-2.5 py-1.5 rounded-lg transition whitespace-nowrap shrink-0 disabled:cursor-not-allowed cursor-pointer ${
+                              isSelected
+                                ? meta.activeTabClass
+                                : 'text-slate-600 hover:text-slate-900'
+                            }`}
+                          >
+                            {meta.shortButtonLabel}
+                          </button>
+                        );
+                      })}
                     </div>
 
                     {/* Specific Activity Selector */}
@@ -398,7 +537,7 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
                     <button
                       type="button"
                       onClick={() => onEditFullAssignment(asg)}
-                      className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-600 hover:text-slate-900 border border-slate-300 text-xs font-semibold flex items-center justify-center"
+                      className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-600 hover:text-slate-900 border border-slate-300 text-xs font-semibold flex items-center justify-center cursor-pointer"
                       title={
                         isLockedRow
                           ? 'Ver detalles o rehabilitar asignación bloqueada'
@@ -415,161 +554,101 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
         )}
       </div>
 
-      {/* SECTION 2: Editable Catalog of Pausas Activas & Clases Fitness */}
+      {/* SECTION 2: 4-Modality Editable Catalog */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Column 1: Pausas Activas */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-sm space-y-3">
-          <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-            <div>
-              <span className="px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase bg-amber-100 text-amber-800 border border-amber-200">
-                Modalidad 1
-              </span>
-              <h4 className="text-base font-bold text-slate-900 mt-1">
-                Catálogo de Pausas Activas ({pausaCatalog.length})
-              </h4>
-            </div>
-            <button
-              type="button"
-              onClick={() => openCreateForm('pausa_activa')}
-              className="px-3 py-1.5 rounded-xl bg-amber-500 hover:bg-amber-600 text-white text-xs font-bold flex items-center space-x-1 shadow-xs"
+        {ALL_ACTIVITY_TYPES.map((type) => {
+          const meta = MODALITY_CONFIG[type];
+          const items = catalogByType[type];
+          return (
+            <div
+              key={type}
+              className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-sm space-y-3"
             >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Agregar</span>
-            </button>
-          </div>
-
-          <div className="space-y-2.5">
-            {pausaCatalog.map((item) => (
-              <div
-                key={item.id}
-                className={`p-3.5 rounded-xl border transition flex items-start justify-between gap-3 ${
-                  item.active
-                    ? 'bg-amber-50/30 border-amber-200/80'
-                    : 'bg-slate-50 border-slate-200 opacity-60'
-                }`}
-              >
-                <div className="space-y-1">
-                  <div className="flex items-center space-x-2">
-                    <h5 className="font-bold text-slate-900 text-xs sm:text-sm">{item.name}</h5>
-                    {!item.active && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 font-bold">
-                        Inactiva
-                      </span>
-                    )}
-                  </div>
-                  {item.description && (
-                    <p className="text-[11px] text-slate-600">{item.description}</p>
-                  )}
-                  <span className="inline-flex items-center text-[11px] font-mono text-slate-500">
-                    <Clock className="w-3 h-3 mr-1 text-amber-600" />
-                    Duración sugerida: {item.defaultDurationMinutes} min
+              <div className="flex items-center justify-between border-b border-slate-200 pb-3">
+                <div>
+                  <span className={`text-[11px] font-bold block ${meta.kickerTextClass}`}>
+                    {meta.indexLabel}
                   </span>
+                  <h4 className="text-base font-bold text-slate-900 mt-0.5">
+                    {meta.catalogTitle} (
+                    <span className="font-mono tabular-nums">{items.length}</span>)
+                  </h4>
                 </div>
-
-                <div className="flex items-center space-x-1 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => openEditForm(item)}
-                    className="p-1.5 rounded-lg bg-white hover:bg-amber-50 text-slate-600 hover:text-amber-700 border border-slate-200"
-                    title="Editar actividad o cambiar a Clase Fitness"
-                  >
-                    <Edit3 className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (pausaCatalog.length > 1) {
-                        onDeleteCatalogItem(item.id);
-                      }
-                    }}
-                    disabled={pausaCatalog.length <= 1}
-                    className="p-1.5 rounded-lg bg-white hover:bg-rose-50 text-slate-500 hover:text-rose-600 border border-slate-200 disabled:opacity-30"
-                    title="Eliminar del catálogo"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
+                <button
+                  type="button"
+                  onClick={() => openCreateForm(type)}
+                  className={`px-3 py-1.5 rounded-xl text-xs font-bold flex items-center space-x-1 shadow-xs whitespace-nowrap shrink-0 cursor-pointer ${meta.addCardBtnClass}`}
+                >
+                  <Plus className="w-3.5 h-3.5" />
+                  <span>Agregar</span>
+                </button>
               </div>
-            ))}
-          </div>
-        </div>
 
-        {/* Column 2: Clases Fitness */}
-        <div className="bg-white border border-slate-200/90 rounded-2xl p-5 shadow-sm space-y-3">
-          <div className="flex items-center justify-between border-b border-slate-200 pb-3">
-            <div>
-              <span className="px-2.5 py-0.5 rounded-md text-[10px] font-black uppercase bg-red-100 text-red-800 border border-red-200">
-                Modalidad 2
-              </span>
-              <h4 className="text-base font-bold text-slate-900 mt-1">
-                Catálogo de Clases Fitness ({fitnessCatalog.length})
-              </h4>
+              {items.length === 0 ? (
+                <div className="p-5 rounded-xl border border-dashed border-slate-300 bg-slate-50 text-center text-xs text-slate-500">
+                  Sin actividades registradas en esta modalidad. Haz clic en «Agregar» para crear la primera.
+                </div>
+              ) : (
+                <div className="space-y-2.5">
+                  {items.map((item) => (
+                    <div
+                      key={item.id}
+                      className={`p-3.5 rounded-xl border transition flex items-start justify-between gap-3 ${
+                        item.active
+                          ? meta.cardItemActiveClass
+                          : 'bg-slate-50 border-slate-200 opacity-60'
+                      }`}
+                    >
+                      <div className="space-y-1 min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h5 className="font-bold text-slate-900 text-xs sm:text-sm">
+                            {item.name}
+                          </h5>
+                          {!item.active && (
+                            <span className="text-[11px] text-slate-500 font-semibold">
+                              · Inactiva
+                            </span>
+                          )}
+                        </div>
+                        {item.description && (
+                          <p className="text-[11px] text-slate-600">{item.description}</p>
+                        )}
+                        <span className="inline-flex items-center text-[11px] font-mono tabular-nums text-slate-500">
+                          <Clock className={`w-3 h-3 mr-1 ${meta.clockIconClass}`} />
+                          Duración sugerida: {item.defaultDurationMinutes} min
+                        </span>
+                      </div>
+
+                      <div className="flex items-center space-x-1 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => openEditForm(item)}
+                          className={`p-1.5 rounded-lg bg-white text-slate-600 border border-slate-200 transition cursor-pointer ${meta.editHoverClass}`}
+                          title="Editar actividad o cambiar de modalidad"
+                        >
+                          <Edit3 className="w-3.5 h-3.5" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            if (items.length > 1) {
+                              onDeleteCatalogItem(item.id);
+                            }
+                          }}
+                          disabled={items.length <= 1}
+                          className="p-1.5 rounded-lg bg-white hover:bg-rose-50 text-slate-500 hover:text-rose-600 border border-slate-200 disabled:opacity-30 cursor-pointer disabled:cursor-not-allowed"
+                          title="Eliminar del catálogo"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
-            <button
-              type="button"
-              onClick={() => openCreateForm('clase_fitness')}
-              className="px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold flex items-center space-x-1 shadow-xs"
-            >
-              <Plus className="w-3.5 h-3.5" />
-              <span>Agregar</span>
-            </button>
-          </div>
-
-          <div className="space-y-2.5">
-            {fitnessCatalog.map((item) => (
-              <div
-                key={item.id}
-                className={`p-3.5 rounded-xl border transition flex items-start justify-between gap-3 ${
-                  item.active
-                    ? 'bg-red-50/30 border-red-200/80'
-                    : 'bg-slate-50 border-slate-200 opacity-60'
-                }`}
-              >
-                <div className="space-y-1">
-                  <div className="flex items-center space-x-2">
-                    <h5 className="font-bold text-slate-900 text-xs sm:text-sm">{item.name}</h5>
-                    {!item.active && (
-                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-600 font-bold">
-                        Inactiva
-                      </span>
-                    )}
-                  </div>
-                  {item.description && (
-                    <p className="text-[11px] text-slate-600">{item.description}</p>
-                  )}
-                  <span className="inline-flex items-center text-[11px] font-mono text-slate-500">
-                    <Clock className="w-3 h-3 mr-1 text-red-600" />
-                    Duración sugerida: {item.defaultDurationMinutes} min
-                  </span>
-                </div>
-
-                <div className="flex items-center space-x-1 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => openEditForm(item)}
-                    className="p-1.5 rounded-lg bg-white hover:bg-red-50 text-slate-600 hover:text-red-700 border border-slate-200"
-                    title="Editar actividad o cambiar a Pausa Activa"
-                  >
-                    <Edit3 className="w-3.5 h-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      if (fitnessCatalog.length > 1) {
-                        onDeleteCatalogItem(item.id);
-                      }
-                    }}
-                    disabled={fitnessCatalog.length <= 1}
-                    className="p-1.5 rounded-lg bg-white hover:bg-rose-50 text-slate-500 hover:text-rose-600 border border-slate-200 disabled:opacity-30"
-                    title="Eliminar del catálogo"
-                  >
-                    <Trash2 className="w-3.5 h-3.5" />
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
+          );
+        })}
       </div>
 
       {/* Modal for Create / Edit Catalog Activity Type */}
@@ -586,58 +665,52 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
               <button
                 type="button"
                 onClick={() => setIsFormOpen(false)}
-                className="text-white/80 hover:text-white p-1"
+                className="text-white/80 hover:text-white p-1 cursor-pointer"
               >
                 <X className="w-4 h-4" />
               </button>
             </div>
 
             <form onSubmit={handleSaveCatalogForm} className="p-5 space-y-4 text-xs text-slate-800">
-              {/* Category Selector: Clase Fitness vs Pausa Activa */}
+              {/* Category Selector: 4 Modalities */}
               <div>
                 <label className="block font-bold text-slate-700 mb-1.5">
                   Tipo Principal de Asignación *
                 </label>
                 <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setItemType('pausa_activa')}
-                    className={`py-2.5 px-3 rounded-xl border font-bold flex items-center justify-center space-x-1.5 transition ${
-                      itemType === 'pausa_activa'
-                        ? 'bg-amber-500 border-amber-500 text-white shadow-sm'
-                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
-                    }`}
-                  >
-                    {itemType === 'pausa_activa' && <Check className="w-3.5 h-3.5" />}
-                    <span>Pausa Activa</span>
-                  </button>
-
-                  <button
-                    type="button"
-                    onClick={() => setItemType('clase_fitness')}
-                    className={`py-2.5 px-3 rounded-xl border font-bold flex items-center justify-center space-x-1.5 transition ${
-                      itemType === 'clase_fitness'
-                        ? 'bg-red-600 border-red-600 text-white shadow-sm'
-                        : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
-                    }`}
-                  >
-                    {itemType === 'clase_fitness' && <Check className="w-3.5 h-3.5" />}
-                    <span>Clase Fitness</span>
-                  </button>
+                  {ALL_ACTIVITY_TYPES.map((type) => {
+                    const meta = MODALITY_CONFIG[type];
+                    const isSelected = itemType === type;
+                    return (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => handleSelectModalType(type)}
+                        className={`py-2.5 px-3 rounded-xl border font-bold flex items-center justify-center space-x-1.5 transition whitespace-nowrap cursor-pointer ${
+                          isSelected
+                            ? meta.modalActiveBtnClass
+                            : 'bg-slate-50 border-slate-200 text-slate-600 hover:bg-slate-100'
+                        }`}
+                      >
+                        {isSelected && <Check className="w-3.5 h-3.5 shrink-0" />}
+                        <span>{ACTIVITY_TYPE_LABELS[type]}</span>
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
               {/* Name */}
               <div>
                 <label className="block font-bold text-slate-700 mb-1">
-                  Nombre de la Clase o Pausa Activa *
+                  Nombre de la Actividad en Catálogo *
                 </label>
                 <input
                   type="text"
                   required
                   value={itemName}
                   onChange={(e) => setItemName(e.target.value)}
-                  placeholder="Ej: Clase Fitness: Boxeo Funcional"
+                  placeholder={`Ej: ${MODALITY_CONFIG[itemType].fallbackActivityName}`}
                   className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-sm font-semibold text-slate-900 focus:outline-none focus:border-red-500"
                 />
               </div>
@@ -653,8 +726,8 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
                   pattern="[0-9]*"
                   value={itemDurationInput}
                   onChange={(e) => setItemDurationInput(e.target.value.replace(/[^0-9]/g, ''))}
-                  placeholder="30"
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-red-500"
+                  placeholder={String(ACTIVITY_TYPE_DEFAULT_MINUTES[itemType])}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono tabular-nums font-bold text-slate-900 focus:outline-none focus:border-red-500"
                 />
               </div>
 
@@ -679,7 +752,7 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
                   type="checkbox"
                   checked={itemActive}
                   onChange={(e) => setItemActive(e.target.checked)}
-                  className="w-4 h-4 accent-red-600 rounded"
+                  className="w-4 h-4 accent-red-600 rounded cursor-pointer"
                 />
               </div>
 
@@ -687,15 +760,15 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
                 <button
                   type="button"
                   onClick={() => setIsFormOpen(false)}
-                  className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold"
+                  className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold cursor-pointer"
                 >
                   Cancelar
                 </button>
                 <button
                   type="submit"
-                  className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md"
+                  className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md cursor-pointer"
                 >
-                  Guardar
+                  Guardar en Base de Datos
                 </button>
               </div>
             </form>

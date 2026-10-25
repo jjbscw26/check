@@ -216,8 +216,60 @@ export async function runFirestoreRulesDirtyDozenSuite() {
     await assertSucceeds(setDoc(doc(dbA, 'companies', 'comp_1'), validCompanyPayload));
     await assertSucceeds(setDoc(doc(dbA, 'sedes', 'sede_1_1'), validSedePayload));
     await assertSucceeds(setDoc(doc(dbA, 'activity_catalog', 'cat_1'), validCatalogPayload));
+    await assertSucceeds(
+      setDoc(doc(dbA, 'activity_catalog', 'cat_gc_1'), {
+        ...validCatalogPayload,
+        name: 'Gimnasio Corporativo: Acondicionamiento y Pesas',
+        activityType: 'gimnasio_corporativo',
+        defaultDurationMinutes: 60,
+      })
+    );
+    await assertSucceeds(
+      setDoc(doc(dbA, 'activity_catalog', 'cat_ms_1'), {
+        ...validCatalogPayload,
+        name: 'Masajes: Masaje Descontracturante en Silla',
+        activityType: 'masajes',
+        defaultDurationMinutes: 30,
+      })
+    );
     await assertSucceeds(setDoc(doc(dbA, 'assignments', 'asg_1'), validAssignmentPayload));
+    await assertSucceeds(
+      setDoc(doc(dbA, 'assignments', 'asg_gc_1'), {
+        ...validAssignmentPayload,
+        activityType: 'gimnasio_corporativo',
+        activityName: 'Gimnasio Corporativo: Acondicionamiento y Pesas',
+        durationMinutes: 60,
+      })
+    );
+    await assertSucceeds(
+      setDoc(doc(dbA, 'assignments', 'asg_ms_1'), {
+        ...validAssignmentPayload,
+        activityType: 'masajes',
+        activityName: 'Masajes: Masaje Descontracturante en Silla',
+        durationMinutes: 30,
+      })
+    );
     await assertSucceeds(setDoc(doc(dbA, 'records', 'rec_1'), validRecordPayload));
+    await assertSucceeds(
+      setDoc(doc(dbA, 'records', 'rec_gc_1'), {
+        ...validRecordPayload,
+        activityType: 'gimnasio_corporativo',
+        activityName: 'Gimnasio Corporativo: Acondicionamiento y Pesas',
+      })
+    );
+    await assertSucceeds(
+      setDoc(doc(dbA, 'records', 'rec_ms_1'), {
+        ...validRecordPayload,
+        activityType: 'masajes',
+        activityName: 'Masajes: Masaje Descontracturante en Silla',
+      })
+    );
+    await assertFails(
+      setDoc(doc(dbA, 'assignments', 'asg_invalid_type'), {
+        ...validAssignmentPayload,
+        activityType: 'modalidad_invalida',
+      })
+    );
     await assertSucceeds(
       getDocs(query(collection(dbB, 'records'), where('createdAt', '>=', minEpoch)))
     );

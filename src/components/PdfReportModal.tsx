@@ -258,9 +258,11 @@ export const PdfReportModal: React.FC<PdfReportModalProps> = ({
                 <tr>
                   <th className="p-2 border-b border-slate-200">Empresa</th>
                   <th className="p-2 border-b border-slate-200">Giro</th>
-                  <th className="p-2 border-b border-slate-200 text-center">Sesiones Recibidas</th>
-                  <th className="p-2 border-b border-slate-200 text-center">Pausas Activas</th>
-                  <th className="p-2 border-b border-slate-200 text-center">Clases Fitness</th>
+                  <th className="p-2 border-b border-slate-200 text-center">Sesiones</th>
+                  <th className="p-2 border-b border-slate-200 text-center">Pausas</th>
+                  <th className="p-2 border-b border-slate-200 text-center">Fitness</th>
+                  <th className="p-2 border-b border-slate-200 text-center">Gimnasio Corp.</th>
+                  <th className="p-2 border-b border-slate-200 text-center">Masajes</th>
                   <th className="p-2 border-b border-slate-200 text-right">Colaboradores</th>
                 </tr>
               </thead>
@@ -268,18 +270,30 @@ export const PdfReportModal: React.FC<PdfReportModalProps> = ({
                 {companies.map((c) => {
                   const cRecs = records.filter((r) => r.companyId === c.id);
                   const cTotal = cRecs.length;
-                  const cPausas = cRecs.filter((r) => r.activityType === 'pausa_activa').length;
+                  const cPausas = cRecs.filter(
+                    (r) => (r.activityType || 'pausa_activa') === 'pausa_activa'
+                  ).length;
                   const cFitness = cRecs.filter((r) => r.activityType === 'clase_fitness').length;
+                  const cGimnasio = cRecs.filter(
+                    (r) => r.activityType === 'gimnasio_corporativo'
+                  ).length;
+                  const cMasajes = cRecs.filter((r) => r.activityType === 'masajes').length;
                   const cAttendees = cRecs.reduce((acc, r) => acc + (r.attendeesCount || 0), 0);
 
                   return (
                     <tr key={c.id}>
                       <td className="p-2 font-bold text-slate-900">{c.name}</td>
                       <td className="p-2 text-slate-600">{c.industry}</td>
-                      <td className="p-2 text-center font-mono font-bold text-red-600">{cTotal}</td>
-                      <td className="p-2 text-center font-mono">{cPausas}</td>
-                      <td className="p-2 text-center font-mono">{cFitness}</td>
-                      <td className="p-2 text-right font-mono font-bold">{cAttendees}</td>
+                      <td className="p-2 text-center font-mono tabular-nums font-bold text-red-600">
+                        {cTotal}
+                      </td>
+                      <td className="p-2 text-center font-mono tabular-nums">{cPausas}</td>
+                      <td className="p-2 text-center font-mono tabular-nums">{cFitness}</td>
+                      <td className="p-2 text-center font-mono tabular-nums">{cGimnasio}</td>
+                      <td className="p-2 text-center font-mono tabular-nums">{cMasajes}</td>
+                      <td className="p-2 text-right font-mono tabular-nums font-bold">
+                        {cAttendees}
+                      </td>
                     </tr>
                   );
                 })}

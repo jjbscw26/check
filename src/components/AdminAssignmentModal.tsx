@@ -1,5 +1,14 @@
 import React, { useState, useEffect } from 'react';
-import { ClassAssignment, Company, Trainer, ActivityType, ActivityCatalogItem } from '../types';
+import {
+  ACTIVITY_TYPE_LABELS,
+  ActivityCatalogItem,
+  ActivityType,
+  ALL_ACTIVITY_TYPES,
+  ClassAssignment,
+  Company,
+  normalizeActivityType,
+  Trainer,
+} from '../types';
 import { Calendar, Clock, Activity, Building2, User, MapPin, Settings2, Timer, Minus, Plus, Lock, Unlock, Ban } from 'lucide-react';
 import {
   getDefaultDurationMinutes,
@@ -47,6 +56,23 @@ const FITNESS_OPTIONS = [
   'Clase Fitness: Tonificación y Fuerza con Bandas',
 ];
 
+const GIMNASIO_OPTIONS = [
+  'Gimnasio Corporativo: Acondicionamiento y Pesas',
+  'Gimnasio Corporativo: Circuito Funcional en Sala',
+];
+
+const MASAJES_OPTIONS = [
+  'Masajes: Masaje Descontracturante en Silla',
+  'Masajes: Descarga Muscular y Relajación Cervical',
+];
+
+const FALLBACK_OPTIONS_BY_TYPE: Record<ActivityType, string[]> = {
+  pausa_activa: PAUSA_OPTIONS,
+  clase_fitness: FITNESS_OPTIONS,
+  gimnasio_corporativo: GIMNASIO_OPTIONS,
+  masajes: MASAJES_OPTIONS,
+};
+
 const DAYS_OF_WEEK = [
   { value: 1, label: 'Lunes' },
   { value: 2, label: 'Martes' },
@@ -86,13 +112,14 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
   onManageActivityTypes,
   initialPreset,
 }) => {
-  const pausaOptions =
-    activityCatalog.filter((c) => c.activityType === 'pausa_activa' && c.active).map((c) => c.name);
-  const fitnessOptions =
-    activityCatalog.filter((c) => c.activityType === 'clase_fitness' && c.active).map((c) => c.name);
+  const getEffectiveOptionsForType = (type: ActivityType): string[] => {
+    const activeFromCatalog = activityCatalog
+      .filter((c) => normalizeActivityType(c.activityType) === type && c.active)
+      .map((c) => c.name);
+    return activeFromCatalog.length > 0 ? activeFromCatalog : FALLBACK_OPTIONS_BY_TYPE[type];
+  };
 
-  const effectivePausaOptions = pausaOptions.length > 0 ? pausaOptions : PAUSA_OPTIONS;
-  const effectiveFitnessOptions = fitnessOptions.length > 0 ? fitnessOptions : FITNESS_OPTIONS;
+  const effectivePausaOptions = getEffectiveOptionsForType('pausa_activa');
 
   const [trainerId, setTrainerId] = useState(trainers[0]?.id || '');
   const [companyId, setCompanyId] = useState(companies[0]?.id || '');
@@ -127,8 +154,9 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
       setDayOfMonth(assignment.dayOfMonth || 15);
       setSpecificDate(assignment.date || formatLocalYYYYMMDD(new Date()));
       setTime((assignment.time || '09:00').slice(0, 5));
-      setActivityType(assignment.activityType || 'pausa_activa');
-      setActivityName(assignment.activityName || effectivePausaOptions[0]);
+      const normType = normalizeActivityType(assignment.activityType);
+      setActivityType(normType);
+      setActivityName(assignment.activityName || getEffectiveOptionsForType(normType)[0]);
       setDurationInput(
         String(getAssignmentDurationMinutes(assignment, activityCatalog))
       );
@@ -567,11 +595,11 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
           </div>
 
           {/* Activity Type & Sub-activity */}
-          <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-2.5">
+          <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
             <div className="flex items-center justify-between">
               <span className="font-bold text-slate-900 flex items-center">
                 <Activity className="w-3.5 h-3.5 mr-1 text-red-600" />
-                Tipo de Asignación (Clase o Pausa Activa)
+                Tipo de Asignación (Modalidad y Actividad)
               </span>
               {onManageActivityTypes && (
                 <button
@@ -580,7 +608,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                     onClose();
                     onManageActivityTypes();
                   }}
-                  className="text-[11px] font-bold text-red-600 hover:text-red-700 hover:underline flex items-center space-x-1"
+                  className="text-[11px] font-bold text-red-600 hover:text-red-700 hover:underline flex items-center space-x-1 cursor-pointer"
                 >
                   <Settings2 className="w-3 h-3" />
                   <span>Editar catálogo</span>
@@ -588,54 +616,43 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
               )}
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div className="space-y-3">
               <div>
-                <label className="block font-semibold text-slate-700 mb-1">
+                <label className="block font-semibold text-slate-700 mb-1.5">
                   Modalidad Principal *
                 </label>
                 <div className="grid grid-cols-2 gap-2">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const nextAct = effectivePausaOptions[0];
-                      setActivityType('pausa_activa');
-                      setActivityName(nextAct);
-                      setDurationInput(
-                        String(getDefaultDurationMinutes('pausa_activa', nextAct, activityCatalog))
-                      );
-                    }}
-                    className={`py-2 px-2 text-xs font-semibold rounded-xl border text-center transition ${
-                      activityType === 'pausa_activa'
-                        ? 'bg-red-50 border-red-500 text-red-700 font-bold shadow-2xs'
-                        : 'bg-white border-slate-200 text-slate-600'
-                    }`}
-                  >
-                    Pausa Activa
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const nextAct = effectiveFitnessOptions[0];
-                      setActivityType('clase_fitness');
-                      setActivityName(nextAct);
-                      setDurationInput(
-                        String(getDefaultDurationMinutes('clase_fitness', nextAct, activityCatalog))
-                      );
-                    }}
-                    className={`py-2 px-2 text-xs font-semibold rounded-xl border text-center transition ${
-                      activityType === 'clase_fitness'
-                        ? 'bg-red-50 border-red-500 text-red-700 font-bold shadow-2xs'
-                        : 'bg-white border-slate-200 text-slate-600'
-                    }`}
-                  >
-                    Clase Fitness
-                  </button>
+                  {ALL_ACTIVITY_TYPES.map((type) => {
+                    const isSelected = activityType === type;
+                    return (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => {
+                          const nextOptions = getEffectiveOptionsForType(type);
+                          const nextAct = nextOptions[0];
+                          setActivityType(type);
+                          setActivityName(nextAct);
+                          setDurationInput(
+                            String(getDefaultDurationMinutes(type, nextAct, activityCatalog))
+                          );
+                        }}
+                        className={`py-2 px-2.5 text-xs font-semibold rounded-xl border text-center transition whitespace-nowrap cursor-pointer ${
+                          isSelected
+                            ? 'bg-red-50 border-red-500 text-red-700 font-bold shadow-2xs'
+                            : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
+                        }`}
+                      >
+                        {ACTIVITY_TYPE_LABELS[type]}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
 
               <div>
                 <label className="block font-semibold text-slate-700 mb-1">
-                  Actividad / Clase Específica *
+                  Actividad / Sesión Específica *
                 </label>
                 <select
                   value={activityName}
@@ -649,8 +666,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                   className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-red-500"
                 >
                   {(() => {
-                    const list =
-                      activityType === 'pausa_activa' ? effectivePausaOptions : effectiveFitnessOptions;
+                    const list = getEffectiveOptionsForType(activityType);
                     const merged = list.includes(activityName) ? list : [activityName, ...list];
                     return merged.map((act, i) => (
                       <option key={i} value={act}>

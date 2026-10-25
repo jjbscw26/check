@@ -16,7 +16,7 @@
    - On `/sedes/{sedeId}` `create` and `update`, `exists(/databases/$(database)/documents/companies/$(incoming().companyId))` MUST hold.
    - On `/assignments/{assignmentId}` `create` and `update`, `exists(/databases/$(database)/documents/companies/$(incoming().companyId))` and `exists(/databases/$(database)/documents/sedes/$(incoming().sedeId))` MUST hold.
 3. **Complete Calendar Ecosystem Persistence Invariant**:
-   - `/assignments/{assignmentId}`, `/records/{recordId}`, and `/activity_catalog/{catalogId}` persist all schedule frequencies, attendance states, GPS geofence proofs, and modalities across devices.
+   - `/assignments/{assignmentId}`, `/records/{recordId}`, and `/activity_catalog/{catalogId}` persist all schedule frequencies, attendance states, GPS geofence proofs, and modalities (`pausa_activa`, `clase_fitness`, `gimnasio_corporativo`, `masajes`, bounded `.size() <= 30`) across devices.
 4. **Total Array & Numeric Guarding Invariant (Pillar 2 & Pillar 5)**:
    - `Trainer.specialties` bounded `1..20` items; `ClassAssignment` date arrays bounded `<= 366` items; GPS coordinates and geofence radii bounded and non-`NaN`.
 5. **Ownership & Temporal Immutability Invariant**:

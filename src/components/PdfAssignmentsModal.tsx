@@ -1,5 +1,13 @@
 import React, { useState } from 'react';
-import { ClassAssignment, Company, Trainer, ActivityCatalogItem } from '../types';
+import {
+  ACTIVITY_TYPE_LABELS,
+  ActivityCatalogItem,
+  ActivityType,
+  ClassAssignment,
+  Company,
+  normalizeActivityType,
+  Trainer,
+} from '../types';
 import {
   Printer,
   CheckCheck,
@@ -26,6 +34,13 @@ const MONTH_NAMES = [
 const DAY_NAMES = [
   'Lunes', 'Martes', 'Miércoles', 'Jueves', 'Viernes', 'Sábado', 'Domingo'
 ];
+
+const PDF_MODALITY_TEXT_CLASS: Record<ActivityType, string> = {
+  pausa_activa: 'text-emerald-700',
+  clase_fitness: 'text-blue-700',
+  gimnasio_corporativo: 'text-indigo-700',
+  masajes: 'text-teal-700',
+};
 
 export const PdfAssignmentsModal: React.FC<PdfAssignmentsModalProps> = ({
   isOpen,
@@ -135,7 +150,7 @@ export const PdfAssignmentsModal: React.FC<PdfAssignmentsModalProps> = ({
                   Programa Oficial de Asignación y Rol Mensual de Clases
                 </p>
                 <p className="text-[11px] text-slate-400 font-medium">
-                  Salud Corporativa, Pausas Activas y Activación Física en Sedes Empresariales
+                  Pausas Activas, Clases Fitness, Gimnasio Corporativo y Masajes en Sedes Empresariales
                 </p>
               </div>
             </div>
@@ -286,7 +301,7 @@ export const PdfAssignmentsModal: React.FC<PdfAssignmentsModalProps> = ({
                         </thead>
                         <tbody className="divide-y divide-slate-100 text-slate-800">
                           {trainerAssignments.map((asg) => {
-                            const isFitness = asg.activityType === 'clase_fitness';
+                            const normType = normalizeActivityType(asg.activityType);
                             const durMins = getAssignmentDurationMinutes(asg, activityCatalog);
                             const endHHMM = calculateEndTimeHHMM(asg.time, durMins);
 
@@ -342,11 +357,9 @@ export const PdfAssignmentsModal: React.FC<PdfAssignmentsModalProps> = ({
 
                                 <td className="py-3 px-3">
                                   <span
-                                    className={`inline-block text-[10px] font-bold mb-0.5 ${
-                                      isFitness ? 'text-blue-700' : 'text-emerald-700'
-                                    }`}
+                                    className={`inline-block text-[10px] font-bold mb-0.5 ${PDF_MODALITY_TEXT_CLASS[normType]}`}
                                   >
-                                    {isFitness ? 'Clase Fitness' : 'Pausa Activa'}
+                                    {ACTIVITY_TYPE_LABELS[normType]}
                                   </span>
                                   <span className="font-bold text-slate-900 block text-[11px]">
                                     {asg.activityName}

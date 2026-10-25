@@ -13,7 +13,7 @@ import {
   ZoomIn,
   RefreshCw,
 } from 'lucide-react';
-import { AttendanceRecord } from '../types';
+import { ACTIVITY_TYPE_LABELS, AttendanceRecord, normalizeActivityType } from '../types';
 import { formatDistance } from '../utils/geo';
 import {
   EvidencePhotoSlot,
@@ -265,6 +265,12 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
                 <p>
                   <span className="text-slate-500 font-medium">Salón/Área:</span>{' '}
                   <span className="text-red-700 font-bold">{record.locationArea}</span>
+                </p>
+                <p>
+                  <span className="text-slate-500 font-medium">Modalidad:</span>{' '}
+                  <span className="font-bold text-slate-900 print:text-black">
+                    {ACTIVITY_TYPE_LABELS[normalizeActivityType(record.activityType)]}
+                  </span>
                 </p>
                 <p>
                   <span className="text-slate-500 font-medium">Actividad:</span>{' '}

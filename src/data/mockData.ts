@@ -1,4 +1,12 @@
-import { AttendanceRecord, Company, Trainer, ClassAssignment, ActivityCatalogItem } from '../types';
+import {
+  ActivityCatalogItem,
+  ActivityType,
+  AttendanceRecord,
+  ClassAssignment,
+  Company,
+  normalizeActivityType,
+  Trainer,
+} from '../types';
 
 export const INITIAL_TRAINERS: Trainer[] = [
   {
@@ -388,8 +396,8 @@ export function getInitialRecords(): AttendanceRecord[] {
       sedeAddress: 'Av. Ejército Nacional 453, Granada',
       date: d0,
       scheduledTime: '11:30',
-      checkInTime: new Date(today.getTime() - 52 * 60 * 1000).toLocaleTimeString('es-MX', { hour12: false }),
-      checkInIso: new Date(today.getTime() - 52 * 60 * 1000).toISOString(),
+      checkInTime: '11:42:10',
+      checkInIso: `${d0}T11:42:10.000Z`,
       checkOutTime: null,
       status: 'en_curso',
       punctualityStatus: 'con_retraso',
@@ -645,7 +653,7 @@ export function getInitialRecords(): AttendanceRecord[] {
       checkOutTime: null,
       status: 'incumplido',
       nonComplianceReason: 'sin_cierre_30m',
-      markedNonCompliantAt: '17:52:15',
+      markedNonCompliantAt: '18:20:00',
       punctualityStatus: 'a_tiempo',
       punctualityDiffMinutes: -2,
       activityType: 'pausa_activa',
@@ -653,7 +661,7 @@ export function getInitialRecords(): AttendanceRecord[] {
       attendeesCount: 0,
       locationArea: 'Piso 3 - Open Space Ingeniería',
       observations:
-        'Entrada registrada en sede. [Sistema BSCW] Bloqueada y marcada como INCUMPLIDA por no registrar salida pasados 30 min del fin programado (17:22 hrs).',
+        'Entrada registrada en sede. [Sistema BSCW] Salida pendiente dada por TERMINADA a los 60 min después de la hora de término (18:20 hrs) y calificada como NO CERRADA.',
       checkInGps: {
         lat: 19.36229,
         lng: -99.18106,
@@ -670,10 +678,10 @@ export function getInitialRecords(): AttendanceRecord[] {
         'GPS: 19.362290, -99.181060 (±8m)'
       ),
       plannedDurationMinutes: 20,
-      alarmEnabled: true,
+      alarmEnabled: false,
       alarmSnoozedUntilIso: null,
       adminVerified: false,
-      adminNotes: 'Sesión no cerrada dentro del margen de 30 minutos; marcada automáticamente como incumplida.',
+      adminNotes: 'Salida pendiente dada por terminada a los 60 minutos de la hora de término y calificada como No Cerrada.',
     },
   ];
 }
@@ -1006,6 +1014,38 @@ export const INITIAL_ACTIVITY_CATALOG: ActivityCatalogItem[] = [
     description: 'Trabajo muscular localizado utilizando ligas y peso corporal.',
     active: true,
   },
+  {
+    id: 'cat_gc_1',
+    name: 'Gimnasio Corporativo: Acondicionamiento y Pesas',
+    activityType: 'gimnasio_corporativo',
+    defaultDurationMinutes: 60,
+    description: 'Sesión supervisada de fuerza, pesas y aparatos en gimnasio empresarial.',
+    active: true,
+  },
+  {
+    id: 'cat_gc_2',
+    name: 'Gimnasio Corporativo: Circuito Funcional en Sala',
+    activityType: 'gimnasio_corporativo',
+    defaultDurationMinutes: 60,
+    description: 'Entrenamiento integral por estaciones para colaboradores en gimnasio interno.',
+    active: true,
+  },
+  {
+    id: 'cat_ms_1',
+    name: 'Masajes: Masaje Descontracturante en Silla',
+    activityType: 'masajes',
+    defaultDurationMinutes: 30,
+    description: 'Terapia exprés en silla ergonómica para alivio de tensión cervical, hombros y espalda.',
+    active: true,
+  },
+  {
+    id: 'cat_ms_2',
+    name: 'Masajes: Descarga Muscular y Relajación Cervical',
+    activityType: 'masajes',
+    defaultDurationMinutes: 20,
+    description: 'Sesión focalizada de liberación miofascial y reducción de fatiga postural.',
+    active: true,
+  },
 ];
 
 const STORAGE_KEYS = {
@@ -1029,14 +1069,42 @@ export function getStoredActivityCatalog(): ActivityCatalogItem[] {
       localStorage.setItem(STORAGE_KEYS.ACTIVITY_CATALOG, JSON.stringify(INITIAL_ACTIVITY_CATALOG));
       return INITIAL_ACTIVITY_CATALOG;
     }
-    return parsed;
+    const normalized = parsed.map((item) => ({
+      ...item,
+      activityType: normalizeActivityType(item.activityType),
+    }));
+    const requiredNewTypes: ActivityType[] = ['gimnasio_corporativo', 'masajes'];
+    let upgraded = [...normalized];
+    let didAppend = false;
+    for (const reqType of requiredNewTypes) {
+      const hasType = upgraded.some((item) => item.activityType === reqType);
+      if (!hasType) {
+        const missingDefaults = INITIAL_ACTIVITY_CATALOG.filter(
+          (seedItem) =>
+            seedItem.activityType === reqType &&
+            !upgraded.some((existing) => existing.id === seedItem.id)
+        );
+        if (missingDefaults.length > 0) {
+          upgraded = [...upgraded, ...missingDefaults];
+          didAppend = true;
+        }
+      }
+    }
+    if (didAppend) {
+      localStorage.setItem(STORAGE_KEYS.ACTIVITY_CATALOG, JSON.stringify(upgraded));
+    }
+    return upgraded;
   } catch {
     return INITIAL_ACTIVITY_CATALOG;
   }
 }
 
 export function saveStoredActivityCatalog(items: ActivityCatalogItem[]): void {
-  localStorage.setItem(STORAGE_KEYS.ACTIVITY_CATALOG, JSON.stringify(items));
+  try {
+    localStorage.setItem(STORAGE_KEYS.ACTIVITY_CATALOG, JSON.stringify(items));
+  } catch {
+    // Ignore localStorage quota issues; Firestore holds primary state
+  }
 }
 
 export function getStoredRecords(): AttendanceRecord[] {
@@ -1044,7 +1112,7 @@ export function getStoredRecords(): AttendanceRecord[] {
     const raw = localStorage.getItem(STORAGE_KEYS.RECORDS);
     if (!raw) {
       const initial = getInitialRecords();
-      localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(initial));
+      saveStoredRecords(initial);
       return initial;
     }
     const parsed: AttendanceRecord[] = JSON.parse(raw);
@@ -1055,14 +1123,53 @@ export function getStoredRecords(): AttendanceRecord[] {
 }
 
 export function saveStoredRecords(records: AttendanceRecord[]): void {
-  localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(records));
+  try {
+    localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(records));
+  } catch {
+    // If mobile localStorage hits quota due to multiple base64 photos, store compact cache for older entries
+    try {
+      const compact = records.map((rec, idx) => {
+        if (idx < 12) return rec;
+        return {
+          ...rec,
+          photoUrl:
+            rec.photoUrl && rec.photoUrl.length > 8000
+              ? generateSamplePresencePhoto(
+                  rec.activityName,
+                  rec.sedeName,
+                  rec.trainerName,
+                  `${rec.date} ${rec.checkInTime}`,
+                  `GPS: ${rec.checkInGps.lat.toFixed(5)}, ${rec.checkInGps.lng.toFixed(5)}`
+                )
+              : rec.photoUrl,
+          exitPhotoUrl:
+            rec.exitPhotoUrl && rec.exitPhotoUrl.length > 8000 ? undefined : rec.exitPhotoUrl,
+          facialVerification: rec.facialVerification
+            ? {
+                ...rec.facialVerification,
+                facePhotoUrl:
+                  rec.facialVerification.facePhotoUrl.length > 8000
+                    ? generateSampleFacePhoto(
+                        rec.trainerName,
+                        rec.facialVerification.confidenceScore
+                      )
+                    : rec.facialVerification.facePhotoUrl,
+              }
+            : undefined,
+        };
+      });
+      localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(compact));
+    } catch {
+      // Ignore if localStorage is completely unavailable (e.g. private browsing)
+    }
+  }
 }
 
 export function getStoredCompanies(): Company[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.COMPANIES);
     if (!raw) {
-      localStorage.setItem(STORAGE_KEYS.COMPANIES, JSON.stringify(INITIAL_COMPANIES));
+      saveStoredCompanies(INITIAL_COMPANIES);
       return INITIAL_COMPANIES;
     }
     const parsed: Company[] = JSON.parse(raw);
@@ -1073,14 +1180,18 @@ export function getStoredCompanies(): Company[] {
 }
 
 export function saveStoredCompanies(companies: Company[]): void {
-  localStorage.setItem(STORAGE_KEYS.COMPANIES, JSON.stringify(companies));
+  try {
+    localStorage.setItem(STORAGE_KEYS.COMPANIES, JSON.stringify(companies));
+  } catch {
+    // Ignore localStorage quota issues
+  }
 }
 
 export function getStoredTrainers(): Trainer[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.TRAINERS);
     if (!raw) {
-      localStorage.setItem(STORAGE_KEYS.TRAINERS, JSON.stringify(INITIAL_TRAINERS));
+      saveStoredTrainers(INITIAL_TRAINERS);
       return INITIAL_TRAINERS;
     }
     const parsed: Trainer[] = JSON.parse(raw);
@@ -1091,14 +1202,18 @@ export function getStoredTrainers(): Trainer[] {
 }
 
 export function saveStoredTrainers(trainers: Trainer[]): void {
-  localStorage.setItem(STORAGE_KEYS.TRAINERS, JSON.stringify(trainers));
+  try {
+    localStorage.setItem(STORAGE_KEYS.TRAINERS, JSON.stringify(trainers));
+  } catch {
+    // Ignore localStorage quota issues
+  }
 }
 
 export function getStoredAssignments(): ClassAssignment[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEYS.ASSIGNMENTS);
     if (!raw) {
-      localStorage.setItem(STORAGE_KEYS.ASSIGNMENTS, JSON.stringify(INITIAL_ASSIGNMENTS));
+      saveStoredAssignments(INITIAL_ASSIGNMENTS);
       return INITIAL_ASSIGNMENTS;
     }
     const parsed: ClassAssignment[] = JSON.parse(raw);
@@ -1109,7 +1224,11 @@ export function getStoredAssignments(): ClassAssignment[] {
 }
 
 export function saveStoredAssignments(assignments: ClassAssignment[]): void {
-  localStorage.setItem(STORAGE_KEYS.ASSIGNMENTS, JSON.stringify(assignments));
+  try {
+    localStorage.setItem(STORAGE_KEYS.ASSIGNMENTS, JSON.stringify(assignments));
+  } catch {
+    // Ignore localStorage quota issues
+  }
 }
 
 export function resetAllDataToDefault(): void {

@@ -6,6 +6,7 @@ import {
   getStoredTrainers,
   getStoredAssignments,
   getStoredActivityCatalog,
+  INITIAL_ACTIVITY_CATALOG,
   saveStoredCompanies,
   saveStoredRecords,
   saveStoredTrainers,
@@ -14,12 +15,14 @@ import {
   resetAllDataToDefault,
 } from './data/mockData';
 import {
+  ActivityCatalogItem,
+  ActivityType,
   AttendanceRecord,
+  ClassAssignment,
   Company,
+  normalizeActivityType,
   Sede,
   Trainer,
-  ClassAssignment,
-  ActivityCatalogItem,
   TrainerBiometricSession,
 } from './types';
 import { Header } from './components/Header';
@@ -71,7 +74,7 @@ import {
   toSafeDocId,
 } from './utils/firestoreDemoSync';
 import { deriveCompanyLogoText, generateInitialsAvatarDataUrl } from './utils/personnelValidation';
-import { ShieldCheck, CheckCheck, AlertTriangle } from 'lucide-react';
+import { ShieldCheck, CheckCheck } from 'lucide-react';
 
 const TRAINER_SESSION_STORAGE_KEY = 'bscw_trainer_biometric_session_v1';
 
@@ -136,7 +139,6 @@ export default function App() {
   );
   const [nowTick, setNowTick] = useState<number>(() => Date.now());
   const [initialCalendarReady, setInitialCalendarReady] = useState<boolean>(false);
-  const [syncErrorMessage, setSyncErrorMessage] = useState<string | null>(null);
 
   const { isAuthenticated: isDirectoryAuthenticated, user: directoryUser } = useDirectoryAuth();
 
@@ -145,11 +147,15 @@ export default function App() {
   const reconciledInitialRecordsRef = useRef<boolean>(false);
   const pendingSedesByIdRef = useRef<Map<string, Sede>>(new Map());
   const pendingAssignmentsByIdRef = useRef<Map<string, ClassAssignment>>(new Map());
+  const unsyncedAssignmentsQueueRef = useRef<Map<string, ClassAssignment>>(new Map());
   const inFlightAssignmentWritesRef = useRef<Map<string, number>>(new Map());
   const deletedAssignmentIdsRef = useRef<Set<string>>(new Set());
   const pendingRecordsByIdRef = useRef<Map<string, AttendanceRecord>>(new Map());
+  const unsyncedRecordsQueueRef = useRef<Map<string, AttendanceRecord>>(new Map());
   const inFlightRecordWritesRef = useRef<Map<string, number>>(new Map());
   const deletedRecordIdsRef = useRef<Set<string>>(new Set());
+  const seededNewModalitiesRef = useRef<boolean>(false);
+  const deletedCatalogIdsRef = useRef<Set<string>>(new Set());
   const trainersRef = useRef<Trainer[]>([]);
   const companiesRef = useRef<Company[]>([]);
   const assignmentsRef = useRef<ClassAssignment[]>([]);
@@ -209,19 +215,21 @@ export default function App() {
 
       void saveAssignmentToFirestore(normalized, parentComp, parentSede)
         .then(() => {
-          setSyncErrorMessage(null);
+          unsyncedAssignmentsQueueRef.current.delete(safeId);
         })
         .catch((err) => {
-          console.error(err);
-          setSyncErrorMessage(
-            'No se pudo guardar una asignación en la base de datos. Verifica tu conexión.'
-          );
+          console.warn('Queued assignment for automatic Firestore retry:', safeId, err);
+          if (!deletedAssignmentIdsRef.current.has(safeId)) {
+            unsyncedAssignmentsQueueRef.current.set(safeId, normalized);
+          }
         })
         .finally(() => {
           const remaining = (inFlightAssignmentWritesRef.current.get(safeId) || 1) - 1;
           if (remaining <= 0) {
             inFlightAssignmentWritesRef.current.delete(safeId);
-            pendingAssignmentsByIdRef.current.delete(safeId);
+            if (!unsyncedAssignmentsQueueRef.current.has(safeId)) {
+              pendingAssignmentsByIdRef.current.delete(safeId);
+            }
           } else {
             inFlightAssignmentWritesRef.current.set(safeId, remaining);
           }
@@ -249,19 +257,21 @@ export default function App() {
 
     void saveRecordToFirestore(normalized)
       .then(() => {
-        setSyncErrorMessage(null);
+        unsyncedRecordsQueueRef.current.delete(safeId);
       })
       .catch((err) => {
-        console.error(err);
-        setSyncErrorMessage(
-          'No se pudo guardar un registro de la bitácora de evidencias en Firestore. Verifica tu conexión.'
-        );
+        console.warn('Queued evidence record for automatic Firestore retry:', safeId, err);
+        if (!deletedRecordIdsRef.current.has(safeId)) {
+          unsyncedRecordsQueueRef.current.set(safeId, normalized);
+        }
       })
       .finally(() => {
         const remaining = (inFlightRecordWritesRef.current.get(safeId) || 1) - 1;
         if (remaining <= 0) {
           inFlightRecordWritesRef.current.delete(safeId);
-          pendingRecordsByIdRef.current.delete(safeId);
+          if (!unsyncedRecordsQueueRef.current.has(safeId)) {
+            pendingRecordsByIdRef.current.delete(safeId);
+          }
         } else {
           inFlightRecordWritesRef.current.set(safeId, remaining);
         }
@@ -269,6 +279,47 @@ export default function App() {
 
     return normalized;
   }, []);
+
+  // Automatically flush any queued records/assignments when connectivity returns or tab wakes
+  useEffect(() => {
+    const flushUnsyncedQueues = () => {
+      if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+
+      unsyncedRecordsQueueRef.current.forEach((queuedRec, id) => {
+        if (deletedRecordIdsRef.current.has(id)) {
+          unsyncedRecordsQueueRef.current.delete(id);
+          return;
+        }
+        if ((inFlightRecordWritesRef.current.get(id) || 0) > 0) return;
+        persistRecordToFirestore(queuedRec);
+      });
+
+      unsyncedAssignmentsQueueRef.current.forEach((queuedAsg, id) => {
+        if (deletedAssignmentIdsRef.current.has(id)) {
+          unsyncedAssignmentsQueueRef.current.delete(id);
+          return;
+        }
+        if ((inFlightAssignmentWritesRef.current.get(id) || 0) > 0) return;
+        persistAssignmentToFirestore(queuedAsg);
+      });
+    };
+
+    const onVisibilityWake = () => {
+      if (document.visibilityState === 'visible') {
+        setTimeout(flushUnsyncedQueues, 600);
+      }
+    };
+
+    window.addEventListener('online', flushUnsyncedQueues);
+    document.addEventListener('visibilitychange', onVisibilityWake);
+    const retryInterval = setInterval(flushUnsyncedQueues, 20000);
+
+    return () => {
+      window.removeEventListener('online', flushUnsyncedQueues);
+      document.removeEventListener('visibilitychange', onVisibilityWake);
+      clearInterval(retryInterval);
+    };
+  }, [persistRecordToFirestore, persistAssignmentToFirestore]);
 
   const handleTrainerSessionAuthenticated = useCallback((session: TrainerBiometricSession) => {
     setTrainerSession(session);
@@ -419,9 +470,7 @@ export default function App() {
         serverEmpty.records &&
         serverEmpty.catalog
       ) {
-        syncWorkspaceDataToFirestore()
-          .then(() => setSyncErrorMessage(null))
-          .catch(console.error);
+        syncWorkspaceDataToFirestore().catch(console.error);
         return;
       }
 
@@ -439,9 +488,7 @@ export default function App() {
           upsertCoreEntities: false,
           upsertRecords: false,
         }
-      )
-        .then(() => setSyncErrorMessage(null))
-        .catch(console.error);
+      ).catch(console.error);
     };
 
     const syncCombinedCompanies = () => {
@@ -616,7 +663,7 @@ export default function App() {
             ...(typeof d.dayOfMonth === 'number' ? { dayOfMonth: d.dayOfMonth } : {}),
             time: normalizeHHMM(d.time, '09:00'),
             ...(typeof d.durationMinutes === 'number' ? { durationMinutes: d.durationMinutes } : {}),
-            activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
+            activityType: normalizeActivityType(d.activityType),
             activityName: String(d.activityName || ''),
             locationArea: String(d.locationArea || ''),
             ...(typeof d.expectedAttendees === 'number'
@@ -693,9 +740,6 @@ export default function App() {
         updateStateIfChanged(setAssignments, mergedList, saveStoredAssignments);
       },
       (err) => {
-        setSyncErrorMessage(
-          'No se pudo leer la colección de asignaciones (/assignments) en Firestore.'
-        );
         try {
           handleFirestoreError(err, OperationType.LIST, 'assignments');
         } catch (e) {
@@ -718,7 +762,7 @@ export default function App() {
           checkCalendarReady();
           maybeReconcileEmptyServerCollections();
 
-          // One-time reconciliation of any local evidence records/photos not yet reflected in /records
+          // One-time reconciliation of any local offline changes not yet reflected in /records
           if (!reconciledInitialRecordsRef.current) {
             reconciledInitialRecordsRef.current = true;
             const serverById = new Map(fsRecords.map((r) => [r.id, r]));
@@ -727,7 +771,8 @@ export default function App() {
               if (deletedRecordIdsRef.current.has(safeId)) continue;
               const serverMatch = serverById.get(safeId);
               if (!serverMatch) {
-                if (!snap.empty) {
+                // Non-demo user records created while offline are pushed immediately; demo seed records are handled by maybeReconcileEmptyServerCollections
+                if (!snap.empty && !/^rec_10[1-9]$/.test(safeId)) {
                   persistRecordToFirestore(localRec);
                 }
               } else {
@@ -749,7 +794,8 @@ export default function App() {
           if (
             isServerSnapshot &&
             autoSeedTriggeredRef.current &&
-            pendingRecordsByIdRef.current.size === 0
+            pendingRecordsByIdRef.current.size === 0 &&
+            unsyncedRecordsQueueRef.current.size === 0
           ) {
             updateStateIfChanged<AttendanceRecord[]>(setRecords, [], saveStoredRecords);
           } else if (pendingRecordsByIdRef.current.size > 0) {
@@ -787,9 +833,6 @@ export default function App() {
         updateStateIfChanged(setRecords, mergedRecords, saveStoredRecords);
       },
       (err) => {
-        setSyncErrorMessage(
-          'No se pudo leer la bitácora de evidencias (/records) en Firestore.'
-        );
         try {
           handleFirestoreError(err, OperationType.LIST, 'records');
         } catch (e) {
@@ -814,13 +857,35 @@ export default function App() {
             return {
               id: docSnap.id,
               name: String(d.name || ''),
-              activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
+              activityType: normalizeActivityType(d.activityType),
               defaultDurationMinutes: Number(d.defaultDurationMinutes ?? 20),
               ...(typeof d.description === 'string' ? { description: d.description } : {}),
               active: d.active !== false,
             };
           })
           .sort((a, b) => a.id.localeCompare(b.id));
+
+        if (!snap.metadata.fromCache && !snap.empty && !seededNewModalitiesRef.current) {
+          seededNewModalitiesRef.current = true;
+          const requiredTypes: ActivityType[] = ['gimnasio_corporativo', 'masajes'];
+          for (const reqType of requiredTypes) {
+            const existsInFirestore = fsCatalog.some((item) => item.activityType === reqType);
+            if (!existsInFirestore) {
+              const defaultsForType = INITIAL_ACTIVITY_CATALOG.filter(
+                (seedItem) => seedItem.activityType === reqType
+              );
+              for (const seedItem of defaultsForType) {
+                const safeCatId = toSafeDocId(seedItem.id, 'cat');
+                if (!deletedCatalogIdsRef.current.has(safeCatId)) {
+                  void saveActivityCatalogItemToFirestore(seedItem, {
+                    onlyIfMissing: true,
+                  }).catch(console.error);
+                }
+              }
+            }
+          }
+        }
+
         updateStateIfChanged(setActivityCatalog, fsCatalog, saveStoredActivityCatalog);
       },
       (err) => {
@@ -857,6 +922,7 @@ export default function App() {
 
     const nextRecords: AttendanceRecord[] = records.map((rec) => {
       if (rec.status !== 'en_curso' || rec.checkOutTime) return rec;
+      if ((inFlightRecordWritesRef.current.get(rec.id) || 0) > 0) return rec;
       const alarm = getSessionAlarmStatus(rec, activityCatalog, nowTick);
       if (!alarm.hasExceededUnclosedGrace) return rec;
 
@@ -1072,6 +1138,7 @@ export default function App() {
     const safeId = toSafeDocId(recordId, 'rec');
     deletedRecordIdsRef.current.add(safeId);
     pendingRecordsByIdRef.current.delete(safeId);
+    unsyncedRecordsQueueRef.current.delete(safeId);
 
     const updated = records.filter((r) => r.id !== recordId && r.id !== safeId);
     setRecords(updated);
@@ -1222,6 +1289,7 @@ export default function App() {
   const handleDeleteAssignment = (assignmentId: string) => {
     const safeId = toSafeDocId(assignmentId, 'asg');
     pendingAssignmentsByIdRef.current.delete(safeId);
+    unsyncedAssignmentsQueueRef.current.delete(safeId);
     deletedAssignmentIdsRef.current.add(safeId);
 
     const updated = assignments.filter((a) => a.id !== assignmentId && a.id !== safeId);
@@ -1229,10 +1297,7 @@ export default function App() {
     saveStoredAssignments(updated);
 
     deleteAssignmentFromFirestore(safeId)
-      .catch((err) => {
-        console.error(err);
-        setSyncErrorMessage('No se pudo eliminar la asignación en la base de datos.');
-      })
+      .catch(console.error)
       .finally(() => {
         deletedAssignmentIdsRef.current.delete(safeId);
       });
@@ -1275,6 +1340,7 @@ export default function App() {
   };
 
   const handleDeleteCatalogItem = (id: string) => {
+    deletedCatalogIdsRef.current.add(toSafeDocId(id, 'cat'));
     const updated = activityCatalog.filter((item) => item.id !== id);
     setActivityCatalog(updated);
     saveStoredActivityCatalog(updated);
@@ -1283,6 +1349,8 @@ export default function App() {
 
   // Global reset (also re-seeds demo data into Firestore automatically)
   const handleResetData = () => {
+    seededNewModalitiesRef.current = false;
+    deletedCatalogIdsRef.current.clear();
     resetAllDataToDefault();
     const freshCompanies = getStoredCompanies();
     companiesRef.current = freshCompanies;
@@ -1332,24 +1400,6 @@ export default function App() {
         isDirectoryAuthenticated={isDirectoryAuthenticated}
         directoryUserEmail={directoryUser?.email}
       />
-
-      {syncErrorMessage && (
-        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2.5 text-xs text-amber-900 print:hidden">
-          <div className="max-w-7xl mx-auto flex items-center justify-between gap-2">
-            <div className="flex items-center justify-center sm:justify-start gap-2 font-semibold text-center sm:text-left flex-1">
-              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
-              <span>{syncErrorMessage}</span>
-            </div>
-            <button
-              type="button"
-              onClick={() => setSyncErrorMessage(null)}
-              className="min-w-[36px] min-h-[36px] flex items-center justify-center text-amber-700 hover:text-amber-950 font-bold shrink-0"
-            >
-              ✕
-            </button>
-          </div>
-        </div>
-      )}
 
       <main className="flex-1 w-full pb-12 sm:pb-16">
         {isTrainerPortalActive && (

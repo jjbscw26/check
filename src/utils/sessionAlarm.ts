@@ -1,4 +1,11 @@
-import { ActivityCatalogItem, ActivityType, AttendanceRecord, ClassAssignment } from '../types';
+import {
+  ACTIVITY_TYPE_DEFAULT_MINUTES,
+  ActivityCatalogItem,
+  ActivityType,
+  AttendanceRecord,
+  ClassAssignment,
+  normalizeActivityType,
+} from '../types';
 
 export const UNCLOSED_GRACE_MINUTES = 60;
 export const UNCLOSED_GRACE_SECONDS = UNCLOSED_GRACE_MINUTES * 60;
@@ -36,7 +43,7 @@ export function getDefaultDurationMinutes(
   if (match && match.defaultDurationMinutes > 0) {
     return match.defaultDurationMinutes;
   }
-  return activityType === 'pausa_activa' ? 20 : 50;
+  return ACTIVITY_TYPE_DEFAULT_MINUTES[normalizeActivityType(activityType)];
 }
 
 export function getAssignmentDurationMinutes(

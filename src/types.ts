@@ -1,4 +1,49 @@
-export type ActivityType = 'pausa_activa' | 'clase_fitness';
+export type ActivityType =
+  | 'pausa_activa'
+  | 'clase_fitness'
+  | 'gimnasio_corporativo'
+  | 'masajes';
+
+export const ALL_ACTIVITY_TYPES: readonly ActivityType[] = [
+  'pausa_activa',
+  'clase_fitness',
+  'gimnasio_corporativo',
+  'masajes',
+];
+
+export const ACTIVITY_TYPE_LABELS: Record<ActivityType, string> = {
+  pausa_activa: 'Pausa Activa',
+  clase_fitness: 'Clase Fitness',
+  gimnasio_corporativo: 'Gimnasio Corporativo',
+  masajes: 'Masajes',
+};
+
+export const ACTIVITY_TYPE_SHORT_LABELS: Record<ActivityType, string> = {
+  pausa_activa: 'Pausa',
+  clase_fitness: 'Fitness',
+  gimnasio_corporativo: 'Gimnasio',
+  masajes: 'Masajes',
+};
+
+export const ACTIVITY_TYPE_DEFAULT_MINUTES: Record<ActivityType, number> = {
+  pausa_activa: 20,
+  clase_fitness: 50,
+  gimnasio_corporativo: 60,
+  masajes: 30,
+};
+
+export function isValidActivityType(val: unknown): val is ActivityType {
+  return (
+    val === 'pausa_activa' ||
+    val === 'clase_fitness' ||
+    val === 'gimnasio_corporativo' ||
+    val === 'masajes'
+  );
+}
+
+export function normalizeActivityType(val: unknown): ActivityType {
+  return isValidActivityType(val) ? val : 'pausa_activa';
+}
 
 export type SubActivity = string;
 
