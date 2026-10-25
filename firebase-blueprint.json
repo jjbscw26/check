@@ -43,6 +43,91 @@
       },
       "required": ["street", "number", "city", "state", "postalCode"]
     },
+    "GpsData": {
+      "title": "GpsData",
+      "description": "Coordenadas GPS certificadas de check-in o check-out y validación contra la geocerca de la sede.",
+      "type": "object",
+      "properties": {
+        "lat": {
+          "type": "number",
+          "description": "Latitud GPS (-90 a 90)."
+        },
+        "lng": {
+          "type": "number",
+          "description": "Longitud GPS (-180 a 180)."
+        },
+        "accuracy": {
+          "type": "number",
+          "description": "Precisión del GPS en metros."
+        },
+        "distanceToSedeMeters": {
+          "type": "number",
+          "description": "Distancia calculada a la sede en metros."
+        },
+        "isWithinGeofence": {
+          "type": "boolean",
+          "description": "Indica si la captura ocurrió dentro del radio permitido."
+        },
+        "capturedAt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 50
+        }
+      },
+      "required": [
+        "lat",
+        "lng",
+        "accuracy",
+        "distanceToSedeMeters",
+        "isWithinGeofence",
+        "capturedAt"
+      ]
+    },
+    "FacialVerificationData": {
+      "title": "FacialVerificationData",
+      "description": "Metadatos y evidencia biométrica de verificación facial del entrenador.",
+      "type": "object",
+      "properties": {
+        "verified": {
+          "type": "boolean"
+        },
+        "confidenceScore": {
+          "type": "number"
+        },
+        "facePhotoUrl": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 250000
+        },
+        "capturedAt": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 50
+        },
+        "biometricId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80
+        },
+        "livenessPassed": {
+          "type": "boolean"
+        },
+        "trainerName": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 120
+        }
+      },
+      "required": [
+        "verified",
+        "confidenceScore",
+        "facePhotoUrl",
+        "capturedAt",
+        "biometricId",
+        "livenessPassed",
+        "trainerName"
+      ]
+    },
     "Trainer": {
       "title": "Trainer",
       "description": "Entrenador / Coach corporativo con conexión automática multi-dispositivo: nombre, correo, teléfono, avatar (URL o DataURL), especialidades y estado activo.",
@@ -79,10 +164,7 @@
         },
         "specialties": {
           "type": "array",
-          "description": "Lista acotada de especialidades y disciplinas del entrenador (1 a 20 elementos).",
-          "items": {
-            "type": "string"
-          }
+          "description": "Lista acotada de especialidades y disciplinas del entrenador (1 a 20 elementos)."
         },
         "active": {
           "type": "boolean",
@@ -347,7 +429,7 @@
     },
     "ClassAssignment": {
       "title": "ClassAssignment",
-      "description": "Asignación programada de pausa activa o clase fitness sincronizada automáticamente entre dispositivos.",
+      "description": "Asignación completa del calendario de clases y pausas activas (semanal Lunes=1..Domingo=7, mensual, fecha única, bloqueos, fechas completadas, incumplidas y rehabilitadas).",
       "type": "object",
       "properties": {
         "trainerId": {
@@ -398,7 +480,8 @@
           "maxLength": 20
         },
         "dayOfWeek": {
-          "type": "number"
+          "type": "number",
+          "description": "Día de la semana para frecuencia semanal (1 = Lunes ... 6 = Sábado, 7 = Domingo; admite 0..7)."
         },
         "date": {
           "type": "string",
@@ -508,6 +591,285 @@
         "activityType",
         "activityName",
         "locationArea",
+        "active",
+        "createdByUid",
+        "createdByEmail",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AttendanceRecord": {
+      "title": "AttendanceRecord",
+      "description": "Ejecución real en calendario (check-in, sesión en curso, check-out, asistencia completada o incumplida, puntualidad, GPS, foto con sello y biometría facial).",
+      "type": "object",
+      "properties": {
+        "assignmentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "trainerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "trainerName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "companyId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "companyName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "sedeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "sedeName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "sedeAddress": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 250,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "date": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "scheduledTime": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 5,
+          "pattern": "^[0-2][0-9]:[0-5][0-9]$"
+        },
+        "checkInTime": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 20
+        },
+        "checkInIso": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 50
+        },
+        "checkOutTime": {
+          "type": "string",
+          "maxLength": 20
+        },
+        "checkOutIso": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "status": {
+          "type": "string",
+          "enum": ["en_curso", "completado", "incumplido"],
+          "maxLength": 20
+        },
+        "nonComplianceReason": {
+          "type": "string",
+          "enum": ["fuera_de_horario", "sin_cierre_30m", "manual_admin"],
+          "maxLength": 30
+        },
+        "markedNonCompliantAt": {
+          "type": "string",
+          "maxLength": 40
+        },
+        "punctualityStatus": {
+          "type": "string",
+          "enum": ["a_tiempo", "con_retraso", "adelantado"],
+          "maxLength": 20
+        },
+        "punctualityDiffMinutes": {
+          "type": "number"
+        },
+        "activityType": {
+          "type": "string",
+          "enum": ["pausa_activa", "clase_fitness"],
+          "maxLength": 20
+        },
+        "activityName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "attendeesCount": {
+          "type": "number"
+        },
+        "locationArea": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "observations": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "checkInGps": {
+          "type": "object",
+          "$ref": "#/entities/GpsData"
+        },
+        "checkOutGps": {
+          "type": "object",
+          "$ref": "#/entities/GpsData"
+        },
+        "photoUrl": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 280000
+        },
+        "exitPhotoUrl": {
+          "type": "string",
+          "maxLength": 280000
+        },
+        "facialVerification": {
+          "type": "object",
+          "$ref": "#/entities/FacialVerificationData"
+        },
+        "durationMinutes": {
+          "type": "number"
+        },
+        "plannedDurationMinutes": {
+          "type": "number"
+        },
+        "alarmEnabled": {
+          "type": "boolean"
+        },
+        "alarmSnoozedUntilIso": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "adminVerified": {
+          "type": "boolean"
+        },
+        "adminNotes": {
+          "type": "string",
+          "maxLength": 1000
+        },
+        "createdByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 5,
+          "maxLength": 254,
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "trainerId",
+        "trainerName",
+        "companyId",
+        "companyName",
+        "sedeId",
+        "sedeName",
+        "sedeAddress",
+        "date",
+        "scheduledTime",
+        "checkInTime",
+        "checkInIso",
+        "status",
+        "punctualityStatus",
+        "punctualityDiffMinutes",
+        "activityType",
+        "activityName",
+        "attendeesCount",
+        "locationArea",
+        "checkInGps",
+        "photoUrl",
+        "adminVerified",
+        "createdByUid",
+        "createdByEmail",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "ActivityCatalogItem": {
+      "title": "ActivityCatalogItem",
+      "description": "Modalidad / tipo de actividad del calendario de asignaciones con duración predeterminada y estado activo.",
+      "type": "object",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "activityType": {
+          "type": "string",
+          "enum": ["pausa_activa", "clase_fitness"],
+          "maxLength": 20
+        },
+        "defaultDurationMinutes": {
+          "type": "number"
+        },
+        "description": {
+          "type": "string",
+          "maxLength": 500
+        },
+        "active": {
+          "type": "boolean"
+        },
+        "createdByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 5,
+          "maxLength": 254,
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "name",
+        "activityType",
+        "defaultDurationMinutes",
         "active",
         "createdByUid",
         "createdByEmail",
@@ -686,7 +1048,19 @@
       "schema": {
         "$ref": "#/entities/ClassAssignment"
       },
-      "description": "Colección compartida de asignaciones programadas de clases y pausas activas sincronizada entre escritorio, tablets y celulares."
+      "description": "Colección compartida de asignaciones programadas del calendario (semanales Lunes-Domingo, mensuales, fecha única, bloqueos, completadas, incumplidas y rehabilitadas)."
+    },
+    "/records/{recordId}": {
+      "schema": {
+        "$ref": "#/entities/AttendanceRecord"
+      },
+      "description": "Colección compartida de ejecuciones y registros de asistencia del calendario (en curso, completadas, incumplidas, check-in/out, GPS y evidencia fotográfica)."
+    },
+    "/activity_catalog/{catalogId}": {
+      "schema": {
+        "$ref": "#/entities/ActivityCatalogItem"
+      },
+      "description": "Colección compartida del catálogo de modalidades y tipos de asignación con duraciones predeterminadas para el calendario."
     },
     "/personnel/{personnelId}": {
       "schema": {

@@ -9,7 +9,18 @@ import {
   RefreshCw,
   X,
   Link2,
+  CheckCircle2,
+  AlertCircle,
 } from 'lucide-react';
+import {
+  attachStreamToVideoElement,
+  captureSquareAvatarFromSource,
+  formatCameraErrorMessage,
+  openCameraStreamWithFallback,
+  unregisterExclusiveCameraStream,
+  VideoDeviceOption,
+} from '../utils/cameraStream';
+import { validateFaceInRegistrationPhoto } from '../utils/faceVerification';
 
 interface AdminTrainerModalProps {
   trainer: Trainer | null; // null if creating a new one
@@ -17,6 +28,8 @@ interface AdminTrainerModalProps {
   onClose: () => void;
   onSave: (trainer: Trainer) => void;
 }
+
+const OWNER_ID = 'admin-trainer-modal-camera';
 
 const PRESET_SPECIALTIES = [
   'Pausas Activas',
@@ -33,36 +46,26 @@ const PRESET_SPECIALTIES = [
 ];
 
 const PRESET_AVATARS = [
-  'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=150&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=150&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=150&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=150&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=150&auto=format&fit=crop&q=80',
-  'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=150&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=360&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1544005313-94ddf0286df2?w=360&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=360&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1517841905240-472988babdf9?w=360&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=360&auto=format&fit=crop&q=80',
+  'https://images.unsplash.com/photo-1573496359142-b8d87734a5a2?w=360&auto=format&fit=crop&q=80',
 ];
 
-// Resize and center-crop any uploaded image file to a crisp 360x360 JPEG DataURL
 function processImageFileToDataUrl(file: File): Promise<string> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => {
       const img = new Image();
       img.onload = () => {
-        const size = 360;
-        const canvas = document.createElement('canvas');
-        canvas.width = size;
-        canvas.height = size;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          resolve(reader.result as string);
-          return;
-        }
-        // Center square crop
-        const minSide = Math.min(img.width, img.height);
-        const sx = (img.width - minSide) / 2;
-        const sy = (img.height - minSide) / 2;
-        ctx.drawImage(img, sx, sy, minSide, minSide, 0, 0, size, size);
-        resolve(canvas.toDataURL('image/jpeg', 0.86));
+        const dataUrl = captureSquareAvatarFromSource(img, {
+          mirrorHorizontal: false,
+          targetSize: 340,
+          maxDataUrlChars: 120000,
+        });
+        resolve(dataUrl);
       };
       img.onerror = () => reject(new Error('No se pudo procesar la imagen seleccionada.'));
       img.src = reader.result as string;
@@ -89,27 +92,57 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
   // Photo upload / camera states
   const [photoSourceLabel, setPhotoSourceLabel] = useState<string>('Avatar actual');
   const [photoError, setPhotoError] = useState<string | null>(null);
+  const [biometricFaceNotice, setBiometricFaceNotice] = useState<{
+    valid: boolean;
+    message: string;
+  } | null>(null);
   const [isDraggingFile, setIsDraggingFile] = useState(false);
   const [showUrlAndPresets, setShowUrlAndPresets] = useState(false);
 
   // Live Camera states
   const [isCameraActive, setIsCameraActive] = useState(false);
+  const [isStartingCamera, setIsStartingCamera] = useState(false);
+  const [isVideoReady, setIsVideoReady] = useState(false);
   const [facingMode, setFacingMode] = useState<'user' | 'environment'>('user');
+  const [videoDevices, setVideoDevices] = useState<VideoDeviceOption[]>([]);
+  const [activeDeviceId, setActiveDeviceId] = useState<string | undefined>(undefined);
+  const [isMirrored, setIsMirrored] = useState<boolean>(true);
+
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
 
-  // Hidden file input refs
   const galleryInputRef = useRef<HTMLInputElement | null>(null);
   const fileUploadInputRef = useRef<HTMLInputElement | null>(null);
-  const mobileCameraFallbackRef = useRef<HTMLInputElement | null>(null);
 
   const stopCameraStream = useCallback(() => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach((track) => track.stop());
-      streamRef.current = null;
+    unregisterExclusiveCameraStream(OWNER_ID, streamRef.current);
+    streamRef.current = null;
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
     }
     setIsCameraActive(false);
+    setIsVideoReady(false);
+    setIsStartingCamera(false);
   }, []);
+
+  const bindVideoElement = useCallback((el: HTMLVideoElement | null) => {
+    videoRef.current = el;
+    if (el && streamRef.current) {
+      void attachStreamToVideoElement(el, streamRef.current).then((ok) => {
+        if (ok) {
+          setIsVideoReady(true);
+        }
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isCameraActive && videoRef.current && streamRef.current) {
+      attachStreamToVideoElement(videoRef.current, streamRef.current).then((ok) => {
+        if (ok) setIsVideoReady(true);
+      });
+    }
+  }, [isCameraActive]);
 
   useEffect(() => {
     if (trainer) {
@@ -120,7 +153,9 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
       setSpecialties(trainer.specialties || ['Pausas Activas']);
       setActive(trainer.active !== false);
       setPhotoSourceLabel(
-        trainer.avatar?.startsWith('data:image') ? 'Foto personalizada cargada' : 'Foto de perfil actual'
+        trainer.avatar?.startsWith('data:image/jpeg')
+          ? 'Foto personalizada cargada'
+          : 'Foto de perfil actual'
       );
     } else {
       setName('');
@@ -132,24 +167,29 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
       setPhotoSourceLabel('Avatar predeterminado');
     }
     setPhotoError(null);
+    setBiometricFaceNotice(null);
     setShowUrlAndPresets(false);
     stopCameraStream();
   }, [trainer, isOpen, stopCameraStream]);
 
-  // Cleanup camera stream on unmount
   useEffect(() => {
     return () => {
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach((track) => track.stop());
-      }
+      unregisterExclusiveCameraStream(OWNER_ID, streamRef.current);
+      streamRef.current = null;
     };
   }, []);
 
   if (!isOpen) return null;
 
+  const verifyCapturedOrUploadedFace = async (imgUrl: string) => {
+    const check = await validateFaceInRegistrationPhoto(imgUrl);
+    setBiometricFaceNotice(check);
+  };
+
   const handleFileSelected = async (file: File | undefined, sourceDescription: string) => {
     if (!file) return;
     setPhotoError(null);
+    setBiometricFaceNotice(null);
     if (!file.type.startsWith('image/')) {
       setPhotoError('Por favor selecciona un archivo de imagen válido (JPG, PNG, WEBP).');
       return;
@@ -159,77 +199,83 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
       setAvatar(dataUrl);
       setPhotoSourceLabel(sourceDescription);
       stopCameraStream();
+      verifyCapturedOrUploadedFace(dataUrl);
     } catch {
       setPhotoError('No fue posible cargar la imagen. Intenta con otra fotografía.');
     }
   };
 
-  const startLiveCamera = async (desiredFacing: 'user' | 'environment' = facingMode) => {
+  const startLiveCamera = async (
+    desiredFacing: 'user' | 'environment' = facingMode,
+    preferredDeviceId?: string
+  ) => {
     setPhotoError(null);
-    stopCameraStream();
-
-    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-      // Fallback to native device camera file input
-      mobileCameraFallbackRef.current?.click();
-      return;
-    }
+    setBiometricFaceNotice(null);
+    setIsStartingCamera(true);
+    setIsVideoReady(false);
+    setIsCameraActive(true);
 
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: {
-          facingMode: desiredFacing,
-          width: { ideal: 640 },
-          height: { ideal: 640 },
+      const opened = await openCameraStreamWithFallback({
+        ownerId: OWNER_ID,
+        facingMode: desiredFacing,
+        preferredDeviceId,
+        idealWidth: 640,
+        idealHeight: 640,
+        onPreempted: () => {
+          streamRef.current = null;
+          setIsCameraActive(false);
+          setIsVideoReady(false);
         },
-        audio: false,
       });
-      streamRef.current = stream;
-      setIsCameraActive(true);
-      setTimeout(() => {
-        if (videoRef.current) {
-          videoRef.current.srcObject = stream;
-          videoRef.current.play().catch(() => {});
+
+      streamRef.current = opened.stream;
+      setVideoDevices(opened.videoDevices);
+      setActiveDeviceId(opened.activeDeviceId);
+      setIsMirrored(desiredFacing === 'user' && opened.isMirroredSuggested);
+
+      if (videoRef.current) {
+        const ready = await attachStreamToVideoElement(videoRef.current, opened.stream);
+        if (ready) {
+          setIsVideoReady(true);
         }
-      }, 60);
-    } catch {
-      // If camera permission denied or unavailable, open native camera file picker
-      setPhotoError('No se pudo abrir la cámara en vivo. Puedes usar el selector directo de cámara o subir un archivo.');
-      mobileCameraFallbackRef.current?.click();
+      }
+    } catch (err: unknown) {
+      stopCameraStream();
+      setPhotoError(formatCameraErrorMessage(err));
+    } finally {
+      setIsStartingCamera(false);
     }
   };
 
   const toggleCameraFacing = () => {
     const next = facingMode === 'user' ? 'environment' : 'user';
     setFacingMode(next);
-    if (isCameraActive) {
-      startLiveCamera(next);
+    if (videoDevices.length > 1 && activeDeviceId) {
+      const idx = videoDevices.findIndex((d) => d.deviceId === activeDeviceId);
+      const nextDev = videoDevices[(idx + 1) % videoDevices.length];
+      startLiveCamera(next, nextDev?.deviceId);
+      return;
     }
+    startLiveCamera(next);
   };
 
   const captureFromLiveCamera = () => {
     const video = videoRef.current;
-    if (!video || video.videoWidth === 0) return;
-
-    const size = 360;
-    const canvas = document.createElement('canvas');
-    canvas.width = size;
-    canvas.height = size;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
-
-    const minSide = Math.min(video.videoWidth, video.videoHeight);
-    const sx = (video.videoWidth - minSide) / 2;
-    const sy = (video.videoHeight - minSide) / 2;
-
-    if (facingMode === 'user') {
-      ctx.translate(size, 0);
-      ctx.scale(-1, 1);
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
+      setPhotoError('Esperando señal de video de la cámara. Intenta de nuevo en un segundo.');
+      return;
     }
-    ctx.drawImage(video, sx, sy, minSide, minSide, 0, 0, size, size);
-    const capturedDataUrl = canvas.toDataURL('image/jpeg', 0.88);
+
+    const capturedDataUrl = captureSquareAvatarFromSource(video, {
+      mirrorHorizontal: isMirrored,
+      targetSize: 340,
+      maxDataUrlChars: 120000,
+    });
     setAvatar(capturedDataUrl);
     setPhotoSourceLabel('Capturada con cámara');
     stopCameraStream();
+    verifyCapturedOrUploadedFace(capturedDataUrl);
   };
 
   const handleDropFile = (e: React.DragEvent<HTMLDivElement>) => {
@@ -296,21 +342,20 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
                 {trainer ? 'Editar Entrenador' : 'Agregar Nuevo Entrenador'}
               </h3>
               <p className="text-xs text-red-100">
-                Gestión de perfil, fotografía oficial y especialidades BSCW
+                Gestión de perfil, fotografía oficial de registro facial y especialidades BSCW
               </p>
             </div>
           </div>
           <button
             type="button"
             onClick={handleCloseModal}
-            className="text-white/80 hover:text-white p-1.5 rounded-lg"
+            className="text-white/80 hover:text-white p-1.5 rounded-lg cursor-pointer"
           >
             ✕
           </button>
         </div>
 
         <form onSubmit={handleSubmit} className="p-5 sm:p-6 space-y-4 text-slate-800 text-xs flex-1 overflow-y-auto">
-          {/* Hidden Inputs for Gallery, File Upload, and Native Camera Fallback */}
           <input
             ref={galleryInputRef}
             type="file"
@@ -332,23 +377,12 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
               e.target.value = '';
             }}
           />
-          <input
-            ref={mobileCameraFallbackRef}
-            type="file"
-            accept="image/*"
-            capture="user"
-            className="hidden"
-            onChange={(e) => {
-              handleFileSelected(e.target.files?.[0], 'Capturada con Cámara');
-              e.target.value = '';
-            }}
-          />
 
           {/* Avatar / Profile Photo Section */}
           <div className="p-3.5 sm:p-4 bg-slate-50 border border-slate-200 rounded-2xl space-y-3">
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between gap-2">
               <label className="font-bold text-slate-800 text-xs sm:text-sm">
-                Fotografía del Entrenador (Referencia Biométrica)
+                Fotografía de Registro (Referencia Biométrica 1:1)
               </label>
               <span className="text-[10px] font-semibold px-2 py-0.5 rounded bg-red-50 text-red-700 border border-red-200">
                 {photoSourceLabel}
@@ -367,7 +401,7 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
 
               <div className="flex-1 w-full space-y-2">
                 <p className="text-[11px] text-slate-500 font-medium">
-                  Elige cómo deseas actualizar la fotografía del entrenador:
+                  Captura una foto de frente con cámara o sube una imagen clara del rostro:
                 </p>
 
                 <div className="grid grid-cols-3 gap-2">
@@ -375,17 +409,17 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
                   <button
                     type="button"
                     onClick={() => galleryInputRef.current?.click()}
-                    className="flex flex-col items-center justify-center p-2.5 rounded-xl bg-white hover:bg-red-50 border border-slate-200 hover:border-red-300 text-slate-700 hover:text-red-700 font-bold transition shadow-2xs gap-1"
+                    className="flex flex-col items-center justify-center p-2.5 rounded-xl bg-white hover:bg-red-50 border border-slate-200 hover:border-red-300 text-slate-700 hover:text-red-700 font-bold transition shadow-2xs gap-1 cursor-pointer"
                   >
                     <ImageIcon className="w-4 h-4 text-red-600" />
                     <span className="text-[11px]">Galería</span>
                   </button>
 
-                  {/* Option 2: Cámara */}
+                  {/* Option 2: Cámara en Vivo */}
                   <button
                     type="button"
-                    onClick={() => (isCameraActive ? stopCameraStream() : startLiveCamera())}
-                    className={`flex flex-col items-center justify-center p-2.5 rounded-xl border font-bold transition shadow-2xs gap-1 ${
+                    onClick={() => (isCameraActive ? stopCameraStream() : startLiveCamera('user'))}
+                    className={`flex flex-col items-center justify-center p-2.5 rounded-xl border font-bold transition shadow-2xs gap-1 cursor-pointer ${
                       isCameraActive
                         ? 'bg-red-600 text-white border-red-600'
                         : 'bg-white hover:bg-red-50 border-slate-200 hover:border-red-300 text-slate-700 hover:text-red-700'
@@ -399,7 +433,7 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
                   <button
                     type="button"
                     onClick={() => fileUploadInputRef.current?.click()}
-                    className="flex flex-col items-center justify-center p-2.5 rounded-xl bg-white hover:bg-red-50 border border-slate-200 hover:border-red-300 text-slate-700 hover:text-red-700 font-bold transition shadow-2xs gap-1"
+                    className="flex flex-col items-center justify-center p-2.5 rounded-xl bg-white hover:bg-red-50 border border-slate-200 hover:border-red-300 text-slate-700 hover:text-red-700 font-bold transition shadow-2xs gap-1 cursor-pointer"
                   >
                     <Upload className="w-4 h-4 text-red-600" />
                     <span className="text-[11px]">Subir Archivo</span>
@@ -435,14 +469,15 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
               <div className="bg-slate-900 rounded-2xl p-3 text-white space-y-2.5">
                 <div className="flex items-center justify-between text-[11px]">
                   <span className="font-bold text-red-300 flex items-center">
-                    <span className="w-2 h-2 rounded-full bg-red-500 mr-1.5 animate-ping" />
+                    <span className="w-2 h-2 rounded-full bg-red-500 mr-1.5" />
                     Cámara activa en vivo
                   </span>
                   <div className="flex items-center space-x-1.5">
                     <button
                       type="button"
                       onClick={toggleCameraFacing}
-                      className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center space-x-1"
+                      disabled={isStartingCamera}
+                      className="px-2 py-1 rounded-lg bg-white/10 hover:bg-white/20 text-white flex items-center space-x-1 cursor-pointer"
                       title="Cambiar cámara frontal/trasera"
                     >
                       <RefreshCw className="w-3 h-3" />
@@ -451,33 +486,60 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
                     <button
                       type="button"
                       onClick={stopCameraStream}
-                      className="p-1 rounded-lg bg-white/10 hover:bg-white/20 text-white"
+                      className="p-1 rounded-lg bg-white/10 hover:bg-white/20 text-white cursor-pointer"
                     >
                       <X className="w-3.5 h-3.5" />
                     </button>
                   </div>
                 </div>
 
-                <div className="relative w-48 h-48 mx-auto rounded-2xl overflow-hidden border-2 border-red-500 bg-black">
+                <div className="relative w-52 h-52 mx-auto rounded-2xl overflow-hidden border-2 border-red-500 bg-black flex items-center justify-center">
                   <video
-                    ref={videoRef}
+                    ref={bindVideoElement}
                     autoPlay
                     playsInline
                     muted
-                    className={`w-full h-full object-cover ${facingMode === 'user' ? 'scale-x-[-1]' : ''}`}
+                    onLoadedMetadata={() => setIsVideoReady(true)}
+                    onPlaying={() => setIsVideoReady(true)}
+                    className={`w-full h-full object-cover ${isMirrored ? '-scale-x-100' : ''}`}
                   />
+                  {(!isVideoReady || isStartingCamera) && (
+                    <div className="absolute inset-0 bg-slate-950/75 flex flex-col items-center justify-center text-white text-[11px] space-y-1.5">
+                      <RefreshCw className="w-5 h-5 text-red-500 animate-spin" />
+                      <span>Iniciando cámara...</span>
+                    </div>
+                  )}
+                  <div className="absolute inset-4 border border-dashed border-white/50 rounded-full pointer-events-none" />
                 </div>
 
                 <div className="flex justify-center gap-2">
                   <button
                     type="button"
                     onClick={captureFromLiveCamera}
-                    className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs flex items-center space-x-1.5 shadow-md"
+                    disabled={!isVideoReady || isStartingCamera}
+                    className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-bold text-xs flex items-center space-x-1.5 shadow-md cursor-pointer"
                   >
                     <Camera className="w-4 h-4" />
-                    <span>Capturar Fotografía</span>
+                    <span>Capturar Fotografía de Registro</span>
                   </button>
                 </div>
+              </div>
+            )}
+
+            {biometricFaceNotice && (
+              <div
+                className={`text-[11px] font-semibold rounded-lg px-2.5 py-1.5 flex items-center gap-1.5 border ${
+                  biometricFaceNotice.valid
+                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                    : 'bg-amber-50 border-amber-200 text-amber-900'
+                }`}
+              >
+                {biometricFaceNotice.valid ? (
+                  <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0" />
+                ) : (
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0" />
+                )}
+                <span>{biometricFaceNotice.message}</span>
               </div>
             )}
 
@@ -492,7 +554,7 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
               <button
                 type="button"
                 onClick={() => setShowUrlAndPresets((prev) => !prev)}
-                className="text-[11px] font-semibold text-slate-500 hover:text-red-600 flex items-center space-x-1"
+                className="text-[11px] font-semibold text-slate-500 hover:text-red-600 flex items-center space-x-1 cursor-pointer"
               >
                 <Link2 className="w-3 h-3" />
                 <span>
@@ -512,9 +574,12 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
                         onClick={() => {
                           setAvatar(url);
                           setPhotoSourceLabel('Avatar predeterminado');
+                          verifyCapturedOrUploadedFace(url);
                         }}
-                        className={`w-9 h-9 rounded-lg overflow-hidden border-2 transition ${
-                          avatar === url ? 'border-red-600 scale-105' : 'border-slate-200 opacity-70 hover:opacity-100'
+                        className={`w-9 h-9 rounded-lg overflow-hidden border-2 transition cursor-pointer ${
+                          avatar === url
+                            ? 'border-red-600 scale-105'
+                            : 'border-slate-200 opacity-70 hover:opacity-100'
                         }`}
                       >
                         <img src={url} alt={`Preset ${i + 1}`} className="w-full h-full object-cover" />
@@ -554,9 +619,7 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
           {/* Email & Phone */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
-              <label className="block font-semibold text-slate-700 mb-1">
-                Correo Electrónico
-              </label>
+              <label className="block font-semibold text-slate-700 mb-1">Correo Electrónico</label>
               <input
                 type="email"
                 value={email}
@@ -592,7 +655,7 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
                     key={spec}
                     type="button"
                     onClick={() => toggleSpecialty(spec)}
-                    className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition flex items-center ${
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-medium transition flex items-center cursor-pointer ${
                       selected
                         ? 'bg-red-600 text-white font-bold shadow-xs'
                         : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-100'
@@ -624,7 +687,7 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
             <button
               type="button"
               onClick={addCustomSpecialty}
-              className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl border border-slate-300 text-xs"
+              className="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl border border-slate-300 text-xs cursor-pointer"
             >
               Agregar
             </button>
@@ -654,13 +717,13 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
             <button
               type="button"
               onClick={handleCloseModal}
-              className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold"
+              className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold cursor-pointer"
             >
               Cancelar
             </button>
             <button
               type="submit"
-              className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md shadow-red-500/20"
+              className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md shadow-red-500/20 cursor-pointer"
             >
               {trainer ? 'Guardar Cambios' : 'Crear Entrenador'}
             </button>

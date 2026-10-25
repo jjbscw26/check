@@ -19,7 +19,7 @@ export default defineConfig(() => {
       watch: process.env.DISABLE_HMR === 'true' ? null : {},
     },
     preview: {
-      allowedHosts: true,
+      allowedHosts: true as const,
     },
   };
 });

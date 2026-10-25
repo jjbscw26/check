@@ -80,6 +80,86 @@ service cloud.firestore {
         addr.postalCode.matches('^[A-Za-z0-9][A-Za-z0-9\\- ]{2,8}[A-Za-z0-9]$');
     }
 
+    function isValidGpsData(gps) {
+      return gps is map &&
+        gps.keys().hasAll([
+          'lat',
+          'lng',
+          'accuracy',
+          'distanceToSedeMeters',
+          'isWithinGeofence',
+          'capturedAt'
+        ]) &&
+        gps.keys().hasOnly([
+          'lat',
+          'lng',
+          'accuracy',
+          'distanceToSedeMeters',
+          'isWithinGeofence',
+          'capturedAt'
+        ]) &&
+        gps.lat is number &&
+        !isNaN(gps.lat) &&
+        gps.lat >= -90 &&
+        gps.lat <= 90 &&
+        gps.lng is number &&
+        !isNaN(gps.lng) &&
+        gps.lng >= -180 &&
+        gps.lng <= 180 &&
+        gps.accuracy is number &&
+        !isNaN(gps.accuracy) &&
+        gps.accuracy >= 0 &&
+        gps.accuracy <= 100000 &&
+        gps.distanceToSedeMeters is number &&
+        !isNaN(gps.distanceToSedeMeters) &&
+        gps.distanceToSedeMeters >= 0 &&
+        gps.distanceToSedeMeters <= 50000000 &&
+        gps.isWithinGeofence is bool &&
+        gps.capturedAt is string &&
+        gps.capturedAt.size() >= 1 &&
+        gps.capturedAt.size() <= 50;
+    }
+
+    function isValidFacialVerification(fv) {
+      return fv is map &&
+        fv.keys().hasAll([
+          'verified',
+          'confidenceScore',
+          'facePhotoUrl',
+          'capturedAt',
+          'biometricId',
+          'livenessPassed',
+          'trainerName'
+        ]) &&
+        fv.keys().hasOnly([
+          'verified',
+          'confidenceScore',
+          'facePhotoUrl',
+          'capturedAt',
+          'biometricId',
+          'livenessPassed',
+          'trainerName'
+        ]) &&
+        fv.verified is bool &&
+        fv.confidenceScore is number &&
+        !isNaN(fv.confidenceScore) &&
+        fv.confidenceScore >= 0 &&
+        fv.confidenceScore <= 100 &&
+        fv.facePhotoUrl is string &&
+        fv.facePhotoUrl.size() >= 5 &&
+        fv.facePhotoUrl.size() <= 250000 &&
+        fv.capturedAt is string &&
+        fv.capturedAt.size() >= 1 &&
+        fv.capturedAt.size() <= 50 &&
+        fv.biometricId is string &&
+        fv.biometricId.size() >= 1 &&
+        fv.biometricId.size() <= 80 &&
+        fv.livenessPassed is bool &&
+        fv.trainerName is string &&
+        fv.trainerName.size() >= 1 &&
+        fv.trainerName.size() <= 120;
+    }
+
     function isValidDateStringList(arr) {
       return arr is list &&
         arr.size() <= 366 && (
@@ -402,7 +482,7 @@ service cloud.firestore {
             data.dayOfWeek is number &&
             !isNaN(data.dayOfWeek) &&
             data.dayOfWeek >= 0 &&
-            data.dayOfWeek <= 6
+            data.dayOfWeek <= 7
           )
         ) &&
         (
@@ -479,6 +559,258 @@ service cloud.firestore {
         hasValidAuditMetadata(data);
     }
 
+    // 5. AttendanceRecord Schema Validator (/records/{recordId})
+    function isValidAttendanceRecord(data) {
+      return data is map &&
+        data.keys().hasAll([
+          'trainerId',
+          'trainerName',
+          'companyId',
+          'companyName',
+          'sedeId',
+          'sedeName',
+          'sedeAddress',
+          'date',
+          'scheduledTime',
+          'checkInTime',
+          'checkInIso',
+          'status',
+          'punctualityStatus',
+          'punctualityDiffMinutes',
+          'activityType',
+          'activityName',
+          'attendeesCount',
+          'locationArea',
+          'checkInGps',
+          'photoUrl',
+          'adminVerified',
+          'createdByUid',
+          'createdByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'assignmentId',
+          'trainerId',
+          'trainerName',
+          'companyId',
+          'companyName',
+          'sedeId',
+          'sedeName',
+          'sedeAddress',
+          'date',
+          'scheduledTime',
+          'checkInTime',
+          'checkInIso',
+          'checkOutTime',
+          'checkOutIso',
+          'status',
+          'nonComplianceReason',
+          'markedNonCompliantAt',
+          'punctualityStatus',
+          'punctualityDiffMinutes',
+          'activityType',
+          'activityName',
+          'attendeesCount',
+          'locationArea',
+          'observations',
+          'checkInGps',
+          'checkOutGps',
+          'photoUrl',
+          'exitPhotoUrl',
+          'facialVerification',
+          'durationMinutes',
+          'plannedDurationMinutes',
+          'alarmEnabled',
+          'alarmSnoozedUntilIso',
+          'adminVerified',
+          'adminNotes',
+          'createdByUid',
+          'createdByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        (!('assignmentId' in data) || isValidId(data.assignmentId)) &&
+        isValidId(data.trainerId) &&
+        data.trainerName is string &&
+        data.trainerName.size() >= 2 &&
+        data.trainerName.size() <= 120 &&
+        data.trainerName.matches('^\\S(.*\\S)?$') &&
+        isValidId(data.companyId) &&
+        data.companyName is string &&
+        data.companyName.size() >= 2 &&
+        data.companyName.size() <= 150 &&
+        data.companyName.matches('^\\S(.*\\S)?$') &&
+        isValidId(data.sedeId) &&
+        data.sedeName is string &&
+        data.sedeName.size() >= 2 &&
+        data.sedeName.size() <= 150 &&
+        data.sedeName.matches('^\\S(.*\\S)?$') &&
+        data.sedeAddress is string &&
+        data.sedeAddress.size() >= 2 &&
+        data.sedeAddress.size() <= 250 &&
+        data.sedeAddress.matches('^\\S(.*\\S)?$') &&
+        data.date is string &&
+        data.date.size() == 10 &&
+        data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
+        data.scheduledTime is string &&
+        data.scheduledTime.size() == 5 &&
+        data.scheduledTime.matches('^[0-2][0-9]:[0-5][0-9]$') &&
+        data.checkInTime is string &&
+        data.checkInTime.size() >= 4 &&
+        data.checkInTime.size() <= 20 &&
+        data.checkInIso is string &&
+        data.checkInIso.size() >= 10 &&
+        data.checkInIso.size() <= 50 &&
+        (
+          !('checkOutTime' in data) ||
+          data.checkOutTime == null ||
+          (data.checkOutTime is string && data.checkOutTime.size() <= 20)
+        ) &&
+        (
+          !('checkOutIso' in data) ||
+          data.checkOutIso == null ||
+          (data.checkOutIso is string && data.checkOutIso.size() <= 50)
+        ) &&
+        data.status is string &&
+        data.status.size() <= 20 &&
+        data.status in ['en_curso', 'completado', 'incumplido'] &&
+        (
+          !('nonComplianceReason' in data) || (
+            data.nonComplianceReason is string &&
+            data.nonComplianceReason.size() <= 30 &&
+            data.nonComplianceReason in ['fuera_de_horario', 'sin_cierre_30m', 'manual_admin']
+          )
+        ) &&
+        (
+          !('markedNonCompliantAt' in data) || (
+            data.markedNonCompliantAt is string &&
+            data.markedNonCompliantAt.size() <= 40
+          )
+        ) &&
+        data.punctualityStatus is string &&
+        data.punctualityStatus.size() <= 20 &&
+        data.punctualityStatus in ['a_tiempo', 'con_retraso', 'adelantado'] &&
+        data.punctualityDiffMinutes is number &&
+        !isNaN(data.punctualityDiffMinutes) &&
+        data.punctualityDiffMinutes >= -1440 &&
+        data.punctualityDiffMinutes <= 1440 &&
+        data.activityType is string &&
+        data.activityType.size() <= 20 &&
+        data.activityType in ['pausa_activa', 'clase_fitness'] &&
+        data.activityName is string &&
+        data.activityName.size() >= 2 &&
+        data.activityName.size() <= 150 &&
+        data.activityName.matches('^\\S(.*\\S)?$') &&
+        data.attendeesCount is number &&
+        !isNaN(data.attendeesCount) &&
+        data.attendeesCount >= 0 &&
+        data.attendeesCount <= 10000 &&
+        data.locationArea is string &&
+        data.locationArea.size() >= 1 &&
+        data.locationArea.size() <= 150 &&
+        data.locationArea.matches('^\\S(.*\\S)?$') &&
+        (
+          !('observations' in data) || (
+            data.observations is string &&
+            data.observations.size() <= 1000
+          )
+        ) &&
+        isValidGpsData(data.checkInGps) &&
+        (
+          !('checkOutGps' in data) || isValidGpsData(data.checkOutGps)
+        ) &&
+        data.photoUrl is string &&
+        data.photoUrl.size() >= 5 &&
+        data.photoUrl.size() <= 280000 &&
+        (
+          !('exitPhotoUrl' in data) || (
+            data.exitPhotoUrl is string &&
+            data.exitPhotoUrl.size() <= 280000
+          )
+        ) &&
+        (
+          !('facialVerification' in data) || isValidFacialVerification(data.facialVerification)
+        ) &&
+        (
+          !('durationMinutes' in data) || (
+            data.durationMinutes is number &&
+            !isNaN(data.durationMinutes) &&
+            data.durationMinutes >= 0 &&
+            data.durationMinutes <= 1440
+          )
+        ) &&
+        (
+          !('plannedDurationMinutes' in data) || (
+            data.plannedDurationMinutes is number &&
+            !isNaN(data.plannedDurationMinutes) &&
+            data.plannedDurationMinutes >= 1 &&
+            data.plannedDurationMinutes <= 480
+          )
+        ) &&
+        (
+          !('alarmEnabled' in data) || data.alarmEnabled is bool
+        ) &&
+        (
+          !('alarmSnoozedUntilIso' in data) ||
+          data.alarmSnoozedUntilIso == null ||
+          (data.alarmSnoozedUntilIso is string && data.alarmSnoozedUntilIso.size() <= 50)
+        ) &&
+        data.adminVerified is bool &&
+        (
+          !('adminNotes' in data) || (
+            data.adminNotes is string &&
+            data.adminNotes.size() <= 1000
+          )
+        ) &&
+        hasValidAuditMetadata(data);
+    }
+
+    // 6. ActivityCatalogItem Schema Validator (/activity_catalog/{catalogId})
+    function isValidActivityCatalogItem(data) {
+      return data is map &&
+        data.keys().hasAll([
+          'name',
+          'activityType',
+          'defaultDurationMinutes',
+          'active',
+          'createdByUid',
+          'createdByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'name',
+          'activityType',
+          'defaultDurationMinutes',
+          'description',
+          'active',
+          'createdByUid',
+          'createdByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.name is string &&
+        data.name.size() >= 2 &&
+        data.name.size() <= 150 &&
+        data.name.matches('^\\S(.*\\S)?$') &&
+        data.activityType is string &&
+        data.activityType.size() <= 20 &&
+        data.activityType in ['pausa_activa', 'clase_fitness'] &&
+        data.defaultDurationMinutes is number &&
+        !isNaN(data.defaultDurationMinutes) &&
+        data.defaultDurationMinutes >= 5 &&
+        data.defaultDurationMinutes <= 480 &&
+        (
+          !('description' in data) || (
+            data.description is string &&
+            data.description.size() <= 500
+          )
+        ) &&
+        data.active is bool &&
+        hasValidAuditMetadata(data);
+    }
+
     // Relational parent checks (evaluated AFTER static validation)
     function parentCompanyExists(companyId) {
       return exists(/databases/$(database)/documents/companies/$(companyId));
@@ -489,7 +821,7 @@ service cloud.firestore {
         exists(/databases/$(database)/documents/sedes/$(sedeId));
     }
 
-    // 5. Personnel Schema Validator (/personnel/{personnelId})
+    // 7. Personnel Schema Validator (/personnel/{personnelId})
     function isValidPersonnel(data) {
       return data is map &&
         data.keys().hasAll([
@@ -528,7 +860,7 @@ service cloud.firestore {
         hasValidAuditMetadata(data);
     }
 
-    // 6. Client Schema Validator (/clients/{clientId})
+    // 8. Client Schema Validator (/clients/{clientId})
     function isValidClient(data) {
       return data is map &&
         data.keys().hasAll([
@@ -759,7 +1091,105 @@ service cloud.firestore {
         isValidWorkspaceEpoch(existing().createdAt);
     }
 
-    // Collection 5: /personnel/{personnelId}
+    // Collection 5: /records/{recordId}
+    match /records/{recordId} {
+      allow get: if isValidId(recordId) &&
+        (resource == null || isValidWorkspaceEpoch(existing().createdAt));
+
+      allow list: if resource.data.createdAt >= timestamp.date(2020, 1, 1);
+
+      allow create: if isValidId(recordId) &&
+        isValidAttendanceRecord(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if (
+        isValidId(recordId) &&
+        isValidAttendanceRecord(incoming()) &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().createdByEmail == existing().createdByEmail &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'assignmentId',
+          'trainerId',
+          'trainerName',
+          'companyId',
+          'companyName',
+          'sedeId',
+          'sedeName',
+          'sedeAddress',
+          'date',
+          'scheduledTime',
+          'checkInTime',
+          'checkInIso',
+          'checkOutTime',
+          'checkOutIso',
+          'status',
+          'nonComplianceReason',
+          'markedNonCompliantAt',
+          'punctualityStatus',
+          'punctualityDiffMinutes',
+          'activityType',
+          'activityName',
+          'attendeesCount',
+          'locationArea',
+          'observations',
+          'checkInGps',
+          'checkOutGps',
+          'photoUrl',
+          'exitPhotoUrl',
+          'facialVerification',
+          'durationMinutes',
+          'plannedDurationMinutes',
+          'alarmEnabled',
+          'alarmSnoozedUntilIso',
+          'adminVerified',
+          'adminNotes',
+          'updatedAt'
+        ])
+      );
+
+      allow delete: if isValidId(recordId) &&
+        resource != null &&
+        isValidWorkspaceEpoch(existing().createdAt);
+    }
+
+    // Collection 6: /activity_catalog/{catalogId}
+    match /activity_catalog/{catalogId} {
+      allow get: if isValidId(catalogId) &&
+        (resource == null || isValidWorkspaceEpoch(existing().createdAt));
+
+      allow list: if resource.data.createdAt >= timestamp.date(2020, 1, 1);
+
+      allow create: if isValidId(catalogId) &&
+        isValidActivityCatalogItem(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if (
+        isValidId(catalogId) &&
+        isValidActivityCatalogItem(incoming()) &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().createdByEmail == existing().createdByEmail &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'name',
+          'activityType',
+          'defaultDurationMinutes',
+          'description',
+          'active',
+          'updatedAt'
+        ])
+      );
+
+      allow delete: if isValidId(catalogId) &&
+        resource != null &&
+        isValidWorkspaceEpoch(existing().createdAt);
+    }
+
+    // Collection 7: /personnel/{personnelId}
     match /personnel/{personnelId} {
       allow get: if isValidId(personnelId) &&
         (resource == null || isValidWorkspaceEpoch(existing().createdAt));
@@ -792,7 +1222,7 @@ service cloud.firestore {
         isValidWorkspaceEpoch(existing().createdAt);
     }
 
-    // Collection 6: /clients/{clientId}
+    // Collection 8: /clients/{clientId}
     match /clients/{clientId} {
       allow get: if isValidId(clientId) &&
         (resource == null || isValidWorkspaceEpoch(existing().createdAt));
@@ -826,7 +1256,7 @@ service cloud.firestore {
         isValidWorkspaceEpoch(existing().createdAt);
     }
 
-    // Collection 7: /admins/{adminUid}
+    // Collection 9: /admins/{adminUid}
     match /admins/{adminUid} {
       allow get: if isBootstrappedAdmin() && isValidId(adminUid);
 

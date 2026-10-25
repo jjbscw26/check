@@ -1041,21 +1041,14 @@ export function saveStoredActivityCatalog(items: ActivityCatalogItem[]): void {
 
 export function getStoredRecords(): AttendanceRecord[] {
   try {
-    const initial = getInitialRecords();
     const raw = localStorage.getItem(STORAGE_KEYS.RECORDS);
     if (!raw) {
+      const initial = getInitialRecords();
       localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(initial));
       return initial;
     }
     const parsed: AttendanceRecord[] = JSON.parse(raw);
-    const existingIds = new Set(parsed.map((r) => r.id));
-    const missing = initial.filter((r) => !existingIds.has(r.id));
-    if (missing.length > 0) {
-      const merged = [...parsed, ...missing];
-      localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(merged));
-      return merged;
-    }
-    return parsed;
+    return Array.isArray(parsed) ? parsed : getInitialRecords();
   } catch {
     return getInitialRecords();
   }
@@ -1072,7 +1065,8 @@ export function getStoredCompanies(): Company[] {
       localStorage.setItem(STORAGE_KEYS.COMPANIES, JSON.stringify(INITIAL_COMPANIES));
       return INITIAL_COMPANIES;
     }
-    return JSON.parse(raw);
+    const parsed: Company[] = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : INITIAL_COMPANIES;
   } catch {
     return INITIAL_COMPANIES;
   }
@@ -1089,7 +1083,8 @@ export function getStoredTrainers(): Trainer[] {
       localStorage.setItem(STORAGE_KEYS.TRAINERS, JSON.stringify(INITIAL_TRAINERS));
       return INITIAL_TRAINERS;
     }
-    return JSON.parse(raw);
+    const parsed: Trainer[] = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : INITIAL_TRAINERS;
   } catch {
     return INITIAL_TRAINERS;
   }
@@ -1107,15 +1102,7 @@ export function getStoredAssignments(): ClassAssignment[] {
       return INITIAL_ASSIGNMENTS;
     }
     const parsed: ClassAssignment[] = JSON.parse(raw);
-    // Ensure newly added initial assignments are also present
-    const existingIds = new Set(parsed.map((a) => a.id));
-    const missing = INITIAL_ASSIGNMENTS.filter((a) => !existingIds.has(a.id));
-    if (missing.length > 0) {
-      const merged = [...parsed, ...missing];
-      localStorage.setItem(STORAGE_KEYS.ASSIGNMENTS, JSON.stringify(merged));
-      return merged;
-    }
-    return parsed;
+    return Array.isArray(parsed) ? parsed : INITIAL_ASSIGNMENTS;
   } catch {
     return INITIAL_ASSIGNMENTS;
   }

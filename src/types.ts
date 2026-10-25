@@ -153,6 +153,7 @@ export type FirestoreDirectoryCategory =
   | 'trainers'
   | 'companies'
   | 'sedes'
+  | 'calendar'
   | 'personnel'
   | 'clients';
 
@@ -179,6 +180,20 @@ export interface FirestoreDemoCompanyRecord {
 }
 
 export interface FirestoreSedeRecord extends Sede {
+  createdByUid: string;
+  createdByEmail: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface FirestoreAssignmentRecord extends ClassAssignment {
+  createdByUid: string;
+  createdByEmail: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
+export interface FirestoreActivityCatalogRecord extends ActivityCatalogItem {
   createdByUid: string;
   createdByEmail: string;
   createdAtMs: number;

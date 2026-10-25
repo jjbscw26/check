@@ -1,7 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Company, Sede } from '../types';
-import { MapPin, Compass, Navigation } from 'lucide-react';
+import { MapPin, Compass, Navigation, AlertCircle } from 'lucide-react';
 import { getCurrentPositionAsync } from '../utils/geo';
+import { validateSedeInput } from '../utils/personnelValidation';
 
 interface AdminSedeModalProps {
   sede: Sede | null; // null if creating a new one
@@ -35,8 +36,12 @@ export const AdminSedeModal: React.FC<AdminSedeModalProps> = ({
   const [colorTag, setColorTag] = useState('bg-red-600');
   const [gettingLocation, setGettingLocation] = useState(false);
   const [gpsError, setGpsError] = useState<string | null>(null);
+  const [formError, setFormError] = useState<string | null>(null);
 
+  // Reset form ONLY when opening modal or switching target sede/companyId —
+  // never reset when `companies` updates in the background via Firestore onSnapshot!
   useEffect(() => {
+    if (!isOpen) return;
     if (sede) {
       setSelectedCompanyId(sede.companyId);
       setName(sede.name);
@@ -63,7 +68,17 @@ export const AdminSedeModal: React.FC<AdminSedeModalProps> = ({
       setColorTag('bg-red-600');
     }
     setGpsError(null);
-  }, [sede, companyId, companies, isOpen]);
+    setFormError(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sede?.id, companyId, isOpen]);
+
+  // Ensure a valid default company is selected if companies arrive asynchronously while empty
+  useEffect(() => {
+    if (!isOpen || sede) return;
+    if (!selectedCompanyId && companies.length > 0) {
+      setSelectedCompanyId(companyId || companies[0].id);
+    }
+  }, [companies, companyId, isOpen, sede, selectedCompanyId]);
 
   if (!isOpen) return null;
 
@@ -84,24 +99,51 @@ export const AdminSedeModal: React.FC<AdminSedeModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
+    setFormError(null);
 
     const company = companies.find((c) => c.id === selectedCompanyId) || companies[0];
+    if (!company) {
+      setFormError('Primero debes registrar al menos una empresa cliente.');
+      return;
+    }
+
+    const check = validateSedeInput({
+      companyId: company.id,
+      companyName: company.name,
+      name,
+      address: address.trim() || 'Dirección Corporativa',
+      city: city.trim() || 'Ciudad de México',
+      lat: String(lat),
+      lng: String(lng),
+      geofenceRadiusMeters: String(geofenceRadiusMeters || 150),
+      contactPerson,
+      contactRole,
+      contactPhone,
+      colorTag,
+    });
+
+    if (!check.isValid) {
+      const firstErr =
+        Object.values(check.errors).find(Boolean) ||
+        'Verifica los campos obligatorios de la sede antes de guardar.';
+      setFormError(firstErr);
+      return;
+    }
 
     const savedSede: Sede = {
       id: sede ? sede.id : `sede_${Date.now()}`,
-      companyId: company.id,
-      companyName: company.name,
-      name: name.trim(),
-      address: address.trim() || 'Dirección Corporativa',
-      city: city.trim() || 'Ciudad de México',
-      lat: Number(lat),
-      lng: Number(lng),
-      geofenceRadiusMeters: Number(geofenceRadiusMeters) || 150,
-      contactPerson: contactPerson.trim() || 'Encargado de Sede',
-      contactRole: contactRole.trim() || 'Responsable SST',
-      contactPhone: contactPhone.trim() || '+52 55 0000 0000',
-      colorTag,
+      companyId: check.sanitized.companyId,
+      companyName: check.sanitized.companyName,
+      name: check.sanitized.name,
+      address: check.sanitized.address,
+      city: check.sanitized.city,
+      lat: check.sanitized.lat,
+      lng: check.sanitized.lng,
+      geofenceRadiusMeters: check.sanitized.geofenceRadiusMeters,
+      contactPerson: check.sanitized.contactPerson,
+      contactRole: check.sanitized.contactRole,
+      contactPhone: check.sanitized.contactPhone,
+      colorTag: check.sanitized.colorTag,
     };
 
     onSave(savedSede);
@@ -134,7 +176,17 @@ export const AdminSedeModal: React.FC<AdminSedeModalProps> = ({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-5 sm:p-6 space-y-4 text-slate-800 text-xs flex-1 overflow-y-auto">
+        <form
+          onSubmit={handleSubmit}
+          className="p-5 sm:p-6 space-y-4 text-slate-800 text-xs flex-1 overflow-y-auto"
+        >
+          {formError && (
+            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 font-semibold flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+              <span>{formError}</span>
+            </div>
+          )}
+
           {/* Company select */}
           <div>
             <label className="block font-bold text-slate-700 mb-1">
@@ -142,12 +194,15 @@ export const AdminSedeModal: React.FC<AdminSedeModalProps> = ({
             </label>
             <select
               value={selectedCompanyId}
-              onChange={(e) => setSelectedCompanyId(e.target.value)}
+              onChange={(e) => {
+                setSelectedCompanyId(e.target.value);
+                setFormError(null);
+              }}
               className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-red-500"
             >
               {companies.map((comp) => (
                 <option key={comp.id} value={comp.id}>
-                  {comp.name}
+                  {comp.name} ({comp.sedes?.length || 0} sedes)
                 </option>
               ))}
             </select>
@@ -162,7 +217,10 @@ export const AdminSedeModal: React.FC<AdminSedeModalProps> = ({
               type="text"
               required
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setName(e.target.value);
+                setFormError(null);
+              }}
               placeholder="Ej: Torre Corporativa Reforma / Planta Toluca"
               className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-sm text-slate-900 font-semibold focus:outline-none focus:border-red-500"
             />
@@ -178,7 +236,10 @@ export const AdminSedeModal: React.FC<AdminSedeModalProps> = ({
                 type="text"
                 required
                 value={address}
-                onChange={(e) => setAddress(e.target.value)}
+                onChange={(e) => {
+                  setAddress(e.target.value);
+                  setFormError(null);
+                }}
                 placeholder="Calle, Número, Colonia, Alcaldía/Municipio"
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-red-500"
               />
@@ -190,7 +251,10 @@ export const AdminSedeModal: React.FC<AdminSedeModalProps> = ({
               <input
                 type="text"
                 value={city}
-                onChange={(e) => setCity(e.target.value)}
+                onChange={(e) => {
+                  setCity(e.target.value);
+                  setFormError(null);
+                }}
                 placeholder="CDMX"
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-red-500"
               />
@@ -250,8 +314,8 @@ export const AdminSedeModal: React.FC<AdminSedeModalProps> = ({
                 </label>
                 <input
                   type="number"
-                  min={30}
-                  max={1000}
+                  min={10}
+                  max={10000}
                   value={geofenceRadiusMeters}
                   onChange={(e) => setGeofenceRadiusMeters(parseInt(e.target.value) || 150)}
                   className="w-full bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-900 font-mono focus:outline-none focus:border-red-500"
@@ -281,46 +345,56 @@ export const AdminSedeModal: React.FC<AdminSedeModalProps> = ({
               <option value="bg-red-600">Rojo BSCW (bg-red-600)</option>
               <option value="bg-red-500">Rojo Claro (bg-red-500)</option>
               <option value="bg-blue-600">Azul Corporativo (bg-blue-600)</option>
+              <option value="bg-blue-700">Azul Institucional (bg-blue-700)</option>
               <option value="bg-emerald-600">Verde Salud (bg-emerald-600)</option>
               <option value="bg-amber-600">Ámbar Operativo (bg-amber-600)</option>
               <option value="bg-slate-800">Pizarra Ejecutiva (bg-slate-800)</option>
             </select>
           </div>
 
-          {/* Contact Person */}
+          {/* Contact Person (Optional with automatic defaults) */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
             <div>
               <label className="block font-semibold text-slate-700 mb-1">
-                Contacto en Sede
+                Contacto en Sede <span className="text-slate-400 font-normal">(Opcional)</span>
               </label>
               <input
                 type="text"
                 value={contactPerson}
-                onChange={(e) => setContactPerson(e.target.value)}
+                onChange={(e) => {
+                  setContactPerson(e.target.value);
+                  setFormError(null);
+                }}
                 placeholder="Lic. Laura Peñaloza"
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-red-500"
               />
             </div>
             <div>
               <label className="block font-semibold text-slate-700 mb-1">
-                Rol o Puesto
+                Rol o Puesto <span className="text-slate-400 font-normal">(Opcional)</span>
               </label>
               <input
                 type="text"
                 value={contactRole}
-                onChange={(e) => setContactRole(e.target.value)}
+                onChange={(e) => {
+                  setContactRole(e.target.value);
+                  setFormError(null);
+                }}
                 placeholder="Gerente de Bienestar y SST"
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-red-500"
               />
             </div>
             <div>
               <label className="block font-semibold text-slate-700 mb-1">
-                Teléfono Directo
+                Teléfono Directo <span className="text-slate-400 font-normal">(Opcional)</span>
               </label>
               <input
                 type="text"
                 value={contactPhone}
-                onChange={(e) => setContactPhone(e.target.value)}
+                onChange={(e) => {
+                  setContactPhone(e.target.value);
+                  setFormError(null);
+                }}
                 placeholder="+52 55 5100 1122"
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-red-500"
               />

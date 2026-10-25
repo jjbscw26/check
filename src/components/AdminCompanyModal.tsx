@@ -1,6 +1,10 @@
 import React, { useState, useEffect } from 'react';
 import { Company } from '../types';
-import { Building2 } from 'lucide-react';
+import { Building2, AlertCircle } from 'lucide-react';
+import {
+  deriveCompanyLogoText,
+  sanitizeTaxIdForFirestore,
+} from '../utils/personnelValidation';
 
 interface AdminCompanyModalProps {
   company: Company | null; // null if creating a new one
@@ -19,12 +23,14 @@ export const AdminCompanyModal: React.FC<AdminCompanyModalProps> = ({
   const [taxId, setTaxId] = useState('');
   const [industry, setIndustry] = useState('');
   const [logoText, setLogoText] = useState('');
+  const [validationError, setValidationError] = useState<string | null>(null);
 
   useEffect(() => {
+    if (!isOpen) return;
     if (company) {
       setName(company.name);
       setTaxId(company.taxId || '');
-      setIndustry(company.industry || '');
+      setIndustry(company.industry || 'Servicios Corporativos');
       setLogoText(company.logoText || '');
     } else {
       setName('');
@@ -32,26 +38,36 @@ export const AdminCompanyModal: React.FC<AdminCompanyModalProps> = ({
       setIndustry('Servicios Corporativos');
       setLogoText('');
     }
-  }, [company, isOpen]);
+    setValidationError(null);
+    // Depend on company?.id and isOpen so background Firestore snapshot updates do not wipe typed fields
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [company?.id, isOpen]);
 
   if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (!name.trim()) return;
+    const cleanName = name.trim();
+    if (cleanName.length < 2) {
+      setValidationError('Ingresa una razón social válida de al menos 2 caracteres.');
+      return;
+    }
 
-    const initials = name
-      .split(' ')
-      .slice(0, 2)
-      .map((w) => w[0]?.toUpperCase() || '')
-      .join('');
+    const safeTaxId = taxId.trim()
+      ? sanitizeTaxIdForFirestore(taxId)
+      : sanitizeTaxIdForFirestore(`RFC-${Math.floor(100000 + Math.random() * 900000)}`);
+
+    const safeIndustry =
+      industry.trim().length >= 2 ? industry.trim().slice(0, 100) : 'Servicios Corporativos';
+
+    const safeLogoText = deriveCompanyLogoText(cleanName, logoText);
 
     const savedCompany: Company = {
       id: company ? company.id : `comp_${Date.now()}`,
-      name: name.trim(),
-      taxId: taxId.trim() || `RFC-${Math.floor(100000 + Math.random() * 900000)}`,
-      industry: industry.trim() || 'Servicios Corporativos',
-      logoText: (logoText.trim() || initials || 'CP').substring(0, 3).toUpperCase(),
+      name: cleanName.slice(0, 150),
+      taxId: safeTaxId,
+      industry: safeIndustry,
+      logoText: safeLogoText,
       sedes: company ? company.sedes : [],
     };
 
@@ -85,7 +101,17 @@ export const AdminCompanyModal: React.FC<AdminCompanyModalProps> = ({
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-5 sm:p-6 space-y-4 text-slate-800 text-xs flex-1 overflow-y-auto">
+        <form
+          onSubmit={handleSubmit}
+          className="p-5 sm:p-6 space-y-4 text-slate-800 text-xs flex-1 overflow-y-auto"
+        >
+          {validationError && (
+            <div className="p-3 rounded-xl bg-rose-50 border border-rose-200 text-rose-700 font-semibold flex items-center gap-2">
+              <AlertCircle className="w-4 h-4 shrink-0 text-rose-600" />
+              <span>{validationError}</span>
+            </div>
+          )}
+
           <div>
             <label className="block font-bold text-slate-700 mb-1">
               Razón Social o Nombre de la Empresa *
@@ -94,7 +120,10 @@ export const AdminCompanyModal: React.FC<AdminCompanyModalProps> = ({
               type="text"
               required
               value={name}
-              onChange={(e) => setName(e.target.value)}
+              onChange={(e) => {
+                setName(e.target.value);
+                setValidationError(null);
+              }}
               placeholder="Ej: Grupo Financiero Banorte"
               className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-sm text-slate-900 font-semibold focus:outline-none focus:border-red-500"
             />
@@ -108,9 +137,9 @@ export const AdminCompanyModal: React.FC<AdminCompanyModalProps> = ({
               <input
                 type="text"
                 value={taxId}
-                onChange={(e) => setTaxId(e.target.value)}
+                onChange={(e) => setTaxId(e.target.value.toUpperCase())}
                 placeholder="GFB850101-A12"
-                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 font-mono focus:outline-none focus:border-red-500"
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 font-mono uppercase focus:outline-none focus:border-red-500"
               />
             </div>
 
@@ -120,10 +149,10 @@ export const AdminCompanyModal: React.FC<AdminCompanyModalProps> = ({
               </label>
               <input
                 type="text"
-                maxLength={3}
+                maxLength={4}
                 value={logoText}
-                onChange={(e) => setLogoText(e.target.value)}
-                placeholder="GB"
+                onChange={(e) => setLogoText(e.target.value.toUpperCase())}
+                placeholder="GFB"
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 font-mono uppercase focus:outline-none focus:border-red-500"
               />
             </div>

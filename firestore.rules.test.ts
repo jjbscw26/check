@@ -20,7 +20,8 @@ import {
 
 /**
  * Dirty Dozen Security Test Suite for automatic multi-device connection across
- * /trainers, /companies, /sedes, /assignments, /personnel, /clients & /admins
+ * /trainers, /companies, /sedes, /assignments, /records, /activity_catalog,
+ * /personnel, /clients & /admins
  */
 export async function runFirestoreRulesDirtyDozenSuite() {
   const testEnv: RulesTestEnvironment = await initializeTestEnvironment({
@@ -95,7 +96,7 @@ export async function runFirestoreRulesDirtyDozenSuite() {
       sedeName: 'Torre Corporativa Reforma',
       sedeAddress: 'Paseo de la Reforma 500, Cuauhtémoc, CDMX',
       frequency: 'semanal',
-      dayOfWeek: 1,
+      dayOfWeek: 7, // Domingo soportado
       time: '08:30',
       durationMinutes: 20,
       activityType: 'pausa_activa',
@@ -108,13 +109,66 @@ export async function runFirestoreRulesDirtyDozenSuite() {
       updatedAt: serverTimestamp(),
     };
 
+    const validCatalogPayload = {
+      name: 'Pausa Activa: Ergonomía y Estiramientos',
+      activityType: 'pausa_activa',
+      defaultDurationMinutes: 20,
+      description: 'Descompresión cervical y muñecas.',
+      active: true,
+      createdByUid: 'dev_desktop_01',
+      createdByEmail: 'sync@bscw.corp',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+
+    const validRecordPayload = {
+      assignmentId: 'asg_1',
+      trainerId: 'tr_1',
+      trainerName: 'Carlos Mendoza',
+      companyId: 'comp_1',
+      companyName: 'Banco Santander Corporativo',
+      sedeId: 'sede_1_1',
+      sedeName: 'Torre Corporativa Reforma',
+      sedeAddress: 'Paseo de la Reforma 500, Cuauhtémoc, CDMX',
+      date: '2026-10-24',
+      scheduledTime: '08:30',
+      checkInTime: '08:28:14',
+      checkInIso: '2026-10-24T08:28:14.000Z',
+      checkOutTime: '09:20:05',
+      checkOutIso: '2026-10-24T09:20:05.000Z',
+      status: 'completado',
+      punctualityStatus: 'a_tiempo',
+      punctualityDiffMinutes: 2,
+      activityType: 'pausa_activa',
+      activityName: 'Pausa Activa: Ergonomía y Estiramientos',
+      attendeesCount: 24,
+      locationArea: 'Piso 12 - Área Financiera',
+      checkInGps: {
+        lat: 19.42698,
+        lng: -99.16779,
+        accuracy: 8,
+        distanceToSedeMeters: 14,
+        isWithinGeofence: true,
+        capturedAt: '2026-10-24 08:28:14',
+      },
+      photoUrl: 'data:image/svg+xml;utf8,sample',
+      durationMinutes: 52,
+      adminVerified: true,
+      createdByUid: 'dev_mobile_01',
+      createdByEmail: 'sync@bscw.corp',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+
     // Baseline automatic connection writes & cross-device reads succeed without login
     await assertSucceeds(setDoc(doc(dbA, 'trainers', 'tr_1'), validTrainerPayload));
     await assertSucceeds(setDoc(doc(dbA, 'companies', 'comp_1'), validCompanyPayload));
     await assertSucceeds(setDoc(doc(dbA, 'sedes', 'sede_1_1'), validSedePayload));
+    await assertSucceeds(setDoc(doc(dbA, 'activity_catalog', 'cat_1'), validCatalogPayload));
     await assertSucceeds(setDoc(doc(dbA, 'assignments', 'asg_1'), validAssignmentPayload));
+    await assertSucceeds(setDoc(doc(dbA, 'records', 'rec_1'), validRecordPayload));
     await assertSucceeds(
-      getDocs(query(collection(dbB, 'trainers'), where('createdAt', '>=', minEpoch)))
+      getDocs(query(collection(dbB, 'records'), where('createdAt', '>=', minEpoch)))
     );
 
     // 1. Invalid Device Audit Identifier (createdByUid with spaces/invalid chars)
@@ -127,13 +181,14 @@ export async function runFirestoreRulesDirtyDozenSuite() {
 
     // 2. Unfiltered List Scraping (missing where('createdAt', '>=', ...))
     await assertFails(getDocs(collection(dbB, 'trainers')));
-    await assertFails(getDocs(collection(dbB, 'companies')));
+    await assertFails(getDocs(collection(dbB, 'records')));
+    await assertFails(getDocs(collection(dbB, 'activity_catalog')));
 
     // 3. Shadow / Ghost Field Injection on Create
     await assertFails(
-      setDoc(doc(dbA, 'companies', 'comp_ghost_3'), {
-        ...validCompanyPayload,
-        creditLimit: 999999,
+      setDoc(doc(dbA, 'records', 'rec_ghost_3'), {
+        ...validRecordPayload,
+        bonusPaid: true,
       })
     );
 
@@ -145,9 +200,9 @@ export async function runFirestoreRulesDirtyDozenSuite() {
       })
     );
     await assertFails(
-      setDoc(doc(dbA, 'companies', 'comp_empty_4'), {
-        ...validCompanyPayload,
-        industry: '     ',
+      setDoc(doc(dbA, 'activity_catalog', 'cat_empty_4'), {
+        ...validCatalogPayload,
+        name: '     ',
       })
     );
 
@@ -159,7 +214,7 @@ export async function runFirestoreRulesDirtyDozenSuite() {
       })
     );
 
-    // 6. Out-of-Range GPS Coordinates or Geofence Radius on Sede
+    // 6. Out-of-Range GPS Coordinates on Sede or Record
     await assertFails(
       setDoc(doc(dbA, 'sedes', 'sede_bad_gps_6'), {
         ...validSedePayload,
@@ -177,7 +232,7 @@ export async function runFirestoreRulesDirtyDozenSuite() {
     );
 
     // 8. Path ID Poisoning
-    await assertFails(setDoc(doc(dbA, 'sedes', 'bad id with spaces!'), validSedePayload));
+    await assertFails(setDoc(doc(dbA, 'records', 'bad id with spaces!'), validRecordPayload));
     await assertFails(getDoc(doc(dbB, 'trainers', 'bad id with spaces!')));
 
     // 9. Client-Forged Timestamp
@@ -188,17 +243,23 @@ export async function runFirestoreRulesDirtyDozenSuite() {
       })
     );
 
-    // 10. Orphaned ClassAssignment Referencing Non-Existent Sede or Bad Time
+    // 10. Orphaned ClassAssignment Referencing Non-Existent Sede or Bad DayOfWeek
     await assertFails(
       setDoc(doc(dbA, 'assignments', 'asg_orphan_10'), {
         ...validAssignmentPayload,
         sedeId: 'sede_missing',
       })
     );
+    await assertFails(
+      setDoc(doc(dbA, 'assignments', 'asg_bad_day_10'), {
+        ...validAssignmentPayload,
+        dayOfWeek: 9,
+      })
+    );
 
     // 11. Immortal Field Mutation on Update
     await assertFails(
-      updateDoc(doc(dbB, 'trainers', 'tr_1'), {
+      updateDoc(doc(dbB, 'records', 'rec_1'), {
         createdByUid: 'dev_hijack',
         updatedAt: serverTimestamp(),
       })

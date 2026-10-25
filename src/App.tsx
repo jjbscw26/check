@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { collection, onSnapshot, query, where } from 'firebase/firestore';
 import {
   getStoredCompanies,
@@ -16,6 +16,8 @@ import {
 import {
   AttendanceRecord,
   Company,
+  FacialVerificationData,
+  GpsData,
   Sede,
   Trainer,
   ClassAssignment,
@@ -43,18 +45,26 @@ import {
   OperationType,
 } from './firebase';
 import {
+  deleteActivityCatalogItemFromFirestore,
   deleteAssignmentFromFirestore,
   deleteCompanyAndSedesFromFirestore,
+  deleteRecordFromFirestore,
   deleteSedeFromFirestore,
   deleteTrainerFromFirestore,
+  normalizeHHMM,
+  saveActivityCatalogItemToFirestore,
   saveAssignmentToFirestore,
   saveCompanyToFirestore,
+  saveRecordToFirestore,
   saveSedeToFirestore,
   saveTrainerToFirestore,
   seedDemoDataToFirestore,
+  syncDataSetsToFirestore,
+  syncWorkspaceDataToFirestore,
+  toSafeDocId,
 } from './utils/firestoreDemoSync';
 import { deriveCompanyLogoText, generateInitialsAvatarDataUrl } from './utils/personnelValidation';
-import { ShieldCheck, CheckCheck } from 'lucide-react';
+import { ShieldCheck, CheckCheck, AlertTriangle, RefreshCw } from 'lucide-react';
 
 function checkIsMobileOrTablet(): boolean {
   if (typeof window === 'undefined') return false;
@@ -63,6 +73,33 @@ function checkIsMobileOrTablet(): boolean {
     window.innerWidth <= 1366 &&
     window.matchMedia('(hover: none) and (pointer: coarse)').matches;
   return isTabletOrMobileWidth || isTouchTabletDevice;
+}
+
+function parseFirestoreGpsData(raw: unknown): GpsData {
+  const g = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
+  return {
+    lat: Number(g.lat ?? 19.42694),
+    lng: Number(g.lng ?? -99.16782),
+    accuracy: Number(g.accuracy ?? 10),
+    distanceToSedeMeters: Number(g.distanceToSedeMeters ?? 0),
+    isWithinGeofence: Boolean(g.isWithinGeofence),
+    capturedAt: String(g.capturedAt || ''),
+  };
+}
+
+function parseFirestoreFacialData(raw: unknown): FacialVerificationData | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const fv = raw as Record<string, unknown>;
+  if (typeof fv.facePhotoUrl !== 'string' || !fv.facePhotoUrl) return undefined;
+  return {
+    verified: Boolean(fv.verified),
+    confidenceScore: Number(fv.confidenceScore ?? 98),
+    facePhotoUrl: fv.facePhotoUrl,
+    capturedAt: String(fv.capturedAt || ''),
+    biometricId: String(fv.biometricId || ''),
+    livenessPassed: fv.livenessPassed !== false,
+    trainerName: String(fv.trainerName || ''),
+  };
 }
 
 export default function App() {
@@ -77,7 +114,89 @@ export default function App() {
   const [currentView, setCurrentView] = useState<'trainer' | 'personnel' | 'admin'>('trainer');
   const [selectedTrainerId, setSelectedTrainerId] = useState<string>('');
   const [nowTick, setNowTick] = useState<number>(() => Date.now());
+  const [initialCalendarReady, setInitialCalendarReady] = useState<boolean>(false);
+  const [syncErrorMessage, setSyncErrorMessage] = useState<string | null>(null);
+  const [isRetryingSync, setIsRetryingSync] = useState<boolean>(false);
+
   const autoSeedTriggeredRef = useRef<boolean>(false);
+  const reconciledInitialAssignmentsRef = useRef<boolean>(false);
+  const pendingSedesByIdRef = useRef<Map<string, Sede>>(new Map());
+  const pendingAssignmentsByIdRef = useRef<Map<string, ClassAssignment>>(new Map());
+  const inFlightAssignmentWritesRef = useRef<Map<string, number>>(new Map());
+  const deletedAssignmentIdsRef = useRef<Set<string>>(new Set());
+  const companiesRef = useRef<Company[]>([]);
+
+  useEffect(() => {
+    companiesRef.current = companies;
+  }, [companies]);
+
+  const resolveAssignmentParents = useCallback((asg: ClassAssignment, companyPool?: Company[]) => {
+    const pool = companyPool ?? companiesRef.current;
+    const targetCompId = toSafeDocId(asg.companyId, 'comp');
+    const targetSedeId = toSafeDocId(asg.sedeId, 'sede');
+    const parentComp = pool.find(
+      (c) => c.id === asg.companyId || toSafeDocId(c.id, 'comp') === targetCompId
+    );
+    const parentSede = parentComp?.sedes.find(
+      (s) => s.id === asg.sedeId || toSafeDocId(s.id, 'sede') === targetSedeId
+    );
+    return { parentComp, parentSede };
+  }, []);
+
+  const persistAssignmentToFirestore = useCallback(
+    (rawAssignment: ClassAssignment, companyPool?: Company[]) => {
+      const safeId = toSafeDocId(rawAssignment.id, 'asg');
+      const normalized: ClassAssignment = {
+        ...rawAssignment,
+        id: safeId,
+        time: normalizeHHMM(rawAssignment.time, '09:00'),
+      };
+
+      deletedAssignmentIdsRef.current.delete(safeId);
+      pendingAssignmentsByIdRef.current.set(safeId, normalized);
+      inFlightAssignmentWritesRef.current.set(
+        safeId,
+        (inFlightAssignmentWritesRef.current.get(safeId) || 0) + 1
+      );
+
+      const { parentComp, parentSede } = resolveAssignmentParents(normalized, companyPool);
+
+      void saveAssignmentToFirestore(normalized, parentComp, parentSede)
+        .then(() => {
+          setSyncErrorMessage(null);
+        })
+        .catch((err) => {
+          console.error(err);
+          setSyncErrorMessage(
+            'No se pudo sincronizar una asignación con la base de datos. Pulsa "Sincronizar ahora" para reintentar.'
+          );
+        })
+        .finally(() => {
+          const remaining = (inFlightAssignmentWritesRef.current.get(safeId) || 1) - 1;
+          if (remaining <= 0) {
+            inFlightAssignmentWritesRef.current.delete(safeId);
+            pendingAssignmentsByIdRef.current.delete(safeId);
+          } else {
+            inFlightAssignmentWritesRef.current.set(safeId, remaining);
+          }
+        });
+
+      return normalized;
+    },
+    [resolveAssignmentParents]
+  );
+
+  const handleRetryWorkspaceSync = async () => {
+    setIsRetryingSync(true);
+    try {
+      await syncWorkspaceDataToFirestore();
+      setSyncErrorMessage(null);
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setIsRetryingSync(false);
+    }
+  };
 
   useEffect(() => {
     const timer = setInterval(() => setNowTick(Date.now()), 5000);
@@ -120,6 +239,7 @@ export default function App() {
     const loadedAssignments = getStoredAssignments();
     const loadedCatalog = getStoredActivityCatalog();
 
+    companiesRef.current = loadedCompanies;
     setRecords(loadedRecords);
     setCompanies(loadedCompanies);
     setTrainers(loadedTrainers);
@@ -137,33 +257,118 @@ export default function App() {
       query(collection(db, colName), where('createdAt', '>=', FIRESTORE_MIN_CREATED_AT));
 
     let latestFsCompanies: Omit<Company, 'sedes'>[] | null = null;
-    let latestFsSedes: Sede[] = [];
-    let trainersServerSeen = false;
-    let companiesServerSeen = false;
-    let trainersEmptyOnServer = false;
-    let companiesEmptyOnServer = false;
+    let latestFsSedes: Sede[] | null = null;
+    const initialLocalTrainers = getStoredTrainers();
+    const initialLocalCompanies = getStoredCompanies();
+    const initialLocalCatalog = getStoredActivityCatalog();
+    const initialLocalAssignments = getStoredAssignments();
+    const initialLocalRecords = getStoredRecords();
 
-    const maybeTriggerAutoSeed = () => {
+    const serverSeen = {
+      trainers: false,
+      companies: false,
+      sedes: false,
+      assignments: false,
+      records: false,
+      catalog: false,
+    };
+
+    const serverEmpty = {
+      trainers: false,
+      companies: false,
+      sedes: false,
+      assignments: false,
+      records: false,
+      catalog: false,
+    };
+
+    const checkCalendarReady = () => {
+      if (serverSeen.assignments && serverSeen.records) {
+        setInitialCalendarReady(true);
+      }
+    };
+
+    const maybeReconcileEmptyServerCollections = () => {
+      if (autoSeedTriggeredRef.current) return;
+      const allSeen =
+        serverSeen.trainers &&
+        serverSeen.companies &&
+        serverSeen.sedes &&
+        serverSeen.assignments &&
+        serverSeen.records &&
+        serverSeen.catalog;
+      if (!allSeen) return;
+
+      autoSeedTriggeredRef.current = true;
+
       if (
-        !autoSeedTriggeredRef.current &&
-        trainersServerSeen &&
-        companiesServerSeen &&
-        trainersEmptyOnServer &&
-        companiesEmptyOnServer
+        serverEmpty.trainers &&
+        serverEmpty.companies &&
+        serverEmpty.sedes &&
+        serverEmpty.assignments &&
+        serverEmpty.records &&
+        serverEmpty.catalog
       ) {
-        autoSeedTriggeredRef.current = true;
-        seedDemoDataToFirestore().catch(console.error);
+        syncWorkspaceDataToFirestore()
+          .then(() => setSyncErrorMessage(null))
+          .catch(console.error);
+        return;
+      }
+
+      const isFirstCalendarUpgrade = serverEmpty.records || serverEmpty.catalog;
+      const needsCompaniesOrSedes =
+        serverEmpty.companies ||
+        serverEmpty.sedes ||
+        serverEmpty.assignments ||
+        isFirstCalendarUpgrade;
+      const payloadToSync: Parameters<typeof syncDataSetsToFirestore>[0] = {};
+
+      if (serverEmpty.trainers || isFirstCalendarUpgrade) {
+        payloadToSync.trainers = initialLocalTrainers;
+      }
+      if (needsCompaniesOrSedes) {
+        payloadToSync.companies = initialLocalCompanies;
+      }
+      if (serverEmpty.catalog) {
+        payloadToSync.activityCatalog = initialLocalCatalog;
+      }
+      if (serverEmpty.assignments || isFirstCalendarUpgrade) {
+        payloadToSync.assignments = initialLocalAssignments;
+      }
+      if (serverEmpty.records) {
+        payloadToSync.records = initialLocalRecords;
+      }
+
+      if (Object.keys(payloadToSync).length > 0) {
+        syncDataSetsToFirestore(payloadToSync)
+          .then(() => setSyncErrorMessage(null))
+          .catch(console.error);
       }
     };
 
     const syncCombinedCompanies = () => {
-      if (!latestFsCompanies || latestFsCompanies.length === 0) {
+      if (!latestFsCompanies || latestFsCompanies.length === 0 || latestFsSedes === null) {
         return;
       }
+
+      // Merge server sedes with any optimistic in-flight sedes so newly added sedes never flicker
+      const mergedSedeMap = new Map<string, Sede>();
+      latestFsSedes.forEach((s) => {
+        mergedSedeMap.set(s.id, s);
+        pendingSedesByIdRef.current.delete(s.id);
+      });
+      pendingSedesByIdRef.current.forEach((pendingSede, id) => {
+        if (!mergedSedeMap.has(id)) {
+          mergedSedeMap.set(id, pendingSede);
+        }
+      });
+
+      const allMergedSedes = Array.from(mergedSedeMap.values());
       const assembled: Company[] = latestFsCompanies.map((comp) => ({
         ...comp,
-        sedes: latestFsSedes.filter((s) => s.companyId === comp.id),
+        sedes: allMergedSedes.filter((s) => s.companyId === comp.id),
       }));
+      companiesRef.current = assembled;
       setCompanies(assembled);
       saveStoredCompanies(assembled);
     };
@@ -172,9 +377,9 @@ export default function App() {
       mkQuery('trainers'),
       (snap) => {
         if (!snap.metadata.fromCache) {
-          trainersServerSeen = true;
-          trainersEmptyOnServer = snap.empty;
-          maybeTriggerAutoSeed();
+          serverSeen.trainers = true;
+          serverEmpty.trainers = snap.empty;
+          maybeReconcileEmptyServerCollections();
         }
         if (snap.empty) return;
         const fsTrainers: Trainer[] = snap.docs.map((docSnap) => {
@@ -211,9 +416,9 @@ export default function App() {
       mkQuery('companies'),
       (snap) => {
         if (!snap.metadata.fromCache) {
-          companiesServerSeen = true;
-          companiesEmptyOnServer = snap.empty;
-          maybeTriggerAutoSeed();
+          serverSeen.companies = true;
+          serverEmpty.companies = snap.empty;
+          maybeReconcileEmptyServerCollections();
         }
         if (snap.empty) {
           latestFsCompanies = [];
@@ -247,6 +452,11 @@ export default function App() {
     const unsubSedes = onSnapshot(
       mkQuery('sedes'),
       (snap) => {
+        if (!snap.metadata.fromCache) {
+          serverSeen.sedes = true;
+          serverEmpty.sedes = snap.empty;
+          maybeReconcileEmptyServerCollections();
+        }
         latestFsSedes = snap.docs.map((docSnap) => {
           const d = docSnap.data();
           return {
@@ -279,19 +489,14 @@ export default function App() {
     const unsubAssignments = onSnapshot(
       mkQuery('assignments'),
       (snap) => {
-        if (snap.empty) {
-          if (
-            !snap.metadata.fromCache &&
-            !autoSeedTriggeredRef.current &&
-            latestFsCompanies &&
-            latestFsCompanies.length > 0 &&
-            latestFsSedes.length > 0
-          ) {
-            autoSeedTriggeredRef.current = true;
-            seedDemoDataToFirestore().catch(console.error);
-          }
-          return;
+        const isServerSnapshot = !snap.metadata.fromCache;
+        if (isServerSnapshot) {
+          serverSeen.assignments = true;
+          serverEmpty.assignments = snap.empty;
+          checkCalendarReady();
+          maybeReconcileEmptyServerCollections();
         }
+
         const fsAssignments: ClassAssignment[] = snap.docs.map((docSnap) => {
           const d = docSnap.data();
           return {
@@ -310,7 +515,7 @@ export default function App() {
             ...(typeof d.dayOfWeek === 'number' ? { dayOfWeek: d.dayOfWeek } : {}),
             ...(typeof d.date === 'string' ? { date: d.date } : {}),
             ...(typeof d.dayOfMonth === 'number' ? { dayOfMonth: d.dayOfMonth } : {}),
-            time: String(d.time || '09:00'),
+            time: normalizeHHMM(d.time, '09:00'),
             ...(typeof d.durationMinutes === 'number' ? { durationMinutes: d.durationMinutes } : {}),
             activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
             activityName: String(d.activityName || ''),
@@ -338,12 +543,204 @@ export default function App() {
               : {}),
           };
         });
-        setAssignments(fsAssignments);
-        saveStoredAssignments(fsAssignments);
+
+        // One-time upload of any previously unsynced local assignments when Firestore already has partial data
+        if (isServerSnapshot && !reconciledInitialAssignmentsRef.current && !snap.empty) {
+          reconciledInitialAssignmentsRef.current = true;
+          const serverIds = new Set(fsAssignments.map((a) => a.id));
+          for (const localAsg of initialLocalAssignments) {
+            const safeLocalId = toSafeDocId(localAsg.id, 'asg');
+            if (!serverIds.has(safeLocalId) && !deletedAssignmentIdsRef.current.has(safeLocalId)) {
+              persistAssignmentToFirestore(localAsg, initialLocalCompanies);
+            }
+          }
+        }
+
+        if (snap.empty) {
+          if (
+            isServerSnapshot &&
+            autoSeedTriggeredRef.current &&
+            pendingAssignmentsByIdRef.current.size === 0
+          ) {
+            reconciledInitialAssignmentsRef.current = true;
+            setAssignments([]);
+            saveStoredAssignments([]);
+          } else if (pendingAssignmentsByIdRef.current.size > 0) {
+            const optimisticOnly = Array.from(pendingAssignmentsByIdRef.current.values());
+            setAssignments(optimisticOnly);
+            saveStoredAssignments(optimisticOnly);
+          }
+          return;
+        }
+
+        serverEmpty.assignments = false;
+
+        // Merge server assignments with any in-flight optimistic assignments and exclude in-flight deletes
+        const mergedMap = new Map<string, ClassAssignment>();
+        for (const serverAsg of fsAssignments) {
+          if (deletedAssignmentIdsRef.current.has(serverAsg.id)) continue;
+          const pending = pendingAssignmentsByIdRef.current.get(serverAsg.id);
+          mergedMap.set(serverAsg.id, pending ?? serverAsg);
+        }
+        pendingAssignmentsByIdRef.current.forEach((pendingAsg, pendingId) => {
+          if (!mergedMap.has(pendingId) && !deletedAssignmentIdsRef.current.has(pendingId)) {
+            mergedMap.set(pendingId, pendingAsg);
+          }
+        });
+
+        const mergedList = Array.from(mergedMap.values());
+        setAssignments(mergedList);
+        saveStoredAssignments(mergedList);
+      },
+      (err) => {
+        setSyncErrorMessage(
+          'No se pudo leer la colección de asignaciones (/assignments) en Firestore.'
+        );
+        try {
+          handleFirestoreError(err, OperationType.LIST, 'assignments');
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    );
+
+    const unsubRecords = onSnapshot(
+      mkQuery('records'),
+      (snap) => {
+        const isServerSnapshot = !snap.metadata.fromCache;
+        if (isServerSnapshot) {
+          serverSeen.records = true;
+          serverEmpty.records = snap.empty;
+          checkCalendarReady();
+          maybeReconcileEmptyServerCollections();
+        }
+        if (snap.empty) {
+          if (isServerSnapshot && autoSeedTriggeredRef.current) {
+            setRecords([]);
+            saveStoredRecords([]);
+          }
+          return;
+        }
+        serverEmpty.records = false;
+        const fsRecords: AttendanceRecord[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          const facial = parseFirestoreFacialData(d.facialVerification);
+          return {
+            id: docSnap.id,
+            ...(typeof d.assignmentId === 'string' && d.assignmentId
+              ? { assignmentId: d.assignmentId }
+              : {}),
+            trainerId: String(d.trainerId || ''),
+            trainerName: String(d.trainerName || ''),
+            companyId: String(d.companyId || ''),
+            companyName: String(d.companyName || ''),
+            sedeId: String(d.sedeId || ''),
+            sedeName: String(d.sedeName || ''),
+            sedeAddress: String(d.sedeAddress || ''),
+            date: String(d.date || ''),
+            scheduledTime: normalizeHHMM(d.scheduledTime, '09:00'),
+            checkInTime: String(d.checkInTime || '09:00:00'),
+            checkInIso: String(d.checkInIso || ''),
+            checkOutTime:
+              d.checkOutTime === null
+                ? null
+                : typeof d.checkOutTime === 'string'
+                ? d.checkOutTime
+                : null,
+            ...(d.checkOutIso === null
+              ? { checkOutIso: null }
+              : typeof d.checkOutIso === 'string'
+              ? { checkOutIso: d.checkOutIso }
+              : {}),
+            status:
+              d.status === 'completado' || d.status === 'incumplido' ? d.status : 'en_curso',
+            ...(d.nonComplianceReason === 'fuera_de_horario' ||
+            d.nonComplianceReason === 'sin_cierre_30m' ||
+            d.nonComplianceReason === 'manual_admin'
+              ? { nonComplianceReason: d.nonComplianceReason }
+              : {}),
+            ...(typeof d.markedNonCompliantAt === 'string'
+              ? { markedNonCompliantAt: d.markedNonCompliantAt }
+              : {}),
+            punctualityStatus:
+              d.punctualityStatus === 'con_retraso' || d.punctualityStatus === 'adelantado'
+                ? d.punctualityStatus
+                : 'a_tiempo',
+            punctualityDiffMinutes: Number(d.punctualityDiffMinutes ?? 0),
+            activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
+            activityName: String(d.activityName || ''),
+            attendeesCount: Number(d.attendeesCount ?? 0),
+            locationArea: String(d.locationArea || ''),
+            ...(typeof d.observations === 'string' ? { observations: d.observations } : {}),
+            checkInGps: parseFirestoreGpsData(d.checkInGps),
+            ...(d.checkOutGps ? { checkOutGps: parseFirestoreGpsData(d.checkOutGps) } : {}),
+            photoUrl: String(d.photoUrl || ''),
+            ...(typeof d.exitPhotoUrl === 'string' && d.exitPhotoUrl
+              ? { exitPhotoUrl: d.exitPhotoUrl }
+              : {}),
+            ...(facial ? { facialVerification: facial } : {}),
+            ...(typeof d.durationMinutes === 'number'
+              ? { durationMinutes: d.durationMinutes }
+              : {}),
+            ...(typeof d.plannedDurationMinutes === 'number'
+              ? { plannedDurationMinutes: d.plannedDurationMinutes }
+              : {}),
+            ...(typeof d.alarmEnabled === 'boolean' ? { alarmEnabled: d.alarmEnabled } : {}),
+            ...(d.alarmSnoozedUntilIso === null
+              ? { alarmSnoozedUntilIso: null }
+              : typeof d.alarmSnoozedUntilIso === 'string'
+              ? { alarmSnoozedUntilIso: d.alarmSnoozedUntilIso }
+              : {}),
+            adminVerified: Boolean(d.adminVerified),
+            ...(typeof d.adminNotes === 'string' ? { adminNotes: d.adminNotes } : {}),
+          };
+        });
+
+        fsRecords.sort((a, b) => {
+          const keyA = `${a.date}T${a.checkInTime}`;
+          const keyB = `${b.date}T${b.checkInTime}`;
+          return keyB.localeCompare(keyA);
+        });
+
+        setRecords(fsRecords);
+        saveStoredRecords(fsRecords);
       },
       (err) => {
         try {
-          handleFirestoreError(err, OperationType.LIST, 'assignments');
+          handleFirestoreError(err, OperationType.LIST, 'records');
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    );
+
+    const unsubCatalog = onSnapshot(
+      mkQuery('activity_catalog'),
+      (snap) => {
+        if (!snap.metadata.fromCache) {
+          serverSeen.catalog = true;
+          serverEmpty.catalog = snap.empty;
+          maybeReconcileEmptyServerCollections();
+        }
+        if (snap.empty) return;
+        serverEmpty.catalog = false;
+        const fsCatalog: ActivityCatalogItem[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          return {
+            id: docSnap.id,
+            name: String(d.name || ''),
+            activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
+            defaultDurationMinutes: Number(d.defaultDurationMinutes ?? 20),
+            ...(typeof d.description === 'string' ? { description: d.description } : {}),
+            active: d.active !== false,
+          };
+        });
+        setActivityCatalog(fsCatalog);
+        saveStoredActivityCatalog(fsCatalog);
+      },
+      (err) => {
+        try {
+          handleFirestoreError(err, OperationType.LIST, 'activity_catalog');
         } catch (e) {
           console.error(e);
         }
@@ -355,11 +752,14 @@ export default function App() {
       unsubCompanies();
       unsubSedes();
       unsubAssignments();
+      unsubRecords();
+      unsubCatalog();
     };
-  }, []);
+  }, [persistAssignmentToFirestore]);
 
-  // Automatic compliance sweep
+  // Automatic compliance sweep (persisted in real time to both /records and /assignments)
   useEffect(() => {
+    if (!initialCalendarReady) return;
     if (assignments.length === 0 && records.length === 0) return;
 
     let recordsChanged = false;
@@ -408,6 +808,8 @@ export default function App() {
 
     nextAssignments = nextAssignments.map((asg) => {
       if (asg.active === false || asg.closed) return asg;
+      // Skip assignments whose create/update write is still in-flight so initial writes finish cleanly first
+      if ((inFlightAssignmentWritesRef.current.get(asg.id) || 0) > 0) return asg;
 
       const candidateDates: string[] = [];
       if (asg.frequency === 'fecha_unica' && asg.date) {
@@ -443,17 +845,29 @@ export default function App() {
     if (recordsChanged) {
       setRecords(nextRecords);
       saveStoredRecords(nextRecords);
+      nextRecords.forEach((updatedRec, idx) => {
+        if (updatedRec !== records[idx]) {
+          void saveRecordToFirestore(updatedRec).catch((err) => console.error(err));
+        }
+      });
     }
     if (assignmentsChanged) {
       setAssignments(nextAssignments);
       saveStoredAssignments(nextAssignments);
       nextAssignments.forEach((updatedAsg, idx) => {
         if (updatedAsg !== assignments[idx]) {
-          void saveAssignmentToFirestore(updatedAsg).catch((err) => console.error(err));
+          persistAssignmentToFirestore(updatedAsg);
         }
       });
     }
-  }, [nowTick, records, assignments, activityCatalog]);
+  }, [
+    initialCalendarReady,
+    nowTick,
+    records,
+    assignments,
+    activityCatalog,
+    persistAssignmentToFirestore,
+  ]);
 
   // Enforce that Directorio and Panel Admin are hidden and inactive on phones & tablets
   useEffect(() => {
@@ -491,24 +905,24 @@ export default function App() {
 
     if (record.status === 'completado') {
       const lockedAsg = toggleAssignmentDateLock(matchedAsg, record.date, true);
-      const updatedAsgs = assignments.map((a) => (a.id === lockedAsg.id ? lockedAsg : a));
+      const normalized = persistAssignmentToFirestore(lockedAsg);
+      const updatedAsgs = assignments.map((a) => (a.id === normalized.id ? normalized : a));
       setAssignments(updatedAsgs);
       saveStoredAssignments(updatedAsgs);
-      saveAssignmentToFirestore(lockedAsg).catch(console.error);
     } else if (record.status === 'incumplido') {
       const breachedAsg = markAssignmentDateNonCompliant(
         matchedAsg,
         record.date,
         record.nonComplianceReason || 'sin_cierre_30m'
       );
-      const updatedAsgs = assignments.map((a) => (a.id === breachedAsg.id ? breachedAsg : a));
+      const normalized = persistAssignmentToFirestore(breachedAsg);
+      const updatedAsgs = assignments.map((a) => (a.id === normalized.id ? normalized : a));
       setAssignments(updatedAsgs);
       saveStoredAssignments(updatedAsgs);
-      saveAssignmentToFirestore(breachedAsg).catch(console.error);
     }
   };
 
-  // Record handlers
+  // Record handlers (automatically synced with Firestore /records)
   const handleSaveRecord = (newRecord: AttendanceRecord) => {
     const matchedAsg = findMatchingAssignmentForRecord(newRecord, assignments);
     const recordWithAsg =
@@ -519,6 +933,7 @@ export default function App() {
     const updated = [recordWithAsg, ...records];
     setRecords(updated);
     saveStoredRecords(updated);
+    saveRecordToFirestore(recordWithAsg).catch(console.error);
     syncAssignmentLockFromRecord(recordWithAsg);
   };
 
@@ -532,6 +947,7 @@ export default function App() {
     const updated = records.map((r) => (r.id === recordWithAsg.id ? recordWithAsg : r));
     setRecords(updated);
     saveStoredRecords(updated);
+    saveRecordToFirestore(recordWithAsg).catch(console.error);
     syncAssignmentLockFromRecord(recordWithAsg);
   };
 
@@ -539,11 +955,13 @@ export default function App() {
     const updated = records.filter((r) => r.id !== recordId);
     setRecords(updated);
     saveStoredRecords(updated);
+    deleteRecordFromFirestore(recordId).catch(console.error);
   };
 
   // Company CRUD handlers (automatically synced with Firestore /companies)
   const handleAddCompany = (newCompany: Company) => {
     const updated = [...companies, newCompany];
+    companiesRef.current = updated;
     setCompanies(updated);
     saveStoredCompanies(updated);
     saveCompanyToFirestore(newCompany).catch(console.error);
@@ -551,6 +969,7 @@ export default function App() {
 
   const handleUpdateCompany = (updatedCompany: Company) => {
     const updated = companies.map((c) => (c.id === updatedCompany.id ? updatedCompany : c));
+    companiesRef.current = updated;
     setCompanies(updated);
     saveStoredCompanies(updated);
     saveCompanyToFirestore(updatedCompany).catch(console.error);
@@ -558,14 +977,17 @@ export default function App() {
 
   const handleDeleteCompany = (companyId: string) => {
     const updated = companies.filter((c) => c.id !== companyId);
+    companiesRef.current = updated;
     setCompanies(updated);
     saveStoredCompanies(updated);
     deleteCompanyAndSedesFromFirestore(companyId).catch(console.error);
   };
 
-  // Sede CRUD handlers (automatically synced with Firestore /sedes)
+  // Sede CRUD handlers (race-free automatic sync with Firestore /sedes)
   const handleAddSede = (newSede: Sede) => {
     const parentComp = companies.find((c) => c.id === newSede.companyId);
+    pendingSedesByIdRef.current.set(newSede.id, newSede);
+
     const updatedCompanies = companies.map((c) => {
       if (c.id === newSede.companyId) {
         return {
@@ -575,19 +997,20 @@ export default function App() {
       }
       return c;
     });
+    companiesRef.current = updatedCompanies;
     setCompanies(updatedCompanies);
     saveStoredCompanies(updatedCompanies);
 
-    (async () => {
-      if (parentComp) {
-        await saveCompanyToFirestore(parentComp);
-      }
-      await saveSedeToFirestore(newSede);
-    })().catch(console.error);
+    saveSedeToFirestore(newSede, parentComp).catch((err) => {
+      pendingSedesByIdRef.current.delete(newSede.id);
+      console.error(err);
+    });
   };
 
   const handleUpdateSede = (updatedSede: Sede) => {
     const parentComp = companies.find((c) => c.id === updatedSede.companyId);
+    pendingSedesByIdRef.current.set(updatedSede.id, updatedSede);
+
     const updatedCompanies = companies.map((c) => {
       if (c.id === updatedSede.companyId) {
         return {
@@ -597,18 +1020,18 @@ export default function App() {
       }
       return c;
     });
+    companiesRef.current = updatedCompanies;
     setCompanies(updatedCompanies);
     saveStoredCompanies(updatedCompanies);
 
-    (async () => {
-      if (parentComp) {
-        await saveCompanyToFirestore(parentComp);
-      }
-      await saveSedeToFirestore(updatedSede);
-    })().catch(console.error);
+    saveSedeToFirestore(updatedSede, parentComp).catch((err) => {
+      pendingSedesByIdRef.current.delete(updatedSede.id);
+      console.error(err);
+    });
   };
 
   const handleDeleteSede = (sedeId: string, companyId: string) => {
+    pendingSedesByIdRef.current.delete(sedeId);
     const updatedCompanies = companies.map((c) => {
       if (c.id === companyId) {
         return {
@@ -618,6 +1041,7 @@ export default function App() {
       }
       return c;
     });
+    companiesRef.current = updatedCompanies;
     setCompanies(updatedCompanies);
     saveStoredCompanies(updatedCompanies);
     deleteSedeFromFirestore(sedeId).catch(console.error);
@@ -648,35 +1072,48 @@ export default function App() {
     deleteTrainerFromFirestore(trainerId).catch(console.error);
   };
 
-  // Assignment CRUD handlers (automatically synced with Firestore /assignments)
+  // Assignment CRUD handlers (optimistic + serialized sync with Firestore /assignments)
   const handleAddAssignment = (newAssignment: ClassAssignment) => {
-    const updated = [newAssignment, ...assignments];
+    const normalized = persistAssignmentToFirestore(newAssignment);
+    const updated = [normalized, ...assignments.filter((a) => a.id !== normalized.id)];
     setAssignments(updated);
     saveStoredAssignments(updated);
-    saveAssignmentToFirestore(newAssignment).catch(console.error);
   };
 
   const handleUpdateAssignment = (updatedAssignment: ClassAssignment) => {
+    const normalized = persistAssignmentToFirestore(updatedAssignment);
     const updated = assignments.map((a) =>
-      a.id === updatedAssignment.id ? updatedAssignment : a
+      a.id === updatedAssignment.id || a.id === normalized.id ? normalized : a
     );
     setAssignments(updated);
     saveStoredAssignments(updated);
-    saveAssignmentToFirestore(updatedAssignment).catch(console.error);
   };
 
   const handleDeleteAssignment = (assignmentId: string) => {
-    const updated = assignments.filter((a) => a.id !== assignmentId);
+    const safeId = toSafeDocId(assignmentId, 'asg');
+    pendingAssignmentsByIdRef.current.delete(safeId);
+    deletedAssignmentIdsRef.current.add(safeId);
+
+    const updated = assignments.filter((a) => a.id !== assignmentId && a.id !== safeId);
     setAssignments(updated);
     saveStoredAssignments(updated);
-    deleteAssignmentFromFirestore(assignmentId).catch(console.error);
+
+    deleteAssignmentFromFirestore(safeId)
+      .catch((err) => {
+        console.error(err);
+        setSyncErrorMessage('No se pudo eliminar la asignación en la base de datos.');
+      })
+      .finally(() => {
+        deletedAssignmentIdsRef.current.delete(safeId);
+      });
   };
 
-  // Activity Catalog CRUD handlers
+  // Activity Catalog CRUD handlers (automatically synced with Firestore /activity_catalog)
   const handleAddCatalogItem = (newItem: ActivityCatalogItem) => {
     const updated = [...activityCatalog, newItem];
     setActivityCatalog(updated);
     saveStoredActivityCatalog(updated);
+    saveActivityCatalogItemToFirestore(newItem).catch(console.error);
   };
 
   const handleUpdateCatalogItem = (updatedItem: ActivityCatalogItem, previousName?: string) => {
@@ -685,6 +1122,7 @@ export default function App() {
     );
     setActivityCatalog(updated);
     saveStoredActivityCatalog(updated);
+    saveActivityCatalogItemToFirestore(updatedItem).catch(console.error);
 
     if (previousName) {
       const syncedAssignments = assignments.map((asg) =>
@@ -701,7 +1139,7 @@ export default function App() {
       syncedAssignments
         .filter((asg) => asg.activityName === updatedItem.name)
         .forEach((asg) => {
-          saveAssignmentToFirestore(asg).catch(console.error);
+          persistAssignmentToFirestore(asg);
         });
     }
   };
@@ -710,13 +1148,16 @@ export default function App() {
     const updated = activityCatalog.filter((item) => item.id !== id);
     setActivityCatalog(updated);
     saveStoredActivityCatalog(updated);
+    deleteActivityCatalogItemFromFirestore(id).catch(console.error);
   };
 
   // Global reset (also re-seeds demo data into Firestore automatically)
   const handleResetData = () => {
     resetAllDataToDefault();
+    const freshCompanies = getStoredCompanies();
+    companiesRef.current = freshCompanies;
     setRecords(getStoredRecords());
-    setCompanies(getStoredCompanies());
+    setCompanies(freshCompanies);
     setTrainers(getStoredTrainers());
     setAssignments(getStoredAssignments());
     setActivityCatalog(getStoredActivityCatalog());
@@ -741,6 +1182,35 @@ export default function App() {
         overdueSessionCount={overdueSessionCount}
         isMobileOrTablet={isMobileOrTablet}
       />
+
+      {syncErrorMessage && (
+        <div className="bg-amber-50 border-b border-amber-200 px-4 py-2.5 text-xs text-amber-900">
+          <div className="max-w-7xl mx-auto flex flex-wrap items-center justify-between gap-2">
+            <div className="flex items-center gap-2 font-semibold">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
+              <span>{syncErrorMessage}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                onClick={handleRetryWorkspaceSync}
+                disabled={isRetryingSync}
+                className="px-3 py-1 rounded-lg bg-amber-600 hover:bg-amber-700 disabled:opacity-60 text-white font-bold inline-flex items-center gap-1.5 cursor-pointer"
+              >
+                <RefreshCw className={`w-3.5 h-3.5 ${isRetryingSync ? 'animate-spin' : ''}`} />
+                <span>{isRetryingSync ? 'Sincronizando...' : 'Sincronizar ahora'}</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => setSyncErrorMessage(null)}
+                className="px-2 py-1 text-amber-700 hover:text-amber-950 font-bold"
+              >
+                ✕
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       <main className="flex-1 pb-16">
         {(isMobileOrTablet || currentView === 'trainer') && currentTrainer && (

@@ -229,6 +229,32 @@ export function deriveCompanyLogoText(name: string, explicitLogoText?: string): 
   return derived || 'CP';
 }
 
+export function sanitizeTaxIdForFirestore(rawTaxId?: string): string {
+  const cleaned = normalizeSingleLine(rawTaxId || '')
+    .toUpperCase()
+    .replace(/[^A-Za-z0-9&Ññ.\- ]/g, '-')
+    .replace(/^[.\- ]+|[.\- ]+$/g, '')
+    .slice(0, DIRECTORY_LIMITS.taxId.max);
+
+  if (
+    cleaned.length >= DIRECTORY_LIMITS.taxId.min &&
+    cleaned.length <= DIRECTORY_LIMITS.taxId.max &&
+    TAX_ID_PATTERN_REGEX.test(cleaned)
+  ) {
+    return cleaned;
+  }
+
+  const alnum = cleaned.replace(/[^A-Za-z0-9&Ññ]/g, '');
+  if (alnum.length >= 2) {
+    const padded = `${alnum}-00000`.slice(0, Math.max(DIRECTORY_LIMITS.taxId.min, alnum.length + 2));
+    if (TAX_ID_PATTERN_REGEX.test(padded)) {
+      return padded;
+    }
+  }
+
+  return 'XAXX010101000';
+}
+
 // ============================================================================
 // 1. ENTRENADORES (`trainers` — todos los campos del demo)
 // ============================================================================
@@ -478,39 +504,47 @@ export function validateSedeInput(raw: SedeFormInput): SedeValidationResult {
     errors.geofenceRadiusMeters = `El radio de geocerca debe estar entre ${DIRECTORY_LIMITS.geofenceRadiusMeters.min} y ${DIRECTORY_LIMITS.geofenceRadiusMeters.max} metros.`;
   }
 
-  if (!contactPerson) {
-    errors.contactPerson = 'El nombre del contacto en sede es obligatorio.';
-  } else if (
-    contactPerson.length < DIRECTORY_LIMITS.contactPerson.min ||
-    contactPerson.length > DIRECTORY_LIMITS.contactPerson.max ||
-    !NON_EMPTY_TEXT_REGEX.test(contactPerson)
+  // Contact fields: optional in UI (filled with clean corporate defaults if left empty),
+  // strictly validated when provided so Firestore rules always pass.
+  const effectiveContactPerson = contactPerson || 'Encargado de Sede';
+  const effectiveContactRole = contactRole || 'Coordinador de Salud en el Trabajo';
+  const effectiveContactPhone = contactPhone || '+52 55 0000 0000';
+
+  if (
+    contactPerson &&
+    (contactPerson.length < DIRECTORY_LIMITS.contactPerson.min ||
+      contactPerson.length > DIRECTORY_LIMITS.contactPerson.max ||
+      !NON_EMPTY_TEXT_REGEX.test(contactPerson))
   ) {
     errors.contactPerson = `Ingresa un contacto válido (${DIRECTORY_LIMITS.contactPerson.min} a ${DIRECTORY_LIMITS.contactPerson.max} caracteres).`;
   }
 
-  if (!contactRole) {
-    errors.contactRole = 'El cargo o rol del contacto es obligatorio.';
-  } else if (
-    contactRole.length < DIRECTORY_LIMITS.contactRole.min ||
-    contactRole.length > DIRECTORY_LIMITS.contactRole.max ||
-    !NON_EMPTY_TEXT_REGEX.test(contactRole)
+  if (
+    contactRole &&
+    (contactRole.length < DIRECTORY_LIMITS.contactRole.min ||
+      contactRole.length > DIRECTORY_LIMITS.contactRole.max ||
+      !NON_EMPTY_TEXT_REGEX.test(contactRole))
   ) {
     errors.contactRole = `Ingresa un cargo válido (${DIRECTORY_LIMITS.contactRole.min} a ${DIRECTORY_LIMITS.contactRole.max} caracteres).`;
   }
 
-  if (!contactPhone) {
-    errors.contactPhone = 'El teléfono directo del contacto es obligatorio.';
-  } else if (
-    contactPhone.length < DIRECTORY_LIMITS.phone.min ||
-    contactPhone.length > DIRECTORY_LIMITS.phone.max ||
-    !PHONE_PATTERN_REGEX.test(contactPhone)
+  if (
+    contactPhone &&
+    (contactPhone.length < DIRECTORY_LIMITS.phone.min ||
+      contactPhone.length > DIRECTORY_LIMITS.phone.max ||
+      !PHONE_PATTERN_REGEX.test(contactPhone))
   ) {
     errors.contactPhone = 'Ingresa un teléfono válido (7 a 25 caracteres, ej. +52 55 5100 1122).';
   }
 
+  const effectiveColorTag =
+    colorTag && colorTag.length <= DIRECTORY_LIMITS.colorTag.max && COLOR_TAG_PATTERN_REGEX.test(colorTag)
+      ? colorTag
+      : 'bg-red-600';
+
   if (
-    colorTag.length > DIRECTORY_LIMITS.colorTag.max ||
-    !COLOR_TAG_PATTERN_REGEX.test(colorTag)
+    colorTag &&
+    (colorTag.length > DIRECTORY_LIMITS.colorTag.max || !COLOR_TAG_PATTERN_REGEX.test(colorTag))
   ) {
     errors.colorTag = 'Etiqueta de color inválida.';
   }
@@ -521,26 +555,23 @@ export function validateSedeInput(raw: SedeFormInput): SedeValidationResult {
     name,
     address,
     city,
-    lat: Number.isFinite(parsedLat) ? Number(parsedLat.toFixed(6)) : 0,
-    lng: Number.isFinite(parsedLng) ? Number(parsedLng.toFixed(6)) : 0,
+    lat: Number.isFinite(parsedLat) ? Number(parsedLat.toFixed(6)) : 19.42694,
+    lng: Number.isFinite(parsedLng) ? Number(parsedLng.toFixed(6)) : -99.16782,
     geofenceRadiusMeters: Number.isFinite(parsedRadius) ? Math.round(parsedRadius) : 150,
-    contactPerson,
-    contactRole,
-    contactPhone,
-    colorTag,
+    contactPerson: effectiveContactPerson,
+    contactRole: effectiveContactRole,
+    contactPhone: effectiveContactPhone,
+    colorTag: effectiveColorTag,
   };
 
   const completedFlags = [
-    Boolean(companyId),
+    Boolean(companyId && companyName.length >= 2),
     Boolean(name),
     Boolean(address),
     Boolean(city),
     String(raw.lat).trim() !== '' && Number.isFinite(parsedLat),
     String(raw.lng).trim() !== '' && Number.isFinite(parsedLng),
     String(raw.geofenceRadiusMeters).trim() !== '' && Number.isFinite(parsedRadius),
-    Boolean(contactPerson),
-    Boolean(contactRole),
-    Boolean(contactPhone),
   ];
 
   return {
@@ -548,7 +579,7 @@ export function validateSedeInput(raw: SedeFormInput): SedeValidationResult {
     errors,
     sanitized,
     completedCount: completedFlags.filter(Boolean).length,
-    totalRequired: 10,
+    totalRequired: 7,
   };
 }
 

@@ -59,6 +59,22 @@ const DAYS_OF_WEEK = [
 
 const DURATION_PRESETS = [15, 20, 30, 45, 50, 60, 90];
 
+function getUpcomingDefaultTimeHHMM(): string {
+  const now = new Date();
+  now.setMinutes(now.getMinutes() + 30);
+  const roundedMinutes = now.getMinutes() <= 30 ? 30 : 60;
+  if (roundedMinutes === 60) {
+    now.setHours(now.getHours() + 1, 0, 0, 0);
+  } else {
+    now.setMinutes(30, 0, 0);
+  }
+  const hh = now.getHours();
+  if (hh < 7 || hh > 21) {
+    return '09:00';
+  }
+  return `${String(hh).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+}
+
 export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
   assignment,
   trainers,
@@ -86,7 +102,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
   const [dayOfWeek, setDayOfWeek] = useState<number>(1);
   const [dayOfMonth, setDayOfMonth] = useState<number>(15);
   const [specificDate, setSpecificDate] = useState<string>(() => formatLocalYYYYMMDD(new Date()));
-  const [time, setTime] = useState<string>('08:30');
+  const [time, setTime] = useState<string>(() => getUpcomingDefaultTimeHHMM());
   const [durationInput, setDurationInput] = useState<string>('20');
 
   const [activityType, setActivityType] = useState<ActivityType>('pausa_activa');
@@ -110,7 +126,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
       setDayOfWeek(assignment.dayOfWeek || 1);
       setDayOfMonth(assignment.dayOfMonth || 15);
       setSpecificDate(assignment.date || formatLocalYYYYMMDD(new Date()));
-      setTime(assignment.time || '08:30');
+      setTime((assignment.time || '09:00').slice(0, 5));
       setActivityType(assignment.activityType || 'pausa_activa');
       setActivityName(assignment.activityName || effectivePausaOptions[0]);
       setDurationInput(
@@ -136,7 +152,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
       setDayOfWeek(initialPreset?.dayOfWeek ?? 1);
       setDayOfMonth(initialPreset?.dayOfMonth ?? 15);
       setSpecificDate(initialPreset?.date || formatLocalYYYYMMDD(new Date()));
-      setTime(initialPreset?.time || '08:30');
+      setTime((initialPreset?.time || getUpcomingDefaultTimeHHMM()).slice(0, 5));
       setActivityType('pausa_activa');
       setActivityName(defaultActName);
       setDurationInput(String(defaultDur));
@@ -154,11 +170,10 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
   const handleCompanyChange = (cId: string) => {
     setCompanyId(cId);
     const comp = companies.find((c) => c.id === cId);
-    if (comp && comp.sedes.length > 0) {
-      setSedeId(comp.sedes[0].id);
-    }
+    setSedeId(comp?.sedes[0]?.id || '');
   };
 
+  const normalizedTime = (time || '09:00').slice(0, 5);
   const resolvedDurationMinutes = Math.max(
     5,
     Math.min(
@@ -167,14 +182,17 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
         getDefaultDurationMinutes(activityType, activityName, activityCatalog)
     )
   );
-  const estimatedEndTime = calculateEndTimeHHMM(time, resolvedDurationMinutes);
+  const estimatedEndTime = calculateEndTimeHHMM(normalizedTime, resolvedDurationMinutes);
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
     const trainer = trainers.find((t) => t.id === trainerId) || trainers[0];
     const company = companies.find((c) => c.id === companyId) || companies[0];
-    const sede = company?.sedes.find((s) => s.id === sedeId) || company?.sedes[0];
+    if (!trainer || !company) return;
+
+    const sede = company.sedes.find((s) => s.id === sedeId) || company.sedes[0];
+    const fallbackCompanySlug = company.id.replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 80);
 
     const existingCompletedDates = new Set(assignment?.completedDates || []);
     const existingMissedDates = new Set(assignment?.missedDates || []);
@@ -207,14 +225,14 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
       trainerName: trainer.name,
       companyId: company.id,
       companyName: company.name,
-      sedeId: sede?.id || 'sede_default',
+      sedeId: sede?.id || `sede_principal_${fallbackCompanySlug}`,
       sedeName: sede?.name || 'Sede Principal',
-      sedeAddress: sede?.address || '',
+      sedeAddress: sede?.address || 'Dirección Sede Corporativa',
       frequency,
       dayOfWeek: frequency === 'semanal' ? Number(dayOfWeek) : undefined,
       dayOfMonth: frequency === 'mensual' ? Number(dayOfMonth) : undefined,
       date: frequency === 'fecha_unica' ? specificDate : undefined,
-      time,
+      time: normalizedTime,
       durationMinutes: resolvedDurationMinutes,
       activityType,
       activityName,
@@ -317,11 +335,15 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                 onChange={(e) => setSedeId(e.target.value)}
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-red-500"
               >
-                {selectedCompany?.sedes.map((s) => (
-                  <option key={s.id} value={s.id}>
-                    {s.name}
-                  </option>
-                ))}
+                {selectedCompany && selectedCompany.sedes.length > 0 ? (
+                  selectedCompany.sedes.map((s) => (
+                    <option key={s.id} value={s.id}>
+                      {s.name}
+                    </option>
+                  ))
+                ) : (
+                  <option value="">Sede Principal (se registrará automáticamente)</option>
+                )}
               </select>
             </div>
           </div>

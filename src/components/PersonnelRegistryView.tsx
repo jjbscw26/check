@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import {
   collection,
   deleteDoc,
@@ -15,18 +15,22 @@ import {
   AlertCircle,
   Briefcase,
   Building2,
+  Calendar,
   Camera,
   Check,
   CheckCircle2,
+  Clock,
   Compass,
   Database,
   DownloadCloud,
   Edit3,
+  Layers,
   Mail,
   MapPin,
   Navigation,
   Phone,
   Plus,
+  RefreshCw,
   RotateCcw,
   Save,
   Search,
@@ -35,6 +39,7 @@ import {
   UserCheck,
   UserCircle2,
   Users,
+  X,
 } from 'lucide-react';
 import {
   db,
@@ -44,6 +49,9 @@ import {
   OperationType,
 } from '../firebase';
 import {
+  AttendanceRecord,
+  FirestoreActivityCatalogRecord,
+  FirestoreAssignmentRecord,
   FirestoreClientRecord,
   FirestoreDemoCompanyRecord,
   FirestoreDirectoryCategory,
@@ -74,10 +82,27 @@ import {
   validateTrainerInput,
 } from '../utils/personnelValidation';
 import {
+  deleteAssignmentFromFirestore,
   deleteCompanyAndSedesFromFirestore,
-  seedDemoDataToFirestore,
+  saveCompanyToFirestore,
+  saveSedeToFirestore,
+  syncWorkspaceDataToFirestore,
 } from '../utils/firestoreDemoSync';
 import { getCurrentPositionAsync } from '../utils/geo';
+import {
+  attachStreamToVideoElement,
+  captureSquareAvatarFromSource,
+  formatCameraErrorMessage,
+  openCameraStreamWithFallback,
+  unregisterExclusiveCameraStream,
+  VideoDeviceOption,
+} from '../utils/cameraStream';
+import {
+  isPlaceholderOrMissingAvatar,
+  validateFaceInRegistrationPhoto,
+} from '../utils/faceVerification';
+
+const DIRECTORY_CAMERA_OWNER_ID = 'directory-trainer-camera';
 
 const PRESET_SPECIALTIES = [
   'Pausas Activas',
@@ -95,11 +120,24 @@ const PRESET_SPECIALTIES = [
 
 const SEDE_COLOR_TAGS: { value: string; label: string; dotClass: string }[] = [
   { value: 'bg-red-600', label: 'Rojo BSCW', dotClass: 'bg-red-600' },
+  { value: 'bg-red-500', label: 'Rojo Claro', dotClass: 'bg-red-500' },
   { value: 'bg-blue-600', label: 'Azul Corporativo', dotClass: 'bg-blue-600' },
+  { value: 'bg-blue-700', label: 'Azul Institucional', dotClass: 'bg-blue-700' },
   { value: 'bg-emerald-600', label: 'Verde Salud', dotClass: 'bg-emerald-600' },
   { value: 'bg-amber-600', label: 'Ámbar Operativo', dotClass: 'bg-amber-600' },
   { value: 'bg-slate-800', label: 'Pizarra Ejecutiva', dotClass: 'bg-slate-800' },
 ];
+
+const WEEKDAY_NAMES: Record<number, string> = {
+  0: 'Domingo',
+  1: 'Lunes',
+  2: 'Martes',
+  3: 'Miércoles',
+  4: 'Jueves',
+  5: 'Viernes',
+  6: 'Sábado',
+  7: 'Domingo',
+};
 
 const EMPTY_ADDRESS: StructuredAddressInput = {
   street: '',
@@ -242,9 +280,18 @@ const CATEGORIES: CategoryMeta[] = [
     label: 'Sedes',
     singularLabel: 'Sede',
     collectionPath: '/sedes',
-    description: 'Empresa, dirección, ciudad, GPS (lat/lng), geocerca (m), contacto, puesto, teléfono y etiqueta.',
+    description: 'Empresa, dirección, ciudad, GPS (lat/lng), geocerca (m), contacto opcional y etiqueta.',
     isDemoCore: true,
     icon: MapPin,
+  },
+  {
+    id: 'calendar',
+    label: 'Calendario',
+    singularLabel: 'Calendario de Asignaciones',
+    collectionPath: '/assignments · /records · /activity_catalog',
+    description: 'Programación de asignaciones, ejecuciones de sesiones (en curso, completadas, incumplidas) y modalidades sincronizadas en tiempo real.',
+    isDemoCore: true,
+    icon: Calendar,
   },
   {
     id: 'personnel',
@@ -287,20 +334,12 @@ function resizeImageFileToDataUrl(file: File): Promise<string> {
     reader.onload = () => {
       const img = new Image();
       img.onload = () => {
-        const size = 280;
-        const canvas = document.createElement('canvas');
-        canvas.width = size;
-        canvas.height = size;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          resolve(reader.result as string);
-          return;
-        }
-        const minSide = Math.min(img.width, img.height);
-        const sx = (img.width - minSide) / 2;
-        const sy = (img.height - minSide) / 2;
-        ctx.drawImage(img, sx, sy, minSide, minSide, 0, 0, size, size);
-        resolve(canvas.toDataURL('image/jpeg', 0.82));
+        const compressed = captureSquareAvatarFromSource(img, {
+          mirrorHorizontal: false,
+          targetSize: 320,
+          maxDataUrlChars: 115000,
+        });
+        resolve(compressed || (reader.result as string));
       };
       img.onerror = () => reject(new Error('Imagen no válida'));
       img.src = reader.result as string;
@@ -340,6 +379,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     trainers: false,
     companies: false,
     sedes: false,
+    calendar: false,
     personnel: false,
     clients: false,
   });
@@ -350,6 +390,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     trainers: null,
     companies: null,
     sedes: null,
+    calendar: null,
     personnel: null,
     clients: null,
   });
@@ -368,6 +409,9 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
   const [trainersList, setTrainersList] = useState<FirestoreTrainerRecord[]>([]);
   const [companiesList, setCompaniesList] = useState<FirestoreDemoCompanyRecord[]>([]);
   const [sedesList, setSedesList] = useState<FirestoreSedeRecord[]>([]);
+  const [assignmentsList, setAssignmentsList] = useState<FirestoreAssignmentRecord[]>([]);
+  const [recordsList, setRecordsList] = useState<AttendanceRecord[]>([]);
+  const [catalogList, setCatalogList] = useState<FirestoreActivityCatalogRecord[]>([]);
   const [personnelList, setPersonnelList] = useState<PersonnelRecord[]>([]);
   const [clientsList, setClientsList] = useState<FirestoreClientRecord[]>([]);
 
@@ -375,6 +419,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     trainers: false,
     companies: false,
     sedes: false,
+    calendar: false,
     personnel: false,
     clients: false,
   });
@@ -383,6 +428,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     trainers: '',
     companies: '',
     sedes: '',
+    calendar: '',
     personnel: '',
     clients: '',
   });
@@ -391,18 +437,78 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
   const [fatalFirestoreError, setFatalFirestoreError] = useState<Error | null>(null);
 
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const cameraInputRef = useRef<HTMLInputElement | null>(null);
+  const formCardRef = useRef<HTMLDivElement | null>(null);
+
+  // Live WebRTC Camera state for Trainer Registration Photo in Directory
+  const trainerVideoRef = useRef<HTMLVideoElement | null>(null);
+  const trainerStreamRef = useRef<MediaStream | null>(null);
+  const [isTrainerCameraOpen, setIsTrainerCameraOpen] = useState<boolean>(false);
+  const [isStartingTrainerCamera, setIsStartingTrainerCamera] = useState<boolean>(false);
+  const [isTrainerVideoReady, setIsTrainerVideoReady] = useState<boolean>(false);
+  const [trainerCameraFacing, setTrainerCameraFacing] = useState<'user' | 'environment'>('user');
+  const [trainerVideoDevices, setTrainerVideoDevices] = useState<VideoDeviceOption[]>([]);
+  const [trainerActiveDeviceId, setTrainerActiveDeviceId] = useState<string | undefined>(undefined);
+  const [isTrainerVideoMirrored, setIsTrainerVideoMirrored] = useState<boolean>(true);
+  const [trainerCameraError, setTrainerCameraError] = useState<string | null>(null);
+  const [trainerPhotoBiometricStatus, setTrainerPhotoBiometricStatus] = useState<{
+    valid: boolean;
+    message: string;
+  } | null>(null);
+
+  const stopTrainerCamera = useCallback(() => {
+    unregisterExclusiveCameraStream(DIRECTORY_CAMERA_OWNER_ID, trainerStreamRef.current);
+    trainerStreamRef.current = null;
+    if (trainerVideoRef.current) {
+      trainerVideoRef.current.srcObject = null;
+    }
+    setIsTrainerCameraOpen(false);
+    setIsTrainerVideoReady(false);
+    setIsStartingTrainerCamera(false);
+  }, []);
+
+  const bindTrainerVideoElement = useCallback((el: HTMLVideoElement | null) => {
+    trainerVideoRef.current = el;
+    if (el && trainerStreamRef.current) {
+      void attachStreamToVideoElement(el, trainerStreamRef.current).then((ok) => {
+        if (ok) {
+          setIsTrainerVideoReady(true);
+        }
+      });
+    }
+  }, []);
+
+  useEffect(() => {
+    if (isTrainerCameraOpen && trainerVideoRef.current && trainerStreamRef.current) {
+      attachStreamToVideoElement(trainerVideoRef.current, trainerStreamRef.current).then((ok) => {
+        if (ok) setIsTrainerVideoReady(true);
+      });
+    }
+  }, [isTrainerCameraOpen]);
+
+  useEffect(() => {
+    if (activeCategory !== 'trainers') {
+      stopTrainerCamera();
+    }
+  }, [activeCategory, stopTrainerCamera]);
+
+  useEffect(() => {
+    return () => {
+      unregisterExclusiveCameraStream(DIRECTORY_CAMERA_OWNER_ID, trainerStreamRef.current);
+      trainerStreamRef.current = null;
+    };
+  }, []);
 
   if (fatalFirestoreError) {
     throw fatalFirestoreError;
   }
 
-  // Real-time automatic listeners for all 5 collections (no login required)
+  // Real-time automatic listeners for all collections (no login required)
   useEffect(() => {
     setLoadingByCat({
       trainers: true,
       companies: true,
       sedes: true,
+      calendar: true,
       personnel: true,
       clients: true,
     });
@@ -600,32 +706,219 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
       }
     );
 
+    const unsubAssignments = onSnapshot(
+      mkQuery('assignments'),
+      (snap) => {
+        const items: FirestoreAssignmentRecord[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          const createdTs = d.createdAt instanceof Timestamp ? d.createdAt.toMillis() : 0;
+          const updatedTs = d.updatedAt instanceof Timestamp ? d.updatedAt.toMillis() : createdTs;
+          return {
+            id: docSnap.id,
+            trainerId: String(d.trainerId || ''),
+            trainerName: String(d.trainerName || ''),
+            companyId: String(d.companyId || ''),
+            companyName: String(d.companyName || ''),
+            sedeId: String(d.sedeId || ''),
+            sedeName: String(d.sedeName || ''),
+            sedeAddress: String(d.sedeAddress || ''),
+            frequency:
+              d.frequency === 'semanal' || d.frequency === 'mensual' || d.frequency === 'fecha_unica'
+                ? d.frequency
+                : 'semanal',
+            ...(typeof d.dayOfWeek === 'number' ? { dayOfWeek: d.dayOfWeek } : {}),
+            ...(typeof d.date === 'string' ? { date: d.date } : {}),
+            ...(typeof d.dayOfMonth === 'number' ? { dayOfMonth: d.dayOfMonth } : {}),
+            time: String(d.time || '09:00'),
+            ...(typeof d.durationMinutes === 'number' ? { durationMinutes: d.durationMinutes } : {}),
+            activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
+            activityName: String(d.activityName || ''),
+            locationArea: String(d.locationArea || ''),
+            ...(typeof d.expectedAttendees === 'number'
+              ? { expectedAttendees: d.expectedAttendees }
+              : {}),
+            ...(typeof d.notes === 'string' ? { notes: d.notes } : {}),
+            active: d.active !== false,
+            ...(typeof d.closed === 'boolean' ? { closed: d.closed } : {}),
+            ...(typeof d.closedAt === 'string' ? { closedAt: d.closedAt } : {}),
+            ...(Array.isArray(d.completedDates)
+              ? { completedDates: d.completedDates.map(String) }
+              : {}),
+            ...(typeof d.nonCompliant === 'boolean' ? { nonCompliant: d.nonCompliant } : {}),
+            ...(d.nonCompliantReason === 'fuera_de_horario' ||
+            d.nonCompliantReason === 'sin_cierre_30m' ||
+            d.nonCompliantReason === 'manual_admin'
+              ? { nonCompliantReason: d.nonCompliantReason }
+              : {}),
+            ...(typeof d.nonCompliantAt === 'string' ? { nonCompliantAt: d.nonCompliantAt } : {}),
+            ...(Array.isArray(d.missedDates) ? { missedDates: d.missedDates.map(String) } : {}),
+            ...(Array.isArray(d.reopenedDates)
+              ? { reopenedDates: d.reopenedDates.map(String) }
+              : {}),
+            createdByUid: String(d.createdByUid || ''),
+            createdByEmail: String(d.createdByEmail || ''),
+            createdAtMs: createdTs,
+            updatedAtMs: updatedTs,
+          };
+        });
+        items.sort((a, b) => a.time.localeCompare(b.time));
+        setAssignmentsList(items);
+        setLoadingByCat((prev) => ({ ...prev, calendar: false }));
+      },
+      (error) => {
+        setLoadingByCat((prev) => ({ ...prev, calendar: false }));
+        try {
+          handleFirestoreError(error, OperationType.LIST, 'assignments');
+        } catch (err) {
+          setFatalFirestoreError(err as Error);
+        }
+      }
+    );
+
+    const unsubRecords = onSnapshot(
+      mkQuery('records'),
+      (snap) => {
+        const items: AttendanceRecord[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          const gpsObj =
+            d.checkInGps && typeof d.checkInGps === 'object'
+              ? (d.checkInGps as Record<string, unknown>)
+              : {};
+          return {
+            id: docSnap.id,
+            ...(typeof d.assignmentId === 'string' && d.assignmentId
+              ? { assignmentId: d.assignmentId }
+              : {}),
+            trainerId: String(d.trainerId || ''),
+            trainerName: String(d.trainerName || ''),
+            companyId: String(d.companyId || ''),
+            companyName: String(d.companyName || ''),
+            sedeId: String(d.sedeId || ''),
+            sedeName: String(d.sedeName || ''),
+            sedeAddress: String(d.sedeAddress || ''),
+            date: String(d.date || ''),
+            scheduledTime: String(d.scheduledTime || '09:00'),
+            checkInTime: String(d.checkInTime || '09:00:00'),
+            checkInIso: String(d.checkInIso || ''),
+            checkOutTime: typeof d.checkOutTime === 'string' ? d.checkOutTime : null,
+            checkOutIso: typeof d.checkOutIso === 'string' ? d.checkOutIso : null,
+            status:
+              d.status === 'en_curso' || d.status === 'completado' || d.status === 'incumplido'
+                ? d.status
+                : 'en_curso',
+            punctualityStatus:
+              d.punctualityStatus === 'a_tiempo' ||
+              d.punctualityStatus === 'con_retraso' ||
+              d.punctualityStatus === 'adelantado'
+                ? d.punctualityStatus
+                : 'a_tiempo',
+            punctualityDiffMinutes: Number(d.punctualityDiffMinutes ?? 0),
+            activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
+            activityName: String(d.activityName || ''),
+            attendeesCount: Number(d.attendeesCount ?? 0),
+            locationArea: String(d.locationArea || ''),
+            checkInGps: {
+              lat: Number(gpsObj.lat ?? 19.42694),
+              lng: Number(gpsObj.lng ?? -99.16782),
+              accuracy: Number(gpsObj.accuracy ?? 10),
+              distanceToSedeMeters: Number(gpsObj.distanceToSedeMeters ?? 0),
+              isWithinGeofence: Boolean(gpsObj.isWithinGeofence),
+              capturedAt: String(gpsObj.capturedAt || ''),
+            },
+            photoUrl: String(d.photoUrl || ''),
+            adminVerified: Boolean(d.adminVerified),
+          };
+        });
+        items.sort((a, b) => `${b.date}T${b.checkInTime}`.localeCompare(`${a.date}T${a.checkInTime}`));
+        setRecordsList(items);
+      },
+      (error) => {
+        try {
+          handleFirestoreError(error, OperationType.LIST, 'records');
+        } catch (err) {
+          setFatalFirestoreError(err as Error);
+        }
+      }
+    );
+
+    const unsubCatalog = onSnapshot(
+      mkQuery('activity_catalog'),
+      (snap) => {
+        const items: FirestoreActivityCatalogRecord[] = snap.docs.map((docSnap) => {
+          const d = docSnap.data();
+          const createdTs = d.createdAt instanceof Timestamp ? d.createdAt.toMillis() : 0;
+          const updatedTs = d.updatedAt instanceof Timestamp ? d.updatedAt.toMillis() : createdTs;
+          return {
+            id: docSnap.id,
+            name: String(d.name || ''),
+            activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
+            defaultDurationMinutes: Number(d.defaultDurationMinutes ?? 20),
+            ...(typeof d.description === 'string' ? { description: d.description } : {}),
+            active: d.active !== false,
+            createdByUid: String(d.createdByUid || ''),
+            createdByEmail: String(d.createdByEmail || ''),
+            createdAtMs: createdTs,
+            updatedAtMs: updatedTs,
+          };
+        });
+        items.sort((a, b) => a.name.localeCompare(b.name));
+        setCatalogList(items);
+      },
+      (error) => {
+        try {
+          handleFirestoreError(error, OperationType.LIST, 'activity_catalog');
+        } catch (err) {
+          setFatalFirestoreError(err as Error);
+        }
+      }
+    );
+
     return () => {
       unsubTrainers();
       unsubCompanies();
       unsubSedes();
+      unsubAssignments();
+      unsubRecords();
+      unsubCatalog();
       unsubPersonnel();
       unsubClients();
     };
   }, []);
 
-  // Keep default selected company in Sede form synchronized when companiesList updates
+  // Keep selected company in Sede form synchronized when companiesList loads or updates
   useEffect(() => {
     if (!editingIdByCat.sedes && companiesList.length > 0) {
-      const exists = companiesList.some((c) => c.id === sedeForm.companyId);
-      if (!exists) {
+      const matched = companiesList.find((c) => c.id === sedeForm.companyId);
+      if (!matched) {
         setSedeForm((prev) => ({
           ...prev,
           companyId: companiesList[0].id,
           companyName: companiesList[0].name,
         }));
+      } else if (matched.name && matched.name !== sedeForm.companyName) {
+        setSedeForm((prev) => ({
+          ...prev,
+          companyName: matched.name,
+        }));
       }
     }
-  }, [companiesList, editingIdByCat.sedes, sedeForm.companyId]);
+  }, [companiesList, editingIdByCat.sedes, sedeForm.companyId, sedeForm.companyName]);
+
+  // Always resolve companyName from registered companiesList so validation never fails on stale companyName
+  const effectiveSedeForm = useMemo<SedeFormInput>(() => {
+    const matchedComp = companiesList.find((c) => c.id === sedeForm.companyId);
+    return {
+      ...sedeForm,
+      companyName: matchedComp?.name || sedeForm.companyName,
+    };
+  }, [companiesList, sedeForm]);
 
   const trainerValidation = useMemo(() => validateTrainerInput(trainerForm), [trainerForm]);
   const companyValidation = useMemo(() => validateDemoCompanyInput(companyForm), [companyForm]);
-  const sedeValidation = useMemo(() => validateSedeInput(sedeForm), [sedeForm]);
+  const sedeValidation = useMemo(
+    () => validateSedeInput(effectiveSedeForm),
+    [effectiveSedeForm]
+  );
   const personnelValidation = useMemo(() => validatePersonnelInput(personnelForm), [personnelForm]);
   const clientValidation = useMemo(() => validateClientInput(clientForm), [clientForm]);
 
@@ -638,6 +931,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     trainers: trainersList.length,
     companies: companiesList.length,
     sedes: sedesList.length,
+    calendar: assignmentsList.length + recordsList.length + catalogList.length,
     personnel: personnelList.length,
     clients: clientsList.length,
   };
@@ -646,6 +940,9 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     trainersList.length +
     companiesList.length +
     sedesList.length +
+    assignmentsList.length +
+    recordsList.length +
+    catalogList.length +
     personnelList.length +
     clientsList.length;
 
@@ -653,16 +950,15 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     setIsSeedingDemo(true);
     setSaveFeedback(null);
     try {
-      const res = await seedDemoDataToFirestore();
-      const totalAdded =
-        res.trainersCount + res.companiesCount + res.sedesCount + res.assignmentsCount;
+      const res = await syncWorkspaceDataToFirestore();
       setSaveFeedback({
         category: activeCategory,
         type: 'success',
-        message:
-          totalAdded > 0
-            ? `Datos demo sincronizados en Firestore: ${res.trainersCount} entrenadores, ${res.companiesCount} empresas, ${res.sedesCount} sedes y ${res.assignmentsCount} asignaciones.`
-            : 'Todos los entrenadores, empresas, sedes y asignaciones del demo ya están sincronizados en Firestore.',
+        message: `Sincronización completada con Firestore: ${res.assignmentsCount} asignaciones verificadas/actualizadas${
+          res.trainersCount + res.companiesCount + res.sedesCount + res.recordsCount + res.catalogCount > 0
+            ? ` (+${res.trainersCount} entrenadores, ${res.companiesCount} empresas, ${res.sedesCount} sedes, ${res.recordsCount} ejecuciones, ${res.catalogCount} modalidades)`
+            : ''
+        }.`,
       });
     } catch (err) {
       setFatalFirestoreError(err as Error);
@@ -671,8 +967,28 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     }
   };
 
+  const handlePrepareNewSedeForCompany = (comp: FirestoreDemoCompanyRecord) => {
+    setEditingIdByCat((prev) => ({ ...prev, sedes: null }));
+    setSubmitAttemptedByCat((prev) => ({ ...prev, sedes: false }));
+    setSedeTouched({});
+    setSedeForm({
+      ...EMPTY_SEDE_FORM,
+      companyId: comp.id,
+      companyName: comp.name,
+    });
+    setSaveFeedback(null);
+    setConfirmDeleteKey(null);
+    setActiveCategory('sedes');
+    setTimeout(() => {
+      formCardRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }, 60);
+  };
+
   const resetCategoryForm = (cat: FirestoreDirectoryCategory) => {
     if (cat === 'trainers') {
+      stopTrainerCamera();
+      setTrainerCameraError(null);
+      setTrainerPhotoBiometricStatus(null);
       setTrainerForm({ ...EMPTY_TRAINER_FORM });
       setTrainerTouched({});
       setCustomSpecialty('');
@@ -680,17 +996,18 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
       setCompanyForm({ ...EMPTY_COMPANY_FORM });
       setCompanyTouched({});
     } else if (cat === 'sedes') {
-      const defaultComp = companiesList[0];
+      const preservedComp =
+        companiesList.find((c) => c.id === sedeForm.companyId) || companiesList[0];
       setSedeForm({
         ...EMPTY_SEDE_FORM,
-        companyId: defaultComp ? defaultComp.id : '',
-        companyName: defaultComp ? defaultComp.name : '',
+        companyId: preservedComp ? preservedComp.id : '',
+        companyName: preservedComp ? preservedComp.name : '',
       });
       setSedeTouched({});
     } else if (cat === 'personnel') {
       setPersonnelForm({ ...EMPTY_PERSONNEL_FORM, address: { ...EMPTY_ADDRESS } });
       setPersonnelTouched({});
-    } else {
+    } else if (cat === 'clients') {
       setClientForm({ ...EMPTY_CLIENT_FORM, address: { ...EMPTY_ADDRESS } });
       setClientTouched({});
     }
@@ -793,56 +1110,30 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
       return;
     }
 
-    const meta = getAutoDeviceMetadata();
-
     setIsSaving(true);
     const { sanitized } = check;
     const editingId = editingIdByCat.companies;
+    const targetCompanyId = editingId || `comp_${Date.now()}`;
 
     try {
-      if (editingId) {
-        await updateDoc(doc(db, 'companies', editingId), {
-          name: sanitized.name,
-          taxId: sanitized.taxId,
-          industry: sanitized.industry,
-          logoText: sanitized.logoText,
-          updatedAt: serverTimestamp(),
-        });
-        resetCategoryForm('companies');
-        setSaveFeedback({
-          category: 'companies',
-          type: 'success',
-          message: `Empresa "${sanitized.name}" actualizada en /companies.`,
-        });
-      } else {
-        const newRef = doc(collection(db, 'companies'));
-        await setDoc(newRef, {
-          name: sanitized.name,
-          taxId: sanitized.taxId,
-          industry: sanitized.industry,
-          logoText: sanitized.logoText,
-          createdByUid: meta.createdByUid,
-          createdByEmail: meta.createdByEmail,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-        resetCategoryForm('companies');
-        setSaveFeedback({
-          category: 'companies',
-          type: 'success',
-          message: `Empresa "${sanitized.name}" guardada en /companies.`,
-        });
-      }
+      await saveCompanyToFirestore({
+        id: targetCompanyId,
+        name: sanitized.name,
+        taxId: sanitized.taxId,
+        industry: sanitized.industry,
+        logoText: sanitized.logoText,
+        sedes: [],
+      });
+      resetCategoryForm('companies');
+      setSaveFeedback({
+        category: 'companies',
+        type: 'success',
+        message: editingId
+          ? `Empresa "${sanitized.name}" actualizada en /companies.`
+          : `Empresa "${sanitized.name}" registrada en /companies. Ya puedes agregarle sedes.`,
+      });
     } catch (error) {
-      try {
-        handleFirestoreError(
-          error,
-          editingId ? OperationType.UPDATE : OperationType.CREATE,
-          editingId ? `companies/${editingId}` : 'companies'
-        );
-      } catch (structuredErr) {
-        setFatalFirestoreError(structuredErr as Error);
-      }
+      setFatalFirestoreError(error as Error);
     } finally {
       setIsSaving(false);
     }
@@ -854,74 +1145,63 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     setSedeTouched(ALL_SEDE_TOUCHED);
     setSaveFeedback(null);
 
-    const check = validateSedeInput(sedeForm);
+    const check = validateSedeInput(effectiveSedeForm);
     if (!check.isValid) {
+      const firstError =
+        Object.values(check.errors).find(Boolean) ||
+        'Revisa los campos obligatorios de la sede (empresa, nombre, dirección, ciudad y GPS).';
       setSaveFeedback({
         category: 'sedes',
         type: 'error',
-        message: 'Revisa los campos obligatorios de la sede (empresa, dirección, GPS, geocerca y contacto).',
+        message: firstError,
       });
       return;
     }
 
-    const meta = getAutoDeviceMetadata();
-
     setIsSaving(true);
     const { sanitized } = check;
     const editingId = editingIdByCat.sedes;
-
-    const basePayload: Record<string, unknown> = {
-      companyId: sanitized.companyId,
-      companyName: sanitized.companyName,
-      name: sanitized.name,
-      address: sanitized.address,
-      city: sanitized.city,
-      lat: sanitized.lat,
-      lng: sanitized.lng,
-      geofenceRadiusMeters: sanitized.geofenceRadiusMeters,
-      contactPerson: sanitized.contactPerson,
-      contactRole: sanitized.contactRole,
-      contactPhone: sanitized.contactPhone,
-      updatedAt: serverTimestamp(),
-    };
-    if (sanitized.colorTag) {
-      basePayload.colorTag = sanitized.colorTag;
-    }
+    const targetSedeId = editingId || `sede_${Date.now()}`;
+    const parentComp = companiesList.find((c) => c.id === sanitized.companyId);
 
     try {
-      if (editingId) {
-        await updateDoc(doc(db, 'sedes', editingId), basePayload);
-        resetCategoryForm('sedes');
-        setSaveFeedback({
-          category: 'sedes',
-          type: 'success',
-          message: `Sede "${sanitized.name}" actualizada en /sedes.`,
-        });
-      } else {
-        const newRef = doc(collection(db, 'sedes'));
-        await setDoc(newRef, {
-          ...basePayload,
-          createdByUid: meta.createdByUid,
-          createdByEmail: meta.createdByEmail,
-          createdAt: serverTimestamp(),
-        });
-        resetCategoryForm('sedes');
-        setSaveFeedback({
-          category: 'sedes',
-          type: 'success',
-          message: `Sede "${sanitized.name}" guardada en /sedes con geocerca de ${sanitized.geofenceRadiusMeters}m.`,
-        });
-      }
+      await saveSedeToFirestore(
+        {
+          id: targetSedeId,
+          companyId: sanitized.companyId,
+          companyName: sanitized.companyName,
+          name: sanitized.name,
+          address: sanitized.address,
+          city: sanitized.city,
+          lat: sanitized.lat,
+          lng: sanitized.lng,
+          geofenceRadiusMeters: sanitized.geofenceRadiusMeters,
+          contactPerson: sanitized.contactPerson,
+          contactRole: sanitized.contactRole,
+          contactPhone: sanitized.contactPhone,
+          colorTag: sanitized.colorTag,
+        },
+        parentComp
+          ? {
+              id: parentComp.id,
+              name: parentComp.name,
+              taxId: parentComp.taxId,
+              industry: parentComp.industry,
+              logoText: parentComp.logoText,
+            }
+          : undefined
+      );
+
+      resetCategoryForm('sedes');
+      setSaveFeedback({
+        category: 'sedes',
+        type: 'success',
+        message: editingId
+          ? `Sede "${sanitized.name}" actualizada para "${sanitized.companyName}".`
+          : `Sede "${sanitized.name}" agregada a "${sanitized.companyName}" en /sedes (geocerca ${sanitized.geofenceRadiusMeters}m).`,
+      });
     } catch (error) {
-      try {
-        handleFirestoreError(
-          error,
-          editingId ? OperationType.UPDATE : OperationType.CREATE,
-          editingId ? `sedes/${editingId}` : 'sedes'
-        );
-      } catch (structuredErr) {
-        setFatalFirestoreError(structuredErr as Error);
-      }
+      setFatalFirestoreError(error as Error);
     } finally {
       setIsSaving(false);
     }
@@ -1073,6 +1353,8 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     try {
       if (cat === 'companies') {
         await deleteCompanyAndSedesFromFirestore(id);
+      } else if (cat === 'calendar') {
+        await deleteAssignmentFromFirestore(id);
       } else {
         await deleteDoc(doc(db, cat, id));
       }
@@ -1085,7 +1367,9 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
         type: 'success',
         message:
           cat === 'companies'
-            ? 'Empresa y sus sedes vinculadas eliminadas de Firestore.'
+            ? 'Empresa, sus sedes y asignaciones vinculadas eliminadas de Firestore.'
+            : cat === 'calendar'
+            ? 'Asignación eliminada de /assignments en Firestore.'
             : `Documento eliminado de /${cat}.`,
       });
     } catch (error) {
@@ -1123,6 +1407,44 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
         .includes(searchQuery)
     );
   }, [sedesList, searchQuery]);
+
+  const filteredAssignments = useMemo(() => {
+    if (!searchQuery) return assignmentsList;
+    return assignmentsList.filter((a) =>
+      [
+        a.activityName,
+        a.companyName,
+        a.sedeName,
+        a.trainerName,
+        a.locationArea,
+        a.frequency,
+        a.time,
+        a.date || '',
+        a.dayOfWeek !== undefined ? WEEKDAY_NAMES[a.dayOfWeek] || '' : '',
+      ]
+        .join(' ')
+        .toLowerCase()
+        .includes(searchQuery)
+    );
+  }, [assignmentsList, searchQuery]);
+
+  const filteredRecords = useMemo(() => {
+    if (!searchQuery) return recordsList;
+    return recordsList.filter((r) =>
+      [
+        r.activityName,
+        r.companyName,
+        r.sedeName,
+        r.trainerName,
+        r.date,
+        r.status,
+        r.locationArea,
+      ]
+        .join(' ')
+        .toLowerCase()
+        .includes(searchQuery)
+    );
+  }, [recordsList, searchQuery]);
 
   const filteredPersonnel = useMemo(() => {
     if (!searchQuery) return personnelList;
@@ -1164,12 +1486,98 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     }
   };
 
+  const verifyTrainerPhotoFace = async (imgDataUrl: string) => {
+    const check = await validateFaceInRegistrationPhoto(imgDataUrl);
+    setTrainerPhotoBiometricStatus(check);
+  };
+
+  const startTrainerLiveCamera = async (
+    desiredMode: 'user' | 'environment' = trainerCameraFacing,
+    preferredDeviceId?: string
+  ) => {
+    setTrainerCameraError(null);
+    setTrainerPhotoBiometricStatus(null);
+    setIsStartingTrainerCamera(true);
+    setIsTrainerVideoReady(false);
+    setIsTrainerCameraOpen(true);
+
+    try {
+      const opened = await openCameraStreamWithFallback({
+        ownerId: DIRECTORY_CAMERA_OWNER_ID,
+        facingMode: desiredMode,
+        preferredDeviceId,
+        idealWidth: 640,
+        idealHeight: 640,
+        onPreempted: () => {
+          trainerStreamRef.current = null;
+          setIsTrainerCameraOpen(false);
+          setIsTrainerVideoReady(false);
+        },
+      });
+
+      trainerStreamRef.current = opened.stream;
+      setTrainerVideoDevices(opened.videoDevices);
+      setTrainerActiveDeviceId(opened.activeDeviceId);
+      setIsTrainerVideoMirrored(desiredMode === 'user' && opened.isMirroredSuggested);
+
+      if (trainerVideoRef.current) {
+        const ready = await attachStreamToVideoElement(trainerVideoRef.current, opened.stream);
+        if (ready) {
+          setIsTrainerVideoReady(true);
+        }
+      }
+    } catch (err: unknown) {
+      stopTrainerCamera();
+      setTrainerCameraError(formatCameraErrorMessage(err));
+    } finally {
+      setIsStartingTrainerCamera(false);
+    }
+  };
+
+  const switchTrainerCameraDevice = () => {
+    const nextMode: 'user' | 'environment' =
+      trainerCameraFacing === 'user' ? 'environment' : 'user';
+    setTrainerCameraFacing(nextMode);
+    if (trainerVideoDevices.length > 1 && trainerActiveDeviceId) {
+      const idx = trainerVideoDevices.findIndex((d) => d.deviceId === trainerActiveDeviceId);
+      const nextDev = trainerVideoDevices[(idx + 1) % trainerVideoDevices.length];
+      startTrainerLiveCamera(nextMode, nextDev?.deviceId);
+      return;
+    }
+    startTrainerLiveCamera(nextMode);
+  };
+
+  const captureTrainerPhotoFromCamera = () => {
+    const video = trainerVideoRef.current;
+    if (!video || video.videoWidth === 0 || video.videoHeight === 0) {
+      setTrainerCameraError(
+        'Esperando señal de video de la cámara. Intenta capturar nuevamente en un instante.'
+      );
+      return;
+    }
+
+    const capturedDataUrl = captureSquareAvatarFromSource(video, {
+      mirrorHorizontal: isTrainerVideoMirrored,
+      targetSize: 320,
+      maxDataUrlChars: 115000,
+    });
+
+    setTrainerForm((prev) => ({ ...prev, avatar: capturedDataUrl }));
+    setTrainerTouched((prev) => ({ ...prev, avatar: true }));
+    stopTrainerCamera();
+    verifyTrainerPhotoFace(capturedDataUrl);
+  };
+
   const handleTrainerImageUpload = async (file: File | undefined) => {
     if (!file || !file.type.startsWith('image/')) return;
+    setTrainerCameraError(null);
+    setTrainerPhotoBiometricStatus(null);
     try {
       const dataUrl = await resizeImageFileToDataUrl(file);
       setTrainerForm((prev) => ({ ...prev, avatar: dataUrl }));
       setTrainerTouched((prev) => ({ ...prev, avatar: true }));
+      stopTrainerCamera();
+      verifyTrainerPhotoFace(dataUrl);
     } catch {
       setSaveFeedback({
         category: 'trainers',
@@ -1220,14 +1628,14 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
           <div className="flex flex-wrap items-center gap-2">
             <Database className="w-5 h-5 text-red-600 shrink-0" />
             <h2 className="text-base sm:text-lg font-extrabold text-slate-900 tracking-tight">
-              Base de Datos Cloud Firestore — Entrenadores, Empresas y Sedes
+              Base de Datos Cloud Firestore — Directorio y Calendario de Asignaciones
             </h2>
             <span className="text-[11px] font-mono tabular-nums font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
               {totalDocumentsCount} registros
             </span>
           </div>
           <p className="text-xs text-slate-600">
-            Esquema sincronizado con todos los campos del demo (especialidades, fotografía, RFC, industria, siglas, geocerca GPS y contactos de sede).
+            Sincronización en tiempo real desde cualquier dispositivo sin inicio de sesión: entrenadores, empresas, sedes, programación de calendario, ejecuciones y catálogo de modalidades.
           </p>
         </div>
 
@@ -1242,10 +1650,10 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
             onClick={handleSeedDemoData}
             disabled={isSeedingDemo}
             className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap"
-            title="Sincronizar los entrenadores, empresas, sedes y asignaciones iniciales del demo en Cloud Firestore"
+            title="Sincronizar entrenadores, empresas, sedes y calendario de asignaciones activos con Cloud Firestore"
           >
             <DownloadCloud className="w-4 h-4 text-red-400" />
-            <span>{isSeedingDemo ? 'Sincronizando demo...' : 'Sincronizar Datos del Demo'}</span>
+            <span>{isSeedingDemo ? 'Sincronizando...' : 'Sincronizar Base de Datos'}</span>
           </button>
         </div>
       </div>
@@ -1367,12 +1775,14 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
           )}
 
           {/* Form Card */}
-          <div className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
+          <div ref={formCardRef} className="bg-white border border-slate-200 rounded-2xl p-5 space-y-4">
             <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-slate-200">
               <div>
                 <div className="flex items-center gap-2">
                   <h3 className="text-sm sm:text-base font-extrabold text-slate-900">
-                    {editingIdByCat[activeCategory]
+                    {activeCategory === 'calendar'
+                      ? 'Estado del Calendario en Cloud Firestore'
+                      : editingIdByCat[activeCategory]
                       ? `Editar ${activeCategoryMeta.singularLabel}`
                       : `Registrar ${activeCategoryMeta.singularLabel}`}
                   </h3>
@@ -1383,7 +1793,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
                 <p className="text-xs text-slate-500 mt-0.5">{activeCategoryMeta.description}</p>
               </div>
 
-              {editingIdByCat[activeCategory] && (
+              {editingIdByCat[activeCategory] && activeCategory !== 'calendar' && (
                 <button
                   type="button"
                   onClick={() => resetCategoryForm(activeCategory)}
@@ -1394,6 +1804,49 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
                 </button>
               )}
             </div>
+
+            {activeCategory === 'calendar' && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                    <span className="flex items-center gap-1.5">
+                      <Calendar className="w-4 h-4 text-red-600" />
+                      Asignaciones Programadas
+                    </span>
+                    <span className="font-mono text-sm text-slate-900">{assignmentsList.length}</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Colección <strong className="font-mono">/assignments</strong> (Lunes a Domingo, mensuales, fecha única, cierres e incumplimientos).
+                  </p>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                    <span className="flex items-center gap-1.5">
+                      <Clock className="w-4 h-4 text-emerald-600" />
+                      Ejecuciones y Check-ins
+                    </span>
+                    <span className="font-mono text-sm text-slate-900">{recordsList.length}</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Colección <strong className="font-mono">/records</strong> (sesiones en curso, completadas, evidencias GPS/foto y alarmas).
+                  </p>
+                </div>
+
+                <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                  <div className="flex items-center justify-between text-xs font-bold text-slate-700">
+                    <span className="flex items-center gap-1.5">
+                      <Layers className="w-4 h-4 text-blue-600" />
+                      Catálogo de Modalidades
+                    </span>
+                    <span className="font-mono text-sm text-slate-900">{catalogList.length}</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    Colección <strong className="font-mono">/activity_catalog</strong> (duraciones por defecto y tipos de pausa/fitness).
+                  </p>
+                </div>
+              </div>
+            )}
 
             {/* 1. FORMULARIO ENTRENADORES (TODOS LOS CAMPOS DEL DEMO) */}
             {activeCategory === 'trainers' && (
@@ -1408,24 +1861,27 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
                     e.target.value = '';
                   }}
                 />
-                <input
-                  ref={cameraInputRef}
-                  type="file"
-                  accept="image/*"
-                  capture="user"
-                  className="hidden"
-                  onChange={(e) => {
-                    handleTrainerImageUpload(e.target.files?.[0]);
-                    e.target.value = '';
-                  }}
-                />
 
                 {/* Avatar + Name/Email/Phone */}
                 <div className="grid grid-cols-1 md:grid-cols-12 gap-4 items-start">
                   <div className="md:col-span-4 bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-2.5">
-                    <label className="block text-xs font-bold text-slate-800">
-                      Fotografía / Avatar Biométrico *
-                    </label>
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="block text-xs font-bold text-slate-800">
+                        Fotografía de Registro Facial *
+                      </label>
+                      <span
+                        className={`text-[10px] font-semibold px-1.5 py-0.5 rounded border ${
+                          isPlaceholderOrMissingAvatar(trainerForm.avatar)
+                            ? 'bg-amber-50 text-amber-800 border-amber-200'
+                            : 'bg-emerald-50 text-emerald-800 border-emerald-200'
+                        }`}
+                      >
+                        {isPlaceholderOrMissingAvatar(trainerForm.avatar)
+                          ? 'Solo iniciales'
+                          : 'Foto activa'}
+                      </span>
+                    </div>
+
                     <div className="flex items-center gap-3">
                       <img
                         src={trainerForm.avatar || generateInitialsAvatarDataUrl(trainerForm.name)}
@@ -1440,28 +1896,130 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
                       <div className="flex flex-col gap-1.5 w-full">
                         <button
                           type="button"
+                          onClick={() =>
+                            isTrainerCameraOpen
+                              ? stopTrainerCamera()
+                              : startTrainerLiveCamera('user')
+                          }
+                          className={`px-2.5 py-1.5 rounded-lg border text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer transition ${
+                            isTrainerCameraOpen
+                              ? 'bg-red-600 text-white border-red-600'
+                              : 'bg-white hover:bg-red-50 border-slate-300 hover:border-red-300 text-slate-800'
+                          }`}
+                        >
+                          <Camera
+                            className={`w-3.5 h-3.5 ${
+                              isTrainerCameraOpen ? 'text-white' : 'text-red-600'
+                            }`}
+                          />
+                          <span>{isTrainerCameraOpen ? 'Cerrar Cámara' : 'Tomar Foto con Cámara'}</span>
+                        </button>
+                        <button
+                          type="button"
                           onClick={() => fileInputRef.current?.click()}
                           className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer"
                         >
                           <Upload className="w-3.5 h-3.5 text-red-600" />
-                          <span>Subir Foto</span>
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => cameraInputRef.current?.click()}
-                          className="px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 border border-slate-300 text-slate-800 text-[11px] font-bold flex items-center justify-center gap-1 cursor-pointer"
-                        >
-                          <Camera className="w-3.5 h-3.5 text-red-600" />
-                          <span>Cámara</span>
+                          <span>Subir Archivo</span>
                         </button>
                       </div>
                     </div>
+
+                    {/* Live WebRTC Camera Viewfinder inside Directory */}
+                    {isTrainerCameraOpen && (
+                      <div className="bg-slate-900 rounded-xl p-2.5 text-white space-y-2 border border-slate-700">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="font-bold text-red-300 flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-red-500" />
+                            <span>Cámara en vivo</span>
+                          </span>
+                          <div className="flex items-center gap-1">
+                            <button
+                              type="button"
+                              onClick={switchTrainerCameraDevice}
+                              disabled={isStartingTrainerCamera}
+                              className="px-2 py-0.5 rounded bg-white/10 hover:bg-white/20 text-[10px] font-semibold flex items-center gap-1 cursor-pointer"
+                              title="Cambiar cámara frontal / trasera"
+                            >
+                              <RefreshCw className="w-3 h-3" />
+                              <span>Girar</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={stopTrainerCamera}
+                              className="p-1 rounded bg-white/10 hover:bg-white/20 cursor-pointer"
+                              title="Cerrar cámara"
+                            >
+                              <X className="w-3 h-3" />
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="relative w-full aspect-square max-w-[220px] mx-auto rounded-xl overflow-hidden bg-black border border-red-500 flex items-center justify-center">
+                          <video
+                            ref={bindTrainerVideoElement}
+                            autoPlay
+                            playsInline
+                            muted
+                            onLoadedMetadata={() => setIsTrainerVideoReady(true)}
+                            onPlaying={() => setIsTrainerVideoReady(true)}
+                            className={`w-full h-full object-cover ${
+                              isTrainerVideoMirrored ? '-scale-x-100' : ''
+                            }`}
+                          />
+                          {(!isTrainerVideoReady || isStartingTrainerCamera) && (
+                            <div className="absolute inset-0 bg-slate-950/80 flex flex-col items-center justify-center text-white text-[11px] space-y-1.5">
+                              <RefreshCw className="w-5 h-5 text-red-500 animate-spin" />
+                              <span>Activando cámara...</span>
+                            </div>
+                          )}
+                          {/* Face alignment oval guide */}
+                          <div className="absolute inset-4 border border-dashed border-white/60 rounded-full pointer-events-none" />
+                        </div>
+
+                        <button
+                          type="button"
+                          onClick={captureTrainerPhotoFromCamera}
+                          disabled={!isTrainerVideoReady || isStartingTrainerCamera}
+                          className="w-full py-2 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-bold text-xs flex items-center justify-center gap-1.5 cursor-pointer"
+                        >
+                          <Camera className="w-3.5 h-3.5" />
+                          <span>Capturar Foto de Registro</span>
+                        </button>
+                      </div>
+                    )}
+
+                    {trainerCameraError && (
+                      <div className="p-2 rounded-lg bg-amber-50 border border-amber-200 text-amber-900 text-[11px] flex items-start gap-1.5">
+                        <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                        <span>{trainerCameraError}</span>
+                      </div>
+                    )}
+
+                    {trainerPhotoBiometricStatus && (
+                      <div
+                        className={`p-2 rounded-lg border text-[11px] font-semibold flex items-start gap-1.5 ${
+                          trainerPhotoBiometricStatus.valid
+                            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                            : 'bg-amber-50 border-amber-200 text-amber-900'
+                        }`}
+                      >
+                        {trainerPhotoBiometricStatus.valid ? (
+                          <CheckCircle2 className="w-3.5 h-3.5 text-emerald-600 shrink-0 mt-0.5" />
+                        ) : (
+                          <AlertCircle className="w-3.5 h-3.5 text-amber-600 shrink-0 mt-0.5" />
+                        )}
+                        <span>{trainerPhotoBiometricStatus.message}</span>
+                      </div>
+                    )}
+
                     <div>
                       <input
                         type="url"
                         value={trainerForm.avatar.startsWith('data:') ? '' : trainerForm.avatar}
                         onChange={(e) => {
                           const val = e.target.value;
+                          setTrainerPhotoBiometricStatus(null);
                           setTrainerForm((prev) => ({
                             ...prev,
                             avatar: val || generateInitialsAvatarDataUrl(prev.name),
@@ -1841,11 +2399,11 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
             {/* 3. FORMULARIO SEDES (TODOS LOS CAMPOS DEL DEMO) */}
             {activeCategory === 'sedes' && (
               <form onSubmit={handleSubmitSede} noValidate className="space-y-4">
-                {companiesList.length === 0 && (
+                {companiesList.length === 0 ? (
                   <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-300 text-amber-900 text-xs flex flex-wrap items-center justify-between gap-2">
                     <span>
                       Para registrar una sede primero debes tener al menos una empresa en{' '}
-                      <strong className="font-mono">/companies</strong> o importar las empresas del demo.
+                      <strong className="font-mono">/companies</strong> o sincronizar las empresas del demo.
                     </span>
                     <button
                       type="button"
@@ -1855,12 +2413,31 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
                       Ir a Empresas
                     </button>
                   </div>
+                ) : (
+                  effectiveSedeForm.companyName && (
+                    <div className="px-3.5 py-2.5 rounded-xl bg-red-50/70 border border-red-200 text-xs flex flex-wrap items-center justify-between gap-2">
+                      <span className="text-slate-800 font-semibold flex items-center gap-1.5">
+                        <Building2 className="w-4 h-4 text-red-600 shrink-0" />
+                        <span>
+                          {editingIdByCat.sedes ? 'Editando sede de:' : 'Agregando sede a empresa registrada:'}{' '}
+                          <strong className="text-slate-900">{effectiveSedeForm.companyName}</strong>
+                        </span>
+                      </span>
+                      <span className="font-mono text-[11px] font-bold text-red-700">
+                        {
+                          sedesList.filter((s) => s.companyId === effectiveSedeForm.companyId)
+                            .length
+                        }{' '}
+                        sedes registradas en esta empresa
+                      </span>
+                    </div>
+                  )
                 )}
 
                 <div className="grid grid-cols-1 sm:grid-cols-12 gap-3.5">
                   <div className="sm:col-span-5">
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Empresa a la que Pertenece (`companyId`) *
+                      Empresa Registrada (`companyId`) *
                     </label>
                     <select
                       value={sedeForm.companyId}
@@ -1881,11 +2458,14 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
                       )}
                     >
                       <option value="">Selecciona empresa...</option>
-                      {companiesList.map((c) => (
-                        <option key={c.id} value={c.id}>
-                          {c.name} ({c.taxId})
-                        </option>
-                      ))}
+                      {companiesList.map((c) => {
+                        const count = sedesList.filter((s) => s.companyId === c.id).length;
+                        return (
+                          <option key={c.id} value={c.id}>
+                            {c.name} ({count} {count === 1 ? 'sede' : 'sedes'})
+                          </option>
+                        );
+                      })}
                     </select>
                     {(sedeTouched.companyId || submitAttemptedByCat.sedes) &&
                       sedeValidation.errors.companyId && (
@@ -2096,11 +2676,11 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
                   </div>
                 </div>
 
-                {/* Contact fields */}
+                {/* Contact fields (optional with automatic corporate defaults) */}
                 <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Contacto en Sede (`contactPerson`) *
+                      Contacto en Sede <span className="text-slate-400 font-normal">(Opcional)</span>
                     </label>
                     <input
                       type="text"
@@ -2109,7 +2689,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
                         setSedeForm((prev) => ({ ...prev, contactPerson: e.target.value }))
                       }
                       onBlur={() => setSedeTouched((prev) => ({ ...prev, contactPerson: true }))}
-                      placeholder="Lic. Laura Peñaloza"
+                      placeholder="Ej. Lic. Laura Peñaloza"
                       className={inputClass(
                         Boolean(
                           (sedeTouched.contactPerson || submitAttemptedByCat.sedes) &&
@@ -2127,7 +2707,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
 
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Cargo / Rol (`contactRole`) *
+                      Cargo / Rol <span className="text-slate-400 font-normal">(Opcional)</span>
                     </label>
                     <input
                       type="text"
@@ -2136,7 +2716,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
                         setSedeForm((prev) => ({ ...prev, contactRole: e.target.value }))
                       }
                       onBlur={() => setSedeTouched((prev) => ({ ...prev, contactRole: true }))}
-                      placeholder="Gerente de Bienestar y SST"
+                      placeholder="Coordinador de Salud en el Trabajo"
                       className={inputClass(
                         Boolean(
                           (sedeTouched.contactRole || submitAttemptedByCat.sedes) &&
@@ -2154,7 +2734,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
 
                   <div>
                     <label className="block text-xs font-bold text-slate-700 mb-1">
-                      Teléfono Directo (`contactPhone`) *
+                      Teléfono Directo <span className="text-slate-400 font-normal">(Opcional)</span>
                     </label>
                     <input
                       type="tel"
@@ -2666,8 +3246,40 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
                                 active: tr.active,
                               });
                               setSaveFeedback(null);
+                              formCardRef.current?.scrollIntoView({
+                                behavior: 'smooth',
+                                block: 'start',
+                              });
+                              startTrainerLiveCamera('user');
                             }}
-                            className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200"
+                            className="px-2.5 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer"
+                            title="Tomar o actualizar foto de registro con cámara"
+                          >
+                            <Camera className="w-3.5 h-3.5" />
+                            <span>Tomar Foto</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              stopTrainerCamera();
+                              setTrainerCameraError(null);
+                              setTrainerPhotoBiometricStatus(null);
+                              setEditingIdByCat((prev) => ({ ...prev, trainers: tr.id }));
+                              setTrainerForm({
+                                name: tr.name,
+                                email: tr.email,
+                                phone: tr.phone,
+                                avatar: tr.avatar,
+                                specialties: tr.specialties,
+                                active: tr.active,
+                              });
+                              setSaveFeedback(null);
+                              formCardRef.current?.scrollIntoView({
+                                behavior: 'smooth',
+                                block: 'start',
+                              });
+                            }}
+                            className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200 cursor-pointer"
                             title="Editar Entrenador"
                           >
                             <Edit3 className="w-3.5 h-3.5" />
@@ -2709,96 +3321,154 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
                 {activeCategory === 'companies' && (
                   <div className="divide-y divide-slate-200 border border-slate-200 rounded-xl overflow-hidden">
                     {filteredCompanies.map((comp) => {
-                      const linkedSedesCount = sedesList.filter(
-                        (s) => s.companyId === comp.id
-                      ).length;
+                      const linkedSedes = sedesList.filter((s) => s.companyId === comp.id);
                       return (
                         <div
                           key={comp.id}
-                          className="p-3.5 bg-white hover:bg-slate-50/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3 transition"
+                          className="p-4 bg-white hover:bg-slate-50/80 space-y-3 transition"
                         >
-                          <div className="flex items-start gap-3">
-                            <span className="w-10 h-10 rounded-xl bg-red-50 border border-red-200 text-red-700 font-mono font-extrabold text-xs flex items-center justify-center shrink-0">
-                              {comp.logoText}
-                            </span>
-                            <div className="space-y-0.5">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-bold text-slate-900 text-xs sm:text-sm">
-                                  {comp.name}
-                                </span>
-                                <span className="font-mono tabular-nums text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
-                                  RFC: {comp.taxId}
-                                </span>
+                          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                            <div className="flex items-start gap-3">
+                              <span className="w-10 h-10 rounded-xl bg-red-50 border border-red-200 text-red-700 font-mono font-extrabold text-xs flex items-center justify-center shrink-0">
+                                {comp.logoText}
+                              </span>
+                              <div className="space-y-0.5">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-bold text-slate-900 text-xs sm:text-sm">
+                                    {comp.name}
+                                  </span>
+                                  <span className="font-mono tabular-nums text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                                    RFC: {comp.taxId}
+                                  </span>
+                                </div>
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-600">
+                                  <span className="inline-flex items-center gap-1">
+                                    <Briefcase className="w-3 h-3 text-slate-400" />
+                                    {comp.industry}
+                                  </span>
+                                  <span className="font-mono tabular-nums text-slate-700 font-semibold">
+                                    {linkedSedes.length} {linkedSedes.length === 1 ? 'sede vinculada' : 'sedes vinculadas'}
+                                  </span>
+                                </div>
                               </div>
-                              <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-600">
-                                <span className="inline-flex items-center gap-1">
-                                  <Briefcase className="w-3 h-3 text-slate-400" />
-                                  {comp.industry}
-                                </span>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-1.5 self-end sm:self-center shrink-0">
+                              <button
+                                type="button"
+                                onClick={() => handlePrepareNewSedeForCompany(comp)}
+                                className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer"
+                                title={`Agregar nueva sede a ${comp.name}`}
+                              >
+                                <Plus className="w-3.5 h-3.5" />
+                                <span>Agregar Sede</span>
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setEditingIdByCat((prev) => ({ ...prev, companies: comp.id }));
+                                  setCompanyForm({
+                                    name: comp.name,
+                                    taxId: comp.taxId,
+                                    industry: comp.industry,
+                                    logoText: comp.logoText,
+                                  });
+                                  setSaveFeedback(null);
+                                  formCardRef.current?.scrollIntoView({
+                                    behavior: 'smooth',
+                                    block: 'start',
+                                  });
+                                }}
+                                className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200"
+                                title="Editar Empresa"
+                              >
+                                <Edit3 className="w-3.5 h-3.5" />
+                              </button>
+                              {confirmDeleteKey === `companies:${comp.id}` ? (
+                                <div className="inline-flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteDocument('companies', comp.id)}
+                                    className="px-2 py-1 rounded-lg bg-rose-600 text-white text-[10px] font-bold"
+                                  >
+                                    Confirmar
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteKey(null)}
+                                    className="px-2 py-1 rounded-lg bg-slate-100 text-slate-700 text-[10px] font-semibold"
+                                  >
+                                    No
+                                  </button>
+                                </div>
+                              ) : (
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    setActiveCategory('sedes');
-                                    setSedeForm((prev) => ({
-                                      ...prev,
-                                      companyId: comp.id,
-                                      companyName: comp.name,
-                                    }));
-                                  }}
-                                  className="text-red-600 font-semibold hover:underline font-mono tabular-nums"
+                                  onClick={() => setConfirmDeleteKey(`companies:${comp.id}`)}
+                                  className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 border border-slate-200"
+                                  title="Eliminar Empresa"
                                 >
-                                  {linkedSedesCount} sedes vinculadas →
+                                  <Trash2 className="w-3.5 h-3.5" />
                                 </button>
-                              </div>
+                              )}
                             </div>
                           </div>
 
-                          <div className="flex items-center gap-1.5 self-end sm:self-center shrink-0">
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setEditingIdByCat((prev) => ({ ...prev, companies: comp.id }));
-                                setCompanyForm({
-                                  name: comp.name,
-                                  taxId: comp.taxId,
-                                  industry: comp.industry,
-                                  logoText: comp.logoText,
-                                });
-                                setSaveFeedback(null);
-                              }}
-                              className="p-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 border border-slate-200"
-                              title="Editar Empresa"
-                            >
-                              <Edit3 className="w-3.5 h-3.5" />
-                            </button>
-                            {confirmDeleteKey === `companies:${comp.id}` ? (
-                              <div className="inline-flex items-center gap-1">
-                                <button
-                                  type="button"
-                                  onClick={() => handleDeleteDocument('companies', comp.id)}
-                                  className="px-2 py-1 rounded-lg bg-rose-600 text-white text-[10px] font-bold"
+                          {linkedSedes.length > 0 && (
+                            <div className="pl-0 sm:pl-13 grid grid-cols-1 md:grid-cols-2 gap-2">
+                              {linkedSedes.map((s) => (
+                                <div
+                                  key={s.id}
+                                  className="px-3 py-2 rounded-lg bg-slate-50 border border-slate-200 flex items-center justify-between gap-2 text-[11px]"
                                 >
-                                  Confirmar
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setConfirmDeleteKey(null)}
-                                  className="px-2 py-1 rounded-lg bg-slate-100 text-slate-700 text-[10px] font-semibold"
-                                >
-                                  No
-                                </button>
-                              </div>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={() => setConfirmDeleteKey(`companies:${comp.id}`)}
-                                className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 border border-slate-200"
-                                title="Eliminar Empresa"
-                              >
-                                <Trash2 className="w-3.5 h-3.5" />
-                              </button>
-                            )}
-                          </div>
+                                  <div className="min-w-0">
+                                    <div className="font-bold text-slate-800 truncate flex items-center gap-1.5">
+                                      <span
+                                        className={`w-2 h-2 rounded-sm shrink-0 ${
+                                          s.colorTag || 'bg-red-600'
+                                        }`}
+                                      />
+                                      <span className="truncate">{s.name}</span>
+                                    </div>
+                                    <div className="text-slate-500 truncate">
+                                      {s.city} • Geocerca {s.geofenceRadiusMeters}m
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      setEditingIdByCat((prev) => ({ ...prev, sedes: s.id }));
+                                      setSedeForm({
+                                        companyId: s.companyId,
+                                        companyName: comp.name || s.companyName,
+                                        name: s.name,
+                                        address: s.address,
+                                        city: s.city,
+                                        lat: String(s.lat),
+                                        lng: String(s.lng),
+                                        geofenceRadiusMeters: String(s.geofenceRadiusMeters),
+                                        contactPerson: s.contactPerson,
+                                        contactRole: s.contactRole,
+                                        contactPhone: s.contactPhone,
+                                        colorTag: s.colorTag || 'bg-red-600',
+                                      });
+                                      setSaveFeedback(null);
+                                      setActiveCategory('sedes');
+                                      setTimeout(() => {
+                                        formCardRef.current?.scrollIntoView({
+                                          behavior: 'smooth',
+                                          block: 'start',
+                                        });
+                                      }, 60);
+                                    }}
+                                    className="px-2 py-1 rounded bg-white hover:bg-slate-100 border border-slate-200 text-slate-700 font-semibold shrink-0"
+                                  >
+                                    Editar
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          )}
                         </div>
                       );
                     })}
@@ -2898,6 +3568,218 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
                         </div>
                       </div>
                     ))}
+                  </div>
+                )}
+
+                {/* LIST: CALENDAR (/assignments + /records + /activity_catalog) */}
+                {activeCategory === 'calendar' && (
+                  <div className="space-y-5">
+                    {/* Scheduled Assignments */}
+                    <div className="space-y-2">
+                      <h5 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
+                        Programación de Asignaciones (`/assignments`: {filteredAssignments.length})
+                      </h5>
+                      <div className="divide-y divide-slate-200 border border-slate-200 rounded-xl overflow-hidden">
+                        {filteredAssignments.map((asg) => {
+                          const scheduleLabel =
+                            asg.frequency === 'semanal'
+                              ? `Semanal · ${
+                                  asg.dayOfWeek !== undefined
+                                    ? WEEKDAY_NAMES[asg.dayOfWeek] || `Día ${asg.dayOfWeek}`
+                                    : 'Semanal'
+                                }`
+                              : asg.frequency === 'mensual'
+                              ? `Mensual · Día ${asg.dayOfMonth || 1}`
+                              : `Fecha única · ${asg.date || ''}`;
+
+                          return (
+                            <div
+                              key={asg.id}
+                              className="p-3.5 bg-white hover:bg-slate-50/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                            >
+                              <div className="space-y-1 min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-mono tabular-nums text-[11px] font-bold px-2 py-0.5 rounded bg-red-50 text-red-700 border border-red-200">
+                                    {asg.time} hrs
+                                  </span>
+                                  <span className="font-bold text-slate-900 text-xs sm:text-sm">
+                                    {asg.activityName}
+                                  </span>
+                                  <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                                    {scheduleLabel}
+                                  </span>
+                                  {asg.durationMinutes && (
+                                    <span className="font-mono text-[10px] font-semibold text-slate-500">
+                                      {asg.durationMinutes} min
+                                    </span>
+                                  )}
+                                  <span
+                                    className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                                      asg.nonCompliant
+                                        ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                        : asg.closed
+                                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                        : asg.active
+                                        ? 'bg-blue-50 text-blue-700 border-blue-200'
+                                        : 'bg-slate-100 text-slate-500 border-slate-200'
+                                    }`}
+                                  >
+                                    {asg.nonCompliant
+                                      ? 'Incumplida'
+                                      : asg.closed
+                                      ? 'Cerrada'
+                                      : asg.active
+                                      ? 'Activa'
+                                      : 'Pausada'}
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-slate-700">
+                                  <strong>{asg.companyName}</strong> — {asg.sedeName} ({asg.locationArea})
+                                </div>
+                                <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
+                                  <span>Entrenador: {asg.trainerName}</span>
+                                  {asg.completedDates && asg.completedDates.length > 0 && (
+                                    <span className="text-emerald-700 font-mono">
+                                      Completadas: {asg.completedDates.length}
+                                    </span>
+                                  )}
+                                  {asg.missedDates && asg.missedDates.length > 0 && (
+                                    <span className="text-rose-700 font-mono">
+                                      Incumplidas: {asg.missedDates.length}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+
+                              <div className="flex items-center gap-1.5 self-end sm:self-center shrink-0">
+                                {confirmDeleteKey === `calendar:${asg.id}` ? (
+                                  <div className="inline-flex items-center gap-1">
+                                    <button
+                                      type="button"
+                                      onClick={() => handleDeleteDocument('calendar', asg.id)}
+                                      className="px-2 py-1 rounded-lg bg-rose-600 text-white text-[10px] font-bold"
+                                    >
+                                      Confirmar
+                                    </button>
+                                    <button
+                                      type="button"
+                                      onClick={() => setConfirmDeleteKey(null)}
+                                      className="px-2 py-1 rounded-lg bg-slate-100 text-slate-700 text-[10px] font-semibold"
+                                    >
+                                      No
+                                    </button>
+                                  </div>
+                                ) : (
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteKey(`calendar:${asg.id}`)}
+                                    className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 border border-slate-200 cursor-pointer"
+                                    title="Eliminar Asignación"
+                                  >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+                          );
+                        })}
+                        {filteredAssignments.length === 0 && (
+                          <div className="p-4 text-xs text-slate-500 text-center">
+                            Sin asignaciones que coincidan con el filtro.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Session Executions (/records) */}
+                    <div className="space-y-2">
+                      <h5 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
+                        Historial y Ejecuciones del Calendario (`/records`: {filteredRecords.length})
+                      </h5>
+                      <div className="divide-y divide-slate-200 border border-slate-200 rounded-xl overflow-hidden">
+                        {filteredRecords.map((rec) => (
+                          <div
+                            key={rec.id}
+                            className="p-3.5 bg-white hover:bg-slate-50/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                          >
+                            <div className="space-y-1">
+                              <div className="flex flex-wrap items-center gap-2">
+                                <span className="font-mono text-[11px] font-bold text-slate-700">
+                                  {rec.date} · {rec.scheduledTime}
+                                </span>
+                                <span className="font-bold text-xs text-slate-900">
+                                  {rec.activityName}
+                                </span>
+                                <span
+                                  className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                                    rec.status === 'completado'
+                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                      : rec.status === 'incumplido'
+                                      ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                      : 'bg-amber-50 text-amber-800 border-amber-200'
+                                  }`}
+                                >
+                                  {rec.status === 'completado'
+                                    ? 'Completada'
+                                    : rec.status === 'incumplido'
+                                    ? 'Incumplida'
+                                    : 'En Curso'}
+                                </span>
+                              </div>
+                              <div className="text-[11px] text-slate-600">
+                                <strong>{rec.companyName}</strong> — {rec.sedeName} • Entrenador:{' '}
+                                {rec.trainerName} • Asistentes: {rec.attendeesCount}
+                              </div>
+                            </div>
+                            <div className="text-[11px] font-mono text-slate-500">
+                              Entrada: {rec.checkInTime}
+                              {rec.checkOutTime ? ` · Salida: ${rec.checkOutTime}` : ''}
+                            </div>
+                          </div>
+                        ))}
+                        {filteredRecords.length === 0 && (
+                          <div className="p-4 text-xs text-slate-500 text-center">
+                            Sin registros de ejecución sincronizados aún.
+                          </div>
+                        )}
+                      </div>
+                    </div>
+
+                    {/* Activity Catalog (/activity_catalog) */}
+                    {catalogList.length > 0 && (
+                      <div className="space-y-2">
+                        <h5 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
+                          Catálogo de Modalidades (`/activity_catalog`: {catalogList.length})
+                        </h5>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+                          {catalogList.map((cat) => (
+                            <div
+                              key={cat.id}
+                              className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-xs flex items-center justify-between gap-2"
+                            >
+                              <div className="min-w-0">
+                                <div className="font-bold text-slate-900 truncate">{cat.name}</div>
+                                <div className="text-[11px] text-slate-500">
+                                  {cat.activityType === 'clase_fitness'
+                                    ? 'Clase Fitness'
+                                    : 'Pausa Activa'}{' '}
+                                  • {cat.defaultDurationMinutes} min
+                                </div>
+                              </div>
+                              <span
+                                className={`text-[10px] font-bold px-2 py-0.5 rounded border shrink-0 ${
+                                  cat.active
+                                    ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                    : 'bg-slate-100 text-slate-500 border-slate-200'
+                                }`}
+                              >
+                                {cat.active ? 'Activa' : 'Inactiva'}
+                              </span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
