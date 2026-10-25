@@ -194,22 +194,35 @@ function normalizeSingleLine(value: string): string {
   return value.replace(/[\r\n\t]+/g, ' ').replace(/\s{2,}/g, ' ').trim();
 }
 
+function stripAccentsPreserveEnye(value: string): string {
+  return value
+    .replace(/Ñ/g, '\u0001')
+    .replace(/ñ/g, '\u0002')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/\u0001/g, 'Ñ')
+    .replace(/\u0002/g, 'ñ');
+}
+
 export function generateInitialsAvatarDataUrl(name: string): string {
-  const clean = normalizeSingleLine(name || 'BSCW');
+  const clean = normalizeSingleLine(name || 'BSCW')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '');
   const initials =
     clean
       .split(' ')
       .filter(Boolean)
       .slice(0, 2)
       .map((part) => part[0]?.toUpperCase() || '')
-      .join('') || 'TR';
+      .join('')
+      .replace(/[^A-Z0-9]/g, '') || 'TR';
 
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="240" height="240" viewBox="0 0 240 240"><rect width="240" height="240" rx="48" fill="#dc2626"/><text x="120" y="138" font-family="sans-serif" font-size="84" font-weight="800" fill="#ffffff" text-anchor="middle">${initials}</text></svg>`;
-  return `data:image/svg+xml;base64,${typeof btoa === 'function' ? btoa(svg) : ''}`;
+  return `data:image/svg+xml;utf8,${encodeURIComponent(svg)}`;
 }
 
 export function deriveCompanyLogoText(name: string, explicitLogoText?: string): string {
-  const cleanedExplicit = normalizeSingleLine(explicitLogoText || '')
+  const cleanedExplicit = stripAccentsPreserveEnye(normalizeSingleLine(explicitLogoText || ''))
     .replace(/[^A-Za-z0-9&Ññ]/g, '')
     .toUpperCase()
     .slice(0, 4);
@@ -217,7 +230,7 @@ export function deriveCompanyLogoText(name: string, explicitLogoText?: string): 
     return cleanedExplicit;
   }
 
-  const derived = normalizeSingleLine(name || '')
+  const derived = stripAccentsPreserveEnye(normalizeSingleLine(name || ''))
     .split(' ')
     .filter(Boolean)
     .slice(0, 2)
@@ -230,11 +243,12 @@ export function deriveCompanyLogoText(name: string, explicitLogoText?: string): 
 }
 
 export function sanitizeTaxIdForFirestore(rawTaxId?: string): string {
-  const cleaned = normalizeSingleLine(rawTaxId || '')
+  const cleaned = stripAccentsPreserveEnye(normalizeSingleLine(rawTaxId || ''))
     .toUpperCase()
     .replace(/[^A-Za-z0-9&Ññ.\- ]/g, '-')
     .replace(/^[.\- ]+|[.\- ]+$/g, '')
-    .slice(0, DIRECTORY_LIMITS.taxId.max);
+    .slice(0, DIRECTORY_LIMITS.taxId.max)
+    .replace(/^[.\- ]+|[.\- ]+$/g, '');
 
   if (
     cleaned.length >= DIRECTORY_LIMITS.taxId.min &&
@@ -244,10 +258,20 @@ export function sanitizeTaxIdForFirestore(rawTaxId?: string): string {
     return cleaned;
   }
 
-  const alnum = cleaned.replace(/[^A-Za-z0-9&Ññ]/g, '');
+  const alnum = cleaned.replace(/[^A-Za-z0-9&Ññ]/g, '').slice(0, 18);
   if (alnum.length >= 2) {
-    const padded = `${alnum}-00000`.slice(0, Math.max(DIRECTORY_LIMITS.taxId.min, alnum.length + 2));
-    if (TAX_ID_PATTERN_REGEX.test(padded)) {
+    const targetLen = Math.min(
+      DIRECTORY_LIMITS.taxId.max,
+      Math.max(DIRECTORY_LIMITS.taxId.min, alnum.length + 2)
+    );
+    const padded = `${alnum}-00000`
+      .slice(0, targetLen)
+      .replace(/^[.\- ]+|[.\- ]+$/g, '');
+    if (
+      padded.length >= DIRECTORY_LIMITS.taxId.min &&
+      padded.length <= DIRECTORY_LIMITS.taxId.max &&
+      TAX_ID_PATTERN_REGEX.test(padded)
+    ) {
       return padded;
     }
   }
@@ -353,10 +377,11 @@ export function validateTrainerInput(raw: TrainerFormInput): TrainerValidationRe
 
 export function sanitizeDemoCompanyInput(raw: DemoCompanyFormInput): DemoCompanyFormInput {
   const cleanName = normalizeSingleLine(raw.name || '');
-  const cleanLogo = normalizeSingleLine(raw.logoText || '').toUpperCase();
+  const cleanLogo = stripAccentsPreserveEnye(normalizeSingleLine(raw.logoText || '')).toUpperCase();
+  const cleanTaxId = stripAccentsPreserveEnye(normalizeSingleLine(raw.taxId || '')).toUpperCase();
   return {
     name: cleanName,
-    taxId: normalizeSingleLine(raw.taxId || '').toUpperCase(),
+    taxId: cleanTaxId,
     industry: normalizeSingleLine(raw.industry || ''),
     logoText: cleanLogo || (cleanName ? deriveCompanyLogoText(cleanName) : ''),
   };

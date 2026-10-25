@@ -4,12 +4,15 @@ import {
   deleteField,
   doc,
   DocumentData,
+  DocumentReference,
   DocumentSnapshot,
   getDoc,
+  getDocFromServer,
   getDocs,
   query,
   serverTimestamp,
   setDoc,
+  Timestamp,
   updateDoc,
   where,
   writeBatch,
@@ -44,15 +47,179 @@ import {
   Trainer,
 } from '../types';
 import {
+  AVATAR_PATTERN_REGEX,
   deriveCompanyLogoText,
+  DIRECTORY_LIMITS,
+  EMAIL_PATTERN_REGEX,
   generateInitialsAvatarDataUrl,
+  LOGO_TEXT_PATTERN_REGEX,
+  NON_EMPTY_TEXT_REGEX,
   PHONE_PATTERN_REGEX,
   sanitizeDemoCompanyInput,
   sanitizeTaxIdForFirestore,
   sanitizeTrainerInput,
+  TAX_ID_PATTERN_REGEX,
   VALID_DOC_ID_REGEX,
   validateSedeInput,
 } from './personnelValidation';
+
+const AUDIT_KEYS = new Set(['createdByUid', 'createdByEmail', 'createdAt', 'updatedAt']);
+
+const TRAINER_ALLOWED_KEYS = [
+  'name',
+  'email',
+  'phone',
+  'avatar',
+  'specialties',
+  'active',
+] as const;
+
+const COMPANY_ALLOWED_KEYS = [
+  'name',
+  'taxId',
+  'industry',
+  'logoText',
+  'companyName',
+  'phone',
+  'primaryContactName',
+  'address',
+] as const;
+
+const COMPANY_OPTIONAL_KEYS = [
+  'companyName',
+  'phone',
+  'primaryContactName',
+  'address',
+] as const;
+
+const SEDE_ALLOWED_KEYS = [
+  'companyId',
+  'companyName',
+  'name',
+  'address',
+  'city',
+  'lat',
+  'lng',
+  'geofenceRadiusMeters',
+  'contactPerson',
+  'contactRole',
+  'contactPhone',
+  'colorTag',
+] as const;
+
+const SEDE_OPTIONAL_KEYS = ['colorTag'] as const;
+
+const ASSIGNMENT_ALLOWED_KEYS = [
+  'trainerId',
+  'trainerName',
+  'companyId',
+  'companyName',
+  'sedeId',
+  'sedeName',
+  'sedeAddress',
+  'frequency',
+  'dayOfWeek',
+  'date',
+  'dayOfMonth',
+  'time',
+  'durationMinutes',
+  'activityType',
+  'activityName',
+  'locationArea',
+  'expectedAttendees',
+  'notes',
+  'active',
+  'closed',
+  'closedAt',
+  'completedDates',
+  'nonCompliant',
+  'nonCompliantReason',
+  'nonCompliantAt',
+  'missedDates',
+  'reopenedDates',
+] as const;
+
+const ASSIGNMENT_OPTIONAL_KEYS = [
+  'dayOfWeek',
+  'date',
+  'dayOfMonth',
+  'durationMinutes',
+  'expectedAttendees',
+  'notes',
+  'closed',
+  'closedAt',
+  'completedDates',
+  'nonCompliant',
+  'nonCompliantReason',
+  'nonCompliantAt',
+  'missedDates',
+  'reopenedDates',
+] as const;
+
+const RECORD_ALLOWED_KEYS = [
+  'assignmentId',
+  'trainerId',
+  'trainerName',
+  'companyId',
+  'companyName',
+  'sedeId',
+  'sedeName',
+  'sedeAddress',
+  'date',
+  'scheduledTime',
+  'checkInTime',
+  'checkInIso',
+  'checkOutTime',
+  'checkOutIso',
+  'status',
+  'nonComplianceReason',
+  'markedNonCompliantAt',
+  'punctualityStatus',
+  'punctualityDiffMinutes',
+  'activityType',
+  'activityName',
+  'attendeesCount',
+  'locationArea',
+  'observations',
+  'checkInGps',
+  'checkOutGps',
+  'photoUrl',
+  'exitPhotoUrl',
+  'facialVerification',
+  'durationMinutes',
+  'plannedDurationMinutes',
+  'alarmEnabled',
+  'alarmSnoozedUntilIso',
+  'adminVerified',
+  'adminNotes',
+] as const;
+
+const RECORD_OPTIONAL_KEYS = [
+  'assignmentId',
+  'checkOutTime',
+  'checkOutIso',
+  'nonComplianceReason',
+  'markedNonCompliantAt',
+  'observations',
+  'checkOutGps',
+  'exitPhotoUrl',
+  'facialVerification',
+  'durationMinutes',
+  'plannedDurationMinutes',
+  'alarmEnabled',
+  'alarmSnoozedUntilIso',
+  'adminNotes',
+] as const;
+
+const CATALOG_ALLOWED_KEYS = [
+  'name',
+  'activityType',
+  'defaultDurationMinutes',
+  'description',
+  'active',
+] as const;
+
+const CATALOG_OPTIONAL_KEYS = ['description'] as const;
 
 /**
  * Per-document write serializer so rapid create -> update / compliance / delete mutations
@@ -74,33 +241,157 @@ function enqueueDocWrite(path: string, task: () => Promise<void>): Promise<void>
   return current;
 }
 
-function canUseSafeUpdate(snap: DocumentSnapshot<DocumentData>): boolean {
+/**
+ * Single-flight workspace sync queue so overlapping startup / manual sync calls never race.
+ */
+let activeSyncChain: Promise<unknown> = Promise.resolve();
+
+function enqueueWorkspaceSync<T>(task: () => Promise<T>): Promise<T> {
+  const next = activeSyncChain.catch(() => undefined).then(task);
+  activeSyncChain = next.catch(() => undefined);
+  return next;
+}
+
+async function readFreshDocSnapshot(
+  docRef: DocumentReference<DocumentData>
+): Promise<DocumentSnapshot<DocumentData>> {
+  try {
+    return await getDocFromServer(docRef);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+    if (
+      msg.includes('offline') ||
+      msg.includes('unavailable') ||
+      msg.includes('failed to get document')
+    ) {
+      return await getDoc(docRef);
+    }
+    throw err;
+  }
+}
+
+function hasValidServerAuditAndKeys(
+  snap: DocumentSnapshot<DocumentData>,
+  allowedDataKeys: readonly string[]
+): boolean {
   if (!snap.exists()) return false;
-  if (snap.metadata.hasPendingWrites) return true;
-  const d = snap.data();
-  return (
-    Boolean(d.createdAt) &&
+  const d = snap.data({ serverTimestamps: 'estimate' }) || {};
+  const allowedSet = new Set<string>(allowedDataKeys);
+
+  for (const key of Object.keys(d)) {
+    if (!AUDIT_KEYS.has(key) && !allowedSet.has(key)) {
+      return false;
+    }
+  }
+
+  const validUid =
     typeof d.createdByUid === 'string' &&
     d.createdByUid.length >= 1 &&
+    d.createdByUid.length <= 128 &&
+    VALID_DOC_ID_REGEX.test(d.createdByUid);
+
+  const validEmail =
     typeof d.createdByEmail === 'string' &&
-    d.createdByEmail.length >= 5
-  );
+    d.createdByEmail.length >= 5 &&
+    d.createdByEmail.length <= 254 &&
+    EMAIL_PATTERN_REGEX.test(d.createdByEmail);
+
+  const validCreatedAt =
+    snap.metadata.hasPendingWrites ||
+    (d.createdAt instanceof Timestamp &&
+      d.createdAt.toMillis() >= FIRESTORE_MIN_CREATED_AT.toMillis());
+
+  return validUid && validEmail && validCreatedAt;
 }
 
 function buildUpdatePayloadWithOptionalDeletes(
   sanitized: Record<string, unknown>,
-  optionalKeys: readonly string[]
+  optionalKeys: readonly string[],
+  existingData: Record<string, unknown>
 ): Record<string, unknown> {
   const updateData: Record<string, unknown> = {
     ...sanitized,
     updatedAt: serverTimestamp(),
   };
   for (const key of optionalKeys) {
-    if (!(key in sanitized)) {
+    if (!(key in sanitized) && key in existingData) {
       updateData[key] = deleteField();
     }
   }
   return updateData;
+}
+
+async function upsertOperationalDoc(params: {
+  docRef: DocumentReference<DocumentData>;
+  path: string;
+  sanitizedPayload: Record<string, unknown>;
+  allowedDataKeys: readonly string[];
+  optionalKeys?: readonly string[];
+  skipUpdateIfValid?: (existingData: Record<string, unknown>) => boolean;
+}): Promise<'created' | 'updated' | 'unchanged'> {
+  const {
+    docRef,
+    path,
+    sanitizedPayload,
+    allowedDataKeys,
+    optionalKeys = [],
+    skipUpdateIfValid,
+  } = params;
+  const meta = getAutoDeviceMetadata();
+
+  let snap: DocumentSnapshot<DocumentData>;
+  try {
+    snap = await readFreshDocSnapshot(docRef);
+  } catch (error) {
+    handleFirestoreError(error, OperationType.GET, path);
+  }
+
+  if (!snap.exists()) {
+    try {
+      await setDoc(docRef, {
+        ...sanitizedPayload,
+        createdByUid: meta.createdByUid,
+        createdByEmail: meta.createdByEmail,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      return 'created';
+    } catch (error) {
+      handleFirestoreError(error, OperationType.CREATE, path);
+    }
+  }
+
+  const existingData = snap.data({ serverTimestamps: 'estimate' }) || {};
+  if (hasValidServerAuditAndKeys(snap, allowedDataKeys)) {
+    if (skipUpdateIfValid && skipUpdateIfValid(existingData)) {
+      return 'unchanged';
+    }
+    try {
+      await updateDoc(
+        docRef,
+        buildUpdatePayloadWithOptionalDeletes(sanitizedPayload, optionalKeys, existingData)
+      );
+      return 'updated';
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, path);
+    }
+  }
+
+  // Legacy or corrupted document lacking valid audit metadata or containing unauthorized keys:
+  // replace via delete + create so strict immutable-field update rules remain intact.
+  try {
+    await deleteDoc(docRef);
+    await setDoc(docRef, {
+      ...sanitizedPayload,
+      createdByUid: meta.createdByUid,
+      createdByEmail: meta.createdByEmail,
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    });
+    return 'updated';
+  } catch (error) {
+    handleFirestoreError(error, OperationType.WRITE, path);
+  }
 }
 
 export function toSafeDocId(rawId: string | undefined, prefix: string): string {
@@ -111,7 +402,7 @@ export function toSafeDocId(rawId: string | undefined, prefix: string): string {
   if (cleaned && VALID_DOC_ID_REGEX.test(cleaned)) {
     return cleaned;
   }
-  return `${prefix}_${Date.now()}`;
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 6).replace(/[^a-zA-Z0-9]/g, 'x')}`;
 }
 
 export function normalizeHHMM(raw: unknown, fallback = '09:00'): string {
@@ -132,8 +423,12 @@ function cleanBoundedText(val: unknown, fallback: string, minLen: number, maxLen
     .replace(/[\r\n\t]+/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim()
-    .slice(0, maxLen);
-  return s.length >= minLen ? s : fallback;
+    .slice(0, maxLen)
+    .trim();
+  if (s.length >= minLen && NON_EMPTY_TEXT_REGEX.test(s)) {
+    return s;
+  }
+  return fallback;
 }
 
 function sanitizePhoneOrDefault(rawPhone: unknown, fallback = '+52 55 0000 0000'): string {
@@ -141,7 +436,8 @@ function sanitizePhoneOrDefault(rawPhone: unknown, fallback = '+52 55 0000 0000'
     .replace(/[\r\n\t]+/g, ' ')
     .replace(/\s{2,}/g, ' ')
     .trim()
-    .slice(0, 25);
+    .slice(0, 25)
+    .trim();
   if (s.length >= 7 && s.length <= 25 && PHONE_PATTERN_REGEX.test(s)) {
     return s;
   }
@@ -154,6 +450,23 @@ function sanitizePhoneOrDefault(rawPhone: unknown, fallback = '+52 55 0000 0000'
     return digitsAndPlus;
   }
   return fallback;
+}
+
+function sanitizeEmailOrDefault(rawEmail: unknown, fallbackLocalPart: string): string {
+  const cleaned = String(rawEmail ?? '')
+    .replace(/\s+/g, '')
+    .toLowerCase()
+    .slice(0, DIRECTORY_LIMITS.email.max);
+  if (
+    cleaned.length >= DIRECTORY_LIMITS.email.min &&
+    cleaned.length <= DIRECTORY_LIMITS.email.max &&
+    EMAIL_PATTERN_REGEX.test(cleaned)
+  ) {
+    return cleaned;
+  }
+  const safeLocal =
+    fallbackLocalPart.replace(/[^a-zA-Z0-9._\-]/g, '').slice(0, 60).toLowerCase() || 'entrenador';
+  return `${safeLocal}@bscw.corp`;
 }
 
 /**
@@ -173,7 +486,7 @@ async function compressEvidenceDataUrlIfNeeded(
     return trimmed;
   }
   if (typeof document === 'undefined' || !trimmed.startsWith('data:image/')) {
-    return trimmed.slice(0, maxChars);
+    return fallbackUrl || trimmed.slice(0, maxChars);
   }
   if (trimmed.startsWith('data:image/svg+xml')) {
     return fallbackUrl && fallbackUrl.length <= maxChars ? fallbackUrl : trimmed.slice(0, maxChars);
@@ -220,64 +533,106 @@ async function compressEvidenceDataUrlIfNeeded(
 // 1. TRAINERS (/trainers/{trainerId})
 // ============================================================================
 
-export async function saveTrainerToFirestore(trainer: Trainer): Promise<void> {
+async function buildNormalizedTrainerPayload(
+  trainer: Trainer,
+  docId: string
+): Promise<Record<string, unknown>> {
+  const safeName = cleanBoundedText(trainer.name, 'Entrenador BSCW', 2, 120);
+  const fallbackAvatar = generateInitialsAvatarDataUrl(safeName);
+  const candidateAvatar = await compressEvidenceDataUrlIfNeeded(
+    trainer.avatar || fallbackAvatar,
+    145000,
+    fallbackAvatar
+  );
+  const validAvatar =
+    candidateAvatar &&
+    candidateAvatar.length >= DIRECTORY_LIMITS.avatar.min &&
+    candidateAvatar.length <= DIRECTORY_LIMITS.avatar.max &&
+    AVATAR_PATTERN_REGEX.test(candidateAvatar)
+      ? candidateAvatar
+      : fallbackAvatar;
+
+  const sanitized = sanitizeTrainerInput({
+    name: safeName,
+    email: sanitizeEmailOrDefault(trainer.email, docId),
+    phone: sanitizePhoneOrDefault(trainer.phone),
+    avatar: validAvatar,
+    specialties:
+      Array.isArray(trainer.specialties) && trainer.specialties.length > 0
+        ? trainer.specialties
+        : ['Pausas Activas'],
+    active: trainer.active !== false,
+  });
+
+  const guaranteedSpecialties =
+    sanitized.specialties.length >= 1 && NON_EMPTY_TEXT_REGEX.test(sanitized.specialties[0])
+      ? sanitized.specialties
+      : ['Pausas Activas'];
+
+  return {
+    name: sanitized.name,
+    email: sanitized.email,
+    phone: sanitized.phone,
+    avatar:
+      sanitized.avatar && AVATAR_PATTERN_REGEX.test(sanitized.avatar)
+        ? sanitized.avatar
+        : fallbackAvatar,
+    specialties: guaranteedSpecialties,
+    active: sanitized.active,
+  };
+}
+
+function isExistingTrainerValid(d: Record<string, unknown>): boolean {
+  return (
+    typeof d.name === 'string' &&
+    d.name.length >= 2 &&
+    d.name.length <= 120 &&
+    NON_EMPTY_TEXT_REGEX.test(d.name) &&
+    typeof d.email === 'string' &&
+    d.email.length >= 5 &&
+    d.email.length <= 254 &&
+    EMAIL_PATTERN_REGEX.test(d.email) &&
+    typeof d.phone === 'string' &&
+    d.phone.length >= 7 &&
+    d.phone.length <= 25 &&
+    PHONE_PATTERN_REGEX.test(d.phone) &&
+    typeof d.avatar === 'string' &&
+    d.avatar.length >= 5 &&
+    d.avatar.length <= 150000 &&
+    AVATAR_PATTERN_REGEX.test(d.avatar) &&
+    Array.isArray(d.specialties) &&
+    d.specialties.length >= 1 &&
+    d.specialties.length <= 20 &&
+    typeof d.specialties[0] === 'string' &&
+    d.specialties[0].length >= 1 &&
+    d.specialties[0].length <= 80 &&
+    NON_EMPTY_TEXT_REGEX.test(d.specialties[0]) &&
+    typeof d.active === 'boolean'
+  );
+}
+
+export async function saveTrainerToFirestore(
+  trainer: Trainer,
+  options?: { onlyIfMissing?: boolean }
+): Promise<boolean> {
   const docId = toSafeDocId(trainer.id, 'tr');
   const docRef = doc(db, 'trainers', docId);
   const path = `trainers/${docId}`;
+  let changed = false;
 
-  return enqueueDocWrite(path, async () => {
-    const meta = getAutoDeviceMetadata();
-    const compressedAvatar = await compressEvidenceDataUrlIfNeeded(
-      trainer.avatar || generateInitialsAvatarDataUrl(trainer.name),
-      145000,
-      generateInitialsAvatarDataUrl(trainer.name)
-    );
-
-    const sanitized = sanitizeTrainerInput({
-      name: cleanBoundedText(trainer.name, 'Entrenador BSCW', 2, 120),
-      email:
-        trainer.email && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(trainer.email.trim())
-          ? trainer.email.trim().toLowerCase()
-          : `${docId}@bscw.corp`,
-      phone: sanitizePhoneOrDefault(trainer.phone),
-      avatar: compressedAvatar || generateInitialsAvatarDataUrl(trainer.name),
-      specialties:
-        Array.isArray(trainer.specialties) && trainer.specialties.length > 0
-          ? trainer.specialties
-          : ['Pausas Activas'],
-      active: trainer.active !== false,
+  await enqueueDocWrite(path, async () => {
+    const sanitizedPayload = await buildNormalizedTrainerPayload(trainer, docId);
+    const result = await upsertOperationalDoc({
+      docRef,
+      path,
+      sanitizedPayload,
+      allowedDataKeys: TRAINER_ALLOWED_KEYS,
+      skipUpdateIfValid: options?.onlyIfMissing ? isExistingTrainerValid : undefined,
     });
-
-    try {
-      const snap = await getDoc(docRef);
-      if (canUseSafeUpdate(snap)) {
-        await updateDoc(docRef, {
-          name: sanitized.name,
-          email: sanitized.email,
-          phone: sanitized.phone,
-          avatar: sanitized.avatar,
-          specialties: sanitized.specialties,
-          active: sanitized.active,
-          updatedAt: serverTimestamp(),
-        });
-      } else {
-        await setDoc(docRef, {
-          name: sanitized.name,
-          email: sanitized.email,
-          phone: sanitized.phone,
-          avatar: sanitized.avatar,
-          specialties: sanitized.specialties,
-          active: sanitized.active,
-          createdByUid: meta.createdByUid,
-          createdByEmail: meta.createdByEmail,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, path);
-    }
+    changed = result !== 'unchanged';
   });
+
+  return changed;
 }
 
 export async function deleteTrainerFromFirestore(trainerId: string): Promise<void> {
@@ -296,18 +651,98 @@ export async function deleteTrainerFromFirestore(trainerId: string): Promise<voi
 // 2. COMPANIES (/companies/{companyId})
 // ============================================================================
 
-function buildNormalizedCompanyPayload(company: Partial<Company> & { name: string }) {
-  const safeName = cleanBoundedText(company.name, 'Empresa Corporativa', 2, 150);
+function buildNormalizedCompanyPayload(
+  company: Partial<Company> & { name?: string; companyName?: string }
+): Record<string, unknown> {
+  const rawName = company.name || company.companyName || 'Empresa Corporativa';
+  const safeName = cleanBoundedText(rawName, 'Empresa Corporativa', 2, 150);
   const safeIndustry = cleanBoundedText(company.industry, 'Servicios Corporativos', 2, 100);
   const safeTaxId = sanitizeTaxIdForFirestore(company.taxId);
   const safeLogoText = deriveCompanyLogoText(safeName, company.logoText);
 
-  return sanitizeDemoCompanyInput({
+  const sanitized = sanitizeDemoCompanyInput({
     name: safeName,
     taxId: safeTaxId,
     industry: safeIndustry,
     logoText: safeLogoText,
   });
+
+  const finalTaxId =
+    sanitized.taxId.length >= DIRECTORY_LIMITS.taxId.min &&
+    sanitized.taxId.length <= DIRECTORY_LIMITS.taxId.max &&
+    TAX_ID_PATTERN_REGEX.test(sanitized.taxId)
+      ? sanitized.taxId
+      : 'XAXX010101000';
+
+  const finalLogoText =
+    sanitized.logoText.length >= DIRECTORY_LIMITS.logoText.min &&
+    sanitized.logoText.length <= DIRECTORY_LIMITS.logoText.max &&
+    LOGO_TEXT_PATTERN_REGEX.test(sanitized.logoText)
+      ? sanitized.logoText
+      : 'CP';
+
+  return {
+    name: cleanBoundedText(sanitized.name, 'Empresa Corporativa', 2, 150),
+    taxId: finalTaxId,
+    industry: cleanBoundedText(sanitized.industry, 'Servicios Corporativos', 2, 100),
+    logoText: finalLogoText,
+  };
+}
+
+function isExistingCompanyValid(d: Record<string, unknown>): boolean {
+  const coreValid =
+    typeof d.name === 'string' &&
+    d.name.length >= 2 &&
+    d.name.length <= 150 &&
+    NON_EMPTY_TEXT_REGEX.test(d.name) &&
+    typeof d.taxId === 'string' &&
+    d.taxId.length >= 5 &&
+    d.taxId.length <= 25 &&
+    TAX_ID_PATTERN_REGEX.test(d.taxId) &&
+    typeof d.industry === 'string' &&
+    d.industry.length >= 2 &&
+    d.industry.length <= 100 &&
+    NON_EMPTY_TEXT_REGEX.test(d.industry) &&
+    typeof d.logoText === 'string' &&
+    d.logoText.length >= 1 &&
+    d.logoText.length <= 4 &&
+    LOGO_TEXT_PATTERN_REGEX.test(d.logoText);
+
+  if (!coreValid) return false;
+
+  if ('companyName' in d) {
+    if (
+      typeof d.companyName !== 'string' ||
+      d.companyName.length < 2 ||
+      d.companyName.length > 150 ||
+      !NON_EMPTY_TEXT_REGEX.test(d.companyName)
+    ) {
+      return false;
+    }
+  }
+  if ('phone' in d) {
+    if (
+      typeof d.phone !== 'string' ||
+      d.phone.length > 25 ||
+      (d.phone.length > 0 && !PHONE_PATTERN_REGEX.test(d.phone))
+    ) {
+      return false;
+    }
+  }
+  if ('primaryContactName' in d) {
+    if (
+      typeof d.primaryContactName !== 'string' ||
+      d.primaryContactName.length > 120 ||
+      (d.primaryContactName.length > 0 && !NON_EMPTY_TEXT_REGEX.test(d.primaryContactName))
+    ) {
+      return false;
+    }
+  }
+  if ('address' in d) {
+    return false;
+  }
+
+  return true;
 }
 
 export async function ensureCompanyExistsInFirestore(
@@ -319,101 +754,43 @@ export async function ensureCompanyExistsInFirestore(
   const path = `companies/${docId}`;
 
   await enqueueDocWrite(path, async () => {
-    const meta = getAutoDeviceMetadata();
-    try {
-      const snap = await getDoc(docRef);
-      if (snap.exists()) {
-        const d = snap.data();
-        if (
-          typeof d.name !== 'string' ||
-          d.name.trim().length < 2 ||
-          typeof d.industry !== 'string' ||
-          typeof d.logoText !== 'string'
-        ) {
-          const normalized = buildNormalizedCompanyPayload({
-            name: String(d.name || d.companyName || fallbackCompany.name || 'Empresa Corporativa'),
-            taxId: String(d.taxId || fallbackCompany.taxId || 'XAXX010101000'),
-            industry: String(d.industry || fallbackCompany.industry || 'Servicios Corporativos'),
-            logoText: typeof d.logoText === 'string' ? d.logoText : fallbackCompany.logoText,
-          });
-          if (canUseSafeUpdate(snap)) {
-            await updateDoc(docRef, {
-              name: normalized.name,
-              taxId: normalized.taxId,
-              industry: normalized.industry,
-              logoText: normalized.logoText,
-              updatedAt: serverTimestamp(),
-            });
-          } else {
-            await setDoc(docRef, {
-              name: normalized.name,
-              taxId: normalized.taxId,
-              industry: normalized.industry,
-              logoText: normalized.logoText,
-              createdByUid: meta.createdByUid,
-              createdByEmail: meta.createdByEmail,
-              createdAt: serverTimestamp(),
-              updatedAt: serverTimestamp(),
-            });
-          }
-        }
-        return;
-      }
-
-      const normalized = buildNormalizedCompanyPayload(fallbackCompany);
-      await setDoc(docRef, {
-        name: normalized.name,
-        taxId: normalized.taxId,
-        industry: normalized.industry,
-        logoText: normalized.logoText,
-        createdByUid: meta.createdByUid,
-        createdByEmail: meta.createdByEmail,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, path);
-    }
+    const sanitizedPayload = buildNormalizedCompanyPayload(fallbackCompany);
+    await upsertOperationalDoc({
+      docRef,
+      path,
+      sanitizedPayload,
+      allowedDataKeys: COMPANY_ALLOWED_KEYS,
+      optionalKeys: COMPANY_OPTIONAL_KEYS,
+      skipUpdateIfValid: isExistingCompanyValid,
+    });
   });
 
   return docId;
 }
 
-export async function saveCompanyToFirestore(company: Company): Promise<void> {
+export async function saveCompanyToFirestore(
+  company: Company,
+  options?: { onlyIfMissing?: boolean }
+): Promise<boolean> {
   const docId = toSafeDocId(company.id, 'comp');
   const docRef = doc(db, 'companies', docId);
   const path = `companies/${docId}`;
+  let changed = false;
 
-  return enqueueDocWrite(path, async () => {
-    const meta = getAutoDeviceMetadata();
-    const sanitized = buildNormalizedCompanyPayload(company);
-
-    try {
-      const snap = await getDoc(docRef);
-      if (canUseSafeUpdate(snap)) {
-        await updateDoc(docRef, {
-          name: sanitized.name,
-          taxId: sanitized.taxId,
-          industry: sanitized.industry,
-          logoText: sanitized.logoText,
-          updatedAt: serverTimestamp(),
-        });
-      } else {
-        await setDoc(docRef, {
-          name: sanitized.name,
-          taxId: sanitized.taxId,
-          industry: sanitized.industry,
-          logoText: sanitized.logoText,
-          createdByUid: meta.createdByUid,
-          createdByEmail: meta.createdByEmail,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, path);
-    }
+  await enqueueDocWrite(path, async () => {
+    const sanitizedPayload = buildNormalizedCompanyPayload(company);
+    const result = await upsertOperationalDoc({
+      docRef,
+      path,
+      sanitizedPayload,
+      allowedDataKeys: COMPANY_ALLOWED_KEYS,
+      optionalKeys: COMPANY_OPTIONAL_KEYS,
+      skipUpdateIfValid: options?.onlyIfMissing ? isExistingCompanyValid : undefined,
+    });
+    changed = result !== 'unchanged';
   });
+
+  return changed;
 }
 
 export async function deleteCompanyAndSedesFromFirestore(companyId: string): Promise<void> {
@@ -458,12 +835,57 @@ export async function deleteCompanyAndSedesFromFirestore(companyId: string): Pro
 // 3. SEDES (/sedes/{sedeId})
 // ============================================================================
 
-const SEDE_OPTIONAL_KEYS = ['colorTag'] as const;
+function isExistingSedeValid(d: Record<string, unknown>, expectedCompanyId: string): boolean {
+  return (
+    d.companyId === expectedCompanyId &&
+    typeof d.companyName === 'string' &&
+    d.companyName.length >= 2 &&
+    d.companyName.length <= 150 &&
+    NON_EMPTY_TEXT_REGEX.test(d.companyName) &&
+    typeof d.name === 'string' &&
+    d.name.length >= 2 &&
+    d.name.length <= 150 &&
+    NON_EMPTY_TEXT_REGEX.test(d.name) &&
+    typeof d.address === 'string' &&
+    d.address.length >= 3 &&
+    d.address.length <= 250 &&
+    NON_EMPTY_TEXT_REGEX.test(d.address) &&
+    typeof d.city === 'string' &&
+    d.city.length >= 2 &&
+    d.city.length <= 100 &&
+    NON_EMPTY_TEXT_REGEX.test(d.city) &&
+    typeof d.lat === 'number' &&
+    Number.isFinite(d.lat) &&
+    d.lat >= -90 &&
+    d.lat <= 90 &&
+    typeof d.lng === 'number' &&
+    Number.isFinite(d.lng) &&
+    d.lng >= -180 &&
+    d.lng <= 180 &&
+    typeof d.geofenceRadiusMeters === 'number' &&
+    Number.isFinite(d.geofenceRadiusMeters) &&
+    d.geofenceRadiusMeters >= 10 &&
+    d.geofenceRadiusMeters <= 10000 &&
+    typeof d.contactPerson === 'string' &&
+    d.contactPerson.length >= 2 &&
+    d.contactPerson.length <= 120 &&
+    NON_EMPTY_TEXT_REGEX.test(d.contactPerson) &&
+    typeof d.contactRole === 'string' &&
+    d.contactRole.length >= 2 &&
+    d.contactRole.length <= 120 &&
+    NON_EMPTY_TEXT_REGEX.test(d.contactRole) &&
+    typeof d.contactPhone === 'string' &&
+    d.contactPhone.length >= 7 &&
+    d.contactPhone.length <= 25 &&
+    PHONE_PATTERN_REGEX.test(d.contactPhone)
+  );
+}
 
 export async function saveSedeToFirestore(
   sede: Sede,
-  parentCompany?: Partial<Company>
-): Promise<void> {
+  parentCompany?: Partial<Company>,
+  options?: { onlyIfMissing?: boolean }
+): Promise<boolean> {
   const docId = toSafeDocId(sede.id, 'sede');
   const companyDocId = await ensureCompanyExistsInFirestore(sede.companyId, {
     id: sede.companyId,
@@ -475,9 +897,9 @@ export async function saveSedeToFirestore(
 
   const docRef = doc(db, 'sedes', docId);
   const path = `sedes/${docId}`;
+  let changed = false;
 
-  return enqueueDocWrite(path, async () => {
-    const meta = getAutoDeviceMetadata();
+  await enqueueDocWrite(path, async () => {
     const checked = validateSedeInput({
       companyId: companyDocId,
       companyName: cleanBoundedText(
@@ -489,8 +911,12 @@ export async function saveSedeToFirestore(
       name: cleanBoundedText(sede.name, 'Sede Corporativa', 2, 150),
       address: cleanBoundedText(sede.address, 'Dirección Corporativa', 3, 250),
       city: cleanBoundedText(sede.city, 'Ciudad de México', 2, 100),
-      lat: String(Number.isFinite(sede.lat) ? sede.lat : 19.42694),
-      lng: String(Number.isFinite(sede.lng) ? sede.lng : -99.16782),
+      lat: String(
+        Number.isFinite(sede.lat) ? Math.min(90, Math.max(-90, Number(sede.lat))) : 19.42694
+      ),
+      lng: String(
+        Number.isFinite(sede.lng) ? Math.min(180, Math.max(-180, Number(sede.lng))) : -99.16782
+      ),
       geofenceRadiusMeters: String(
         Number.isFinite(sede.geofenceRadiusMeters)
           ? Math.min(10000, Math.max(10, Math.round(sede.geofenceRadiusMeters)))
@@ -526,26 +952,20 @@ export async function saveSedeToFirestore(
       colorTag: payload.colorTag || 'bg-red-600',
     };
 
-    try {
-      const snap = await getDoc(docRef);
-      if (canUseSafeUpdate(snap)) {
-        await updateDoc(
-          docRef,
-          buildUpdatePayloadWithOptionalDeletes(sanitizedFields, SEDE_OPTIONAL_KEYS)
-        );
-      } else {
-        await setDoc(docRef, {
-          ...sanitizedFields,
-          createdByUid: meta.createdByUid,
-          createdByEmail: meta.createdByEmail,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, path);
-    }
+    const result = await upsertOperationalDoc({
+      docRef,
+      path,
+      sanitizedPayload: sanitizedFields,
+      allowedDataKeys: SEDE_ALLOWED_KEYS,
+      optionalKeys: SEDE_OPTIONAL_KEYS,
+      skipUpdateIfValid: options?.onlyIfMissing
+        ? (d) => isExistingSedeValid(d, companyDocId)
+        : undefined,
+    });
+    changed = result !== 'unchanged';
   });
+
+  return changed;
 }
 
 export async function deleteSedeFromFirestore(sedeId: string): Promise<void> {
@@ -563,23 +983,6 @@ export async function deleteSedeFromFirestore(sedeId: string): Promise<void> {
 // ============================================================================
 // 4. CALENDAR ASSIGNMENTS (/assignments/{assignmentId})
 // ============================================================================
-
-const ASSIGNMENT_OPTIONAL_KEYS = [
-  'dayOfWeek',
-  'date',
-  'dayOfMonth',
-  'durationMinutes',
-  'expectedAttendees',
-  'notes',
-  'closed',
-  'closedAt',
-  'completedDates',
-  'nonCompliant',
-  'nonCompliantReason',
-  'nonCompliantAt',
-  'missedDates',
-  'reopenedDates',
-] as const;
 
 function sanitizeAssignmentFields(asg: ClassAssignment): Record<string, unknown> {
   const safeTime = normalizeHHMM(asg.time, '09:00');
@@ -678,76 +1081,86 @@ function sanitizeAssignmentFields(asg: ClassAssignment): Record<string, unknown>
   return data;
 }
 
+function isExistingAssignmentValid(
+  d: Record<string, unknown>,
+  companyId: string,
+  sedeId: string
+): boolean {
+  return (
+    d.companyId === companyId &&
+    d.sedeId === sedeId &&
+    typeof d.trainerId === 'string' &&
+    VALID_DOC_ID_REGEX.test(d.trainerId) &&
+    typeof d.trainerName === 'string' &&
+    d.trainerName.length >= 2 &&
+    typeof d.activityName === 'string' &&
+    d.activityName.length >= 2 &&
+    typeof d.time === 'string' &&
+    /^[0-2][0-9]:[0-5][0-9]$/.test(d.time) &&
+    typeof d.active === 'boolean'
+  );
+}
+
 export async function saveAssignmentToFirestore(
   assignment: ClassAssignment,
   parentCompany?: Partial<Company>,
-  parentSede?: Partial<Sede>
-): Promise<void> {
+  parentSede?: Partial<Sede>,
+  options?: { onlyIfMissing?: boolean }
+): Promise<boolean> {
   const docId = toSafeDocId(assignment.id, 'asg');
+  const payload = sanitizeAssignmentFields(assignment);
+  const companyId = String(payload.companyId);
+  const sedeId = String(payload.sedeId);
+
+  // Guarantee parent company and sede exist on the server BEFORE writing assignment
+  await saveSedeToFirestore(
+    {
+      id: sedeId,
+      companyId,
+      companyName: parentCompany?.name || String(payload.companyName),
+      name: parentSede?.name || String(payload.sedeName),
+      address:
+        parentSede?.address && parentSede.address.trim().length >= 3
+          ? parentSede.address
+          : cleanBoundedText(payload.sedeAddress, 'Dirección Sede Corporativa', 3, 250),
+      city: parentSede?.city || 'Ciudad de México',
+      lat: parentSede?.lat ?? 19.42694,
+      lng: parentSede?.lng ?? -99.16782,
+      geofenceRadiusMeters: parentSede?.geofenceRadiusMeters ?? 150,
+      contactPerson: parentSede?.contactPerson || 'Encargado de Sede',
+      contactRole: parentSede?.contactRole || 'Coordinador de Salud en el Trabajo',
+      contactPhone: parentSede?.contactPhone || '+52 55 0000 0000',
+      colorTag: parentSede?.colorTag || 'bg-red-600',
+    },
+    {
+      id: companyId,
+      name: parentCompany?.name || String(payload.companyName),
+      taxId: parentCompany?.taxId,
+      industry: parentCompany?.industry,
+      logoText: parentCompany?.logoText,
+    },
+    { onlyIfMissing: true }
+  );
+
   const docRef = doc(db, 'assignments', docId);
   const path = `assignments/${docId}`;
+  let changed = false;
 
-  return enqueueDocWrite(path, async () => {
-    const meta = getAutoDeviceMetadata();
-    const payload = sanitizeAssignmentFields(assignment);
-
-    try {
-      const companyId = String(payload.companyId);
-      const sedeId = String(payload.sedeId);
-
-      // Guarantee parent company and sede exist in Firestore so relational rules always pass
-      await ensureCompanyExistsInFirestore(companyId, {
-        id: companyId,
-        name: parentCompany?.name || String(payload.companyName),
-        taxId: parentCompany?.taxId,
-        industry: parentCompany?.industry,
-        logoText: parentCompany?.logoText,
-      });
-
-      const sedeSnap = await getDoc(doc(db, 'sedes', sedeId));
-      if (!sedeSnap.exists()) {
-        await saveSedeToFirestore(
-          {
-            id: sedeId,
-            companyId,
-            companyName: parentCompany?.name || String(payload.companyName),
-            name: parentSede?.name || String(payload.sedeName),
-            address:
-              parentSede?.address && parentSede.address.trim().length >= 3
-                ? parentSede.address
-                : cleanBoundedText(payload.sedeAddress, 'Dirección Sede Corporativa', 3, 250),
-            city: parentSede?.city || 'Ciudad de México',
-            lat: parentSede?.lat ?? 19.42694,
-            lng: parentSede?.lng ?? -99.16782,
-            geofenceRadiusMeters: parentSede?.geofenceRadiusMeters ?? 150,
-            contactPerson: parentSede?.contactPerson || 'Encargado de Sede',
-            contactRole: parentSede?.contactRole || 'Coordinador de Salud en el Trabajo',
-            contactPhone: parentSede?.contactPhone || '+52 55 0000 0000',
-            colorTag: parentSede?.colorTag || 'bg-red-600',
-          },
-          parentCompany
-        );
-      }
-
-      const existingSnap = await getDoc(docRef);
-      if (canUseSafeUpdate(existingSnap)) {
-        await updateDoc(
-          docRef,
-          buildUpdatePayloadWithOptionalDeletes(payload, ASSIGNMENT_OPTIONAL_KEYS)
-        );
-      } else {
-        await setDoc(docRef, {
-          ...payload,
-          createdByUid: meta.createdByUid,
-          createdByEmail: meta.createdByEmail,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, path);
-    }
+  await enqueueDocWrite(path, async () => {
+    const result = await upsertOperationalDoc({
+      docRef,
+      path,
+      sanitizedPayload: payload,
+      allowedDataKeys: ASSIGNMENT_ALLOWED_KEYS,
+      optionalKeys: ASSIGNMENT_OPTIONAL_KEYS,
+      skipUpdateIfValid: options?.onlyIfMissing
+        ? (d) => isExistingAssignmentValid(d, companyId, sedeId)
+        : undefined,
+    });
+    changed = result !== 'unchanged';
   });
+
+  return changed;
 }
 
 export async function deleteAssignmentFromFirestore(assignmentId: string): Promise<void> {
@@ -765,23 +1178,6 @@ export async function deleteAssignmentFromFirestore(assignmentId: string): Promi
 // ============================================================================
 // 5. CALENDAR SESSION RECORDS (/records/{recordId})
 // ============================================================================
-
-const RECORD_OPTIONAL_KEYS = [
-  'assignmentId',
-  'checkOutTime',
-  'checkOutIso',
-  'nonComplianceReason',
-  'markedNonCompliantAt',
-  'observations',
-  'checkOutGps',
-  'exitPhotoUrl',
-  'facialVerification',
-  'durationMinutes',
-  'plannedDurationMinutes',
-  'alarmEnabled',
-  'alarmSnoozedUntilIso',
-  'adminNotes',
-] as const;
 
 function sanitizeGpsData(gps: GpsData | undefined): Record<string, unknown> {
   const lat = Number.isFinite(gps?.lat) ? Math.min(90, Math.max(-90, Number(gps!.lat))) : 19.42694;
@@ -873,11 +1269,8 @@ async function sanitizeAttendanceRecordFields(
   const safeActType =
     rec.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa';
 
-  const safePhotoUrl = await compressEvidenceDataUrlIfNeeded(
-    rec.photoUrl,
-    220000,
-    generateInitialsAvatarDataUrl(safeTrainerName)
-  );
+  const fallbackPhoto = generateInitialsAvatarDataUrl(safeTrainerName);
+  const safePhotoUrl = await compressEvidenceDataUrlIfNeeded(rec.photoUrl, 220000, fallbackPhoto);
 
   const safeCompanyId = toSafeDocId(rec.companyId, 'comp');
   const rawSedeId = String(rec.sedeId || '').trim();
@@ -893,7 +1286,7 @@ async function sanitizeAttendanceRecordFields(
     companyName: cleanBoundedText(rec.companyName, 'Empresa Corporativa', 2, 150),
     sedeId: safeSedeId,
     sedeName: cleanBoundedText(rec.sedeName, 'Sede Principal', 2, 150),
-    sedeAddress: cleanBoundedText(rec.sedeAddress, 'Dirección Sede Corporativa', 2, 250),
+    sedeAddress: cleanBoundedText(rec.sedeAddress, 'Dirección Sede Corporativa', 3, 250),
     date: safeDate,
     scheduledTime: safeScheduledTime,
     checkInTime: safeCheckInTime,
@@ -908,7 +1301,7 @@ async function sanitizeAttendanceRecordFields(
       : 0,
     locationArea: cleanBoundedText(rec.locationArea, 'Área General', 1, 150),
     checkInGps: sanitizeGpsData(rec.checkInGps),
-    photoUrl: safePhotoUrl || generateInitialsAvatarDataUrl(safeTrainerName),
+    photoUrl: safePhotoUrl && safePhotoUrl.length >= 5 ? safePhotoUrl : fallbackPhoto,
     adminVerified: Boolean(rec.adminVerified),
   };
 
@@ -981,35 +1374,46 @@ async function sanitizeAttendanceRecordFields(
   return payload;
 }
 
-export async function saveRecordToFirestore(record: AttendanceRecord): Promise<void> {
+function isExistingRecordValid(d: Record<string, unknown>): boolean {
+  return (
+    typeof d.trainerId === 'string' &&
+    typeof d.companyId === 'string' &&
+    typeof d.sedeId === 'string' &&
+    typeof d.date === 'string' &&
+    /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(d.date) &&
+    typeof d.scheduledTime === 'string' &&
+    /^[0-2][0-9]:[0-5][0-9]$/.test(d.scheduledTime) &&
+    typeof d.status === 'string' &&
+    (d.status === 'en_curso' || d.status === 'completado' || d.status === 'incumplido') &&
+    typeof d.photoUrl === 'string' &&
+    d.photoUrl.length >= 5 &&
+    typeof d.adminVerified === 'boolean'
+  );
+}
+
+export async function saveRecordToFirestore(
+  record: AttendanceRecord,
+  options?: { onlyIfMissing?: boolean }
+): Promise<boolean> {
   const docId = toSafeDocId(record.id, 'rec');
   const docRef = doc(db, 'records', docId);
   const path = `records/${docId}`;
+  let changed = false;
 
-  return enqueueDocWrite(path, async () => {
-    const meta = getAutoDeviceMetadata();
+  await enqueueDocWrite(path, async () => {
     const payload = await sanitizeAttendanceRecordFields(record);
-
-    try {
-      const existingSnap = await getDoc(docRef);
-      if (canUseSafeUpdate(existingSnap)) {
-        await updateDoc(
-          docRef,
-          buildUpdatePayloadWithOptionalDeletes(payload, RECORD_OPTIONAL_KEYS)
-        );
-      } else {
-        await setDoc(docRef, {
-          ...payload,
-          createdByUid: meta.createdByUid,
-          createdByEmail: meta.createdByEmail,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, path);
-    }
+    const result = await upsertOperationalDoc({
+      docRef,
+      path,
+      sanitizedPayload: payload,
+      allowedDataKeys: RECORD_ALLOWED_KEYS,
+      optionalKeys: RECORD_OPTIONAL_KEYS,
+      skipUpdateIfValid: options?.onlyIfMissing ? isExistingRecordValid : undefined,
+    });
+    changed = result !== 'unchanged';
   });
+
+  return changed;
 }
 
 export async function deleteRecordFromFirestore(recordId: string): Promise<void> {
@@ -1028,8 +1432,6 @@ export async function deleteRecordFromFirestore(recordId: string): Promise<void>
 // 6. ACTIVITY CATALOG (/activity_catalog/{catalogId})
 // ============================================================================
 
-const CATALOG_OPTIONAL_KEYS = ['description'] as const;
-
 function sanitizeActivityCatalogFields(item: ActivityCatalogItem): Record<string, unknown> {
   const payload: Record<string, unknown> = {
     name: cleanBoundedText(item.name, 'Pausa Activa General', 2, 150),
@@ -1045,37 +1447,44 @@ function sanitizeActivityCatalogFields(item: ActivityCatalogItem): Record<string
   return payload;
 }
 
+function isExistingCatalogValid(d: Record<string, unknown>): boolean {
+  return (
+    typeof d.name === 'string' &&
+    d.name.length >= 2 &&
+    d.name.length <= 150 &&
+    NON_EMPTY_TEXT_REGEX.test(d.name) &&
+    (d.activityType === 'pausa_activa' || d.activityType === 'clase_fitness') &&
+    typeof d.defaultDurationMinutes === 'number' &&
+    Number.isFinite(d.defaultDurationMinutes) &&
+    d.defaultDurationMinutes >= 5 &&
+    d.defaultDurationMinutes <= 480 &&
+    typeof d.active === 'boolean'
+  );
+}
+
 export async function saveActivityCatalogItemToFirestore(
-  item: ActivityCatalogItem
-): Promise<void> {
+  item: ActivityCatalogItem,
+  options?: { onlyIfMissing?: boolean }
+): Promise<boolean> {
   const docId = toSafeDocId(item.id, 'cat');
   const docRef = doc(db, 'activity_catalog', docId);
   const path = `activity_catalog/${docId}`;
+  let changed = false;
 
-  return enqueueDocWrite(path, async () => {
-    const meta = getAutoDeviceMetadata();
+  await enqueueDocWrite(path, async () => {
     const payload = sanitizeActivityCatalogFields(item);
-
-    try {
-      const existingSnap = await getDoc(docRef);
-      if (canUseSafeUpdate(existingSnap)) {
-        await updateDoc(
-          docRef,
-          buildUpdatePayloadWithOptionalDeletes(payload, CATALOG_OPTIONAL_KEYS)
-        );
-      } else {
-        await setDoc(docRef, {
-          ...payload,
-          createdByUid: meta.createdByUid,
-          createdByEmail: meta.createdByEmail,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-      }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, path);
-    }
+    const result = await upsertOperationalDoc({
+      docRef,
+      path,
+      sanitizedPayload: payload,
+      allowedDataKeys: CATALOG_ALLOWED_KEYS,
+      optionalKeys: CATALOG_OPTIONAL_KEYS,
+      skipUpdateIfValid: options?.onlyIfMissing ? isExistingCatalogValid : undefined,
+    });
+    changed = result !== 'unchanged';
   });
+
+  return changed;
 }
 
 export async function deleteActivityCatalogItemFromFirestore(itemId: string): Promise<void> {
@@ -1097,7 +1506,7 @@ export async function deleteActivityCatalogItemFromFirestore(itemId: string): Pr
 /**
  * Automatically seeds or reconciles all 6 operational collections in Firestore:
  * `/trainers`, `/companies`, `/sedes`, `/activity_catalog`, `/assignments`, and `/records`
- * without requiring any user sign-in.
+ * using serialized per-document upserts so concurrent writes never collide.
  */
 export async function syncDataSetsToFirestore(
   dataSets: {
@@ -1107,7 +1516,7 @@ export async function syncDataSetsToFirestore(
     assignments?: ClassAssignment[];
     records?: AttendanceRecord[];
   },
-  options?: { upsertAssignments?: boolean }
+  options?: { upsertAssignments?: boolean; upsertCoreEntities?: boolean }
 ): Promise<{
   trainersCount: number;
   companiesCount: number;
@@ -1116,202 +1525,90 @@ export async function syncDataSetsToFirestore(
   assignmentsCount: number;
   recordsCount: number;
 }> {
-  const meta = getAutoDeviceMetadata();
-  const trainersToSync = dataSets.trainers ?? [];
-  const companiesToSync = dataSets.companies ?? [];
-  const catalogToSync = dataSets.activityCatalog ?? [];
-  const assignmentsToSync = dataSets.assignments ?? [];
-  const recordsToSync = dataSets.records ?? [];
-  const upsertAssignments = Boolean(options?.upsertAssignments);
+  return enqueueWorkspaceSync(async () => {
+    const trainersToSync = dataSets.trainers ?? [];
+    const companiesToSync = dataSets.companies ?? [];
+    const catalogToSync = dataSets.activityCatalog ?? [];
+    const assignmentsToSync = dataSets.assignments ?? [];
+    const recordsToSync = dataSets.records ?? [];
+    const upsertAssignments = Boolean(options?.upsertAssignments);
+    const onlyIfMissingCore = !options?.upsertCoreEntities;
 
-  // Step 1: Trainers, Companies, and Activity Catalog
-  const batch1 = writeBatch(db);
-  let trainersCount = 0;
-  let companiesCount = 0;
-  let catalogCount = 0;
+    let trainersCount = 0;
+    let companiesCount = 0;
+    let sedesCount = 0;
+    let catalogCount = 0;
+    let assignmentsCount = 0;
+    let recordsCount = 0;
 
-  for (const tr of trainersToSync) {
-    const trId = toSafeDocId(tr.id, 'tr');
-    const trRef = doc(db, 'trainers', trId);
-    const trSnap = await getDoc(trRef);
-    if (!trSnap.exists()) {
-      const compressedAvatar = await compressEvidenceDataUrlIfNeeded(
-        tr.avatar || generateInitialsAvatarDataUrl(tr.name),
-        145000,
-        generateInitialsAvatarDataUrl(tr.name)
+    // Step 1: Trainers
+    for (const tr of trainersToSync) {
+      const wrote = await saveTrainerToFirestore(tr, { onlyIfMissing: onlyIfMissingCore });
+      if (wrote) trainersCount++;
+    }
+
+    // Step 2: Companies (must exist on server before Sedes & Assignments)
+    for (const comp of companiesToSync) {
+      const wrote = await saveCompanyToFirestore(comp, { onlyIfMissing: onlyIfMissingCore });
+      if (wrote) companiesCount++;
+    }
+
+    // Step 3: Activity Catalog
+    for (const catItem of catalogToSync) {
+      const wrote = await saveActivityCatalogItemToFirestore(catItem, {
+        onlyIfMissing: onlyIfMissingCore,
+      });
+      if (wrote) catalogCount++;
+    }
+
+    // Step 4: Sedes (parent companies guaranteed present)
+    for (const comp of companiesToSync) {
+      for (const sede of comp.sedes || []) {
+        const wrote = await saveSedeToFirestore(
+          {
+            ...sede,
+            companyId: sede.companyId || comp.id,
+            companyName: comp.name || sede.companyName,
+          },
+          comp,
+          { onlyIfMissing: onlyIfMissingCore }
+        );
+        if (wrote) sedesCount++;
+      }
+    }
+
+    // Step 5: Assignments (parent company & sede guaranteed present)
+    for (const asg of assignmentsToSync) {
+      const targetCompId = toSafeDocId(asg.companyId, 'comp');
+      const targetSedeId = toSafeDocId(asg.sedeId, 'sede');
+      const parentComp = companiesToSync.find(
+        (c) => c.id === asg.companyId || toSafeDocId(c.id, 'comp') === targetCompId
       );
-      const sanitized = sanitizeTrainerInput({
-        name: cleanBoundedText(tr.name, 'Entrenador BSCW', 2, 120),
-        email:
-          tr.email && /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(tr.email.trim())
-            ? tr.email.trim().toLowerCase()
-            : `${trId}@bscw.corp`,
-        phone: sanitizePhoneOrDefault(tr.phone),
-        avatar: compressedAvatar || generateInitialsAvatarDataUrl(tr.name),
-        specialties:
-          Array.isArray(tr.specialties) && tr.specialties.length > 0
-            ? tr.specialties
-            : ['Pausas Activas'],
-        active: tr.active !== false,
+      const parentSede = parentComp?.sedes?.find(
+        (s) => s.id === asg.sedeId || toSafeDocId(s.id, 'sede') === targetSedeId
+      );
+
+      const wrote = await saveAssignmentToFirestore(asg, parentComp, parentSede, {
+        onlyIfMissing: !upsertAssignments,
       });
-      batch1.set(trRef, {
-        ...sanitized,
-        createdByUid: meta.createdByUid,
-        createdByEmail: meta.createdByEmail,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      trainersCount++;
+      if (wrote) assignmentsCount++;
     }
-  }
 
-  for (const comp of companiesToSync) {
-    const compId = toSafeDocId(comp.id, 'comp');
-    const compRef = doc(db, 'companies', compId);
-    const compSnap = await getDoc(compRef);
-    if (!compSnap.exists()) {
-      const normalized = buildNormalizedCompanyPayload(comp);
-      batch1.set(compRef, {
-        name: normalized.name,
-        taxId: normalized.taxId,
-        industry: normalized.industry,
-        logoText: normalized.logoText,
-        createdByUid: meta.createdByUid,
-        createdByEmail: meta.createdByEmail,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      companiesCount++;
+    // Step 6: Attendance Records
+    for (const rec of recordsToSync) {
+      const wrote = await saveRecordToFirestore(rec, { onlyIfMissing: true });
+      if (wrote) recordsCount++;
     }
-  }
 
-  for (const catItem of catalogToSync) {
-    const catId = toSafeDocId(catItem.id, 'cat');
-    const catRef = doc(db, 'activity_catalog', catId);
-    const catSnap = await getDoc(catRef);
-    if (!catSnap.exists()) {
-      batch1.set(catRef, {
-        ...sanitizeActivityCatalogFields(catItem),
-        createdByUid: meta.createdByUid,
-        createdByEmail: meta.createdByEmail,
-        createdAt: serverTimestamp(),
-        updatedAt: serverTimestamp(),
-      });
-      catalogCount++;
-    }
-  }
-
-  if (trainersCount > 0 || companiesCount > 0 || catalogCount > 0) {
-    try {
-      await batch1.commit();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'companies');
-    }
-  }
-
-  // Step 2: Sedes (now that parent /companies/{companyId} documents exist in Firestore)
-  const batch2 = writeBatch(db);
-  let sedesCount = 0;
-
-  for (const comp of companiesToSync) {
-    const compId = toSafeDocId(comp.id, 'comp');
-    const compSnap = await getDoc(doc(db, 'companies', compId));
-    if (!compSnap.exists()) continue;
-
-    for (const sede of comp.sedes || []) {
-      const sedeId = toSafeDocId(sede.id, 'sede');
-      const sedeRef = doc(db, 'sedes', sedeId);
-      const sedeSnap = await getDoc(sedeRef);
-      if (!sedeSnap.exists()) {
-        const checked = validateSedeInput({
-          companyId: compId,
-          companyName: cleanBoundedText(
-            comp.name || sede.companyName,
-            'Empresa Corporativa',
-            2,
-            150
-          ),
-          name: cleanBoundedText(sede.name, 'Sede Corporativa', 2, 150),
-          address: cleanBoundedText(sede.address, 'Dirección Corporativa', 3, 250),
-          city: cleanBoundedText(sede.city, 'Ciudad de México', 2, 100),
-          lat: String(Number.isFinite(sede.lat) ? sede.lat : 19.42694),
-          lng: String(Number.isFinite(sede.lng) ? sede.lng : -99.16782),
-          geofenceRadiusMeters: String(
-            Number.isFinite(sede.geofenceRadiusMeters)
-              ? Math.min(10000, Math.max(10, Math.round(sede.geofenceRadiusMeters)))
-              : 150
-          ),
-          contactPerson: cleanBoundedText(sede.contactPerson, 'Encargado de Sede', 2, 120),
-          contactRole: cleanBoundedText(
-            sede.contactRole,
-            'Coordinador de Salud en el Trabajo',
-            2,
-            120
-          ),
-          contactPhone: sanitizePhoneOrDefault(sede.contactPhone),
-          colorTag:
-            sede.colorTag && /^[a-zA-Z0-9_\-]+$/.test(sede.colorTag)
-              ? sede.colorTag.slice(0, 40)
-              : 'bg-red-600',
-        });
-        batch2.set(sedeRef, {
-          ...checked.sanitized,
-          createdByUid: meta.createdByUid,
-          createdByEmail: meta.createdByEmail,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-        sedesCount++;
-      }
-    }
-  }
-
-  if (sedesCount > 0) {
-    try {
-      await batch2.commit();
-    } catch (error) {
-      handleFirestoreError(error, OperationType.WRITE, 'sedes');
-    }
-  }
-
-  // Step 3: Assignments (ensuring parent company & sede exist)
-  let assignmentsCount = 0;
-  for (const asg of assignmentsToSync) {
-    const asgId = toSafeDocId(asg.id, 'asg');
-    const parentComp = companiesToSync.find((c) => toSafeDocId(c.id, 'comp') === toSafeDocId(asg.companyId, 'comp'));
-    const parentSede = parentComp?.sedes.find((s) => toSafeDocId(s.id, 'sede') === toSafeDocId(asg.sedeId, 'sede'));
-
-    if (upsertAssignments) {
-      await saveAssignmentToFirestore(asg, parentComp, parentSede);
-      assignmentsCount++;
-    } else {
-      const asgSnap = await getDoc(doc(db, 'assignments', asgId));
-      if (!asgSnap.exists()) {
-        await saveAssignmentToFirestore(asg, parentComp, parentSede);
-        assignmentsCount++;
-      }
-    }
-  }
-
-  // Step 4: Attendance Records (sequential writes to stay well under payload limits)
-  let recordsCount = 0;
-  for (const rec of recordsToSync) {
-    const recId = toSafeDocId(rec.id, 'rec');
-    const recSnap = await getDoc(doc(db, 'records', recId));
-    if (!recSnap.exists()) {
-      await saveRecordToFirestore(rec);
-      recordsCount++;
-    }
-  }
-
-  return {
-    trainersCount,
-    companiesCount,
-    sedesCount,
-    catalogCount,
-    assignmentsCount,
-    recordsCount,
-  };
+    return {
+      trainersCount,
+      companiesCount,
+      sedesCount,
+      catalogCount,
+      assignmentsCount,
+      recordsCount,
+    };
+  });
 }
 
 export async function seedDemoDataToFirestore(): Promise<{
@@ -1357,6 +1654,6 @@ export async function syncWorkspaceDataToFirestore(): Promise<{
       assignments: storedAssignments.length > 0 ? storedAssignments : INITIAL_ASSIGNMENTS,
       records: storedRecords,
     },
-    { upsertAssignments: true }
+    { upsertAssignments: true, upsertCoreEntities: true }
   );
 }

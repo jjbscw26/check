@@ -1066,13 +1066,13 @@
       "schema": {
         "$ref": "#/entities/Personnel"
       },
-      "description": "Colección compartida de expedientes de personal."
+      "description": "Colección protegida del Directorio con autenticación Google verificada y aislamiento PII por propietario o administrador."
     },
     "/clients/{clientId}": {
       "schema": {
         "$ref": "#/entities/Client"
       },
-      "description": "Colección compartida de expedientes de clientes con dirección residencial y empresa opcional."
+      "description": "Colección protegida del Directorio de expedientes de clientes con autenticación Google verificada y aislamiento PII por propietario o administrador."
     },
     "/admins/{adminUid}": {
       "schema": {

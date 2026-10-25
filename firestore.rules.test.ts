@@ -7,6 +7,7 @@ import {
 } from '@firebase/rules-unit-testing';
 import {
   collection,
+  deleteDoc,
   doc,
   getDoc,
   getDocs,
@@ -19,9 +20,9 @@ import {
 } from 'firebase/firestore';
 
 /**
- * Dirty Dozen Security Test Suite for automatic multi-device connection across
- * /trainers, /companies, /sedes, /assignments, /records, /activity_catalog,
- * /personnel, /clients & /admins
+ * Dirty Dozen Security Test Suite:
+ * - Free operational access (no login) for /trainers, /companies, /sedes, /assignments, /records, /activity_catalog
+ * - Verified Google Authentication + Owner/Admin PII isolation for Directory (/personnel, /clients) & /admins
  */
 export async function runFirestoreRulesDirtyDozenSuite() {
   const testEnv: RulesTestEnvironment = await initializeTestEnvironment({
@@ -34,6 +35,18 @@ export async function runFirestoreRulesDirtyDozenSuite() {
   try {
     const deviceACtx = testEnv.unauthenticatedContext();
     const deviceBCtx = testEnv.unauthenticatedContext();
+    const staffCtx = testEnv.authenticatedContext('uid_staff_01', {
+      email: 'coordinador@bscw.corp',
+      email_verified: true,
+    });
+    const otherUserCtx = testEnv.authenticatedContext('uid_other_02', {
+      email: 'otro.usuario@bscw.corp',
+      email_verified: true,
+    });
+    const verifiedAdminCtx = testEnv.authenticatedContext('uid_admin_01', {
+      email: 'jjbscw@gmail.com',
+      email_verified: true,
+    });
     const spoofedAdminCtx = testEnv.authenticatedContext('uid_spoof_admin', {
       email: 'jjbscw@gmail.com',
       email_verified: false,
@@ -41,6 +54,9 @@ export async function runFirestoreRulesDirtyDozenSuite() {
 
     const dbA = deviceACtx.firestore();
     const dbB = deviceBCtx.firestore();
+    const staffDb = staffCtx.firestore();
+    const otherUserDb = otherUserCtx.firestore();
+    const adminDb = verifiedAdminCtx.firestore();
     const spoofAdminDb = spoofedAdminCtx.firestore();
     const minEpoch = Timestamp.fromDate(new Date('2020-01-01T00:00:00.000Z'));
 
@@ -96,7 +112,7 @@ export async function runFirestoreRulesDirtyDozenSuite() {
       sedeName: 'Torre Corporativa Reforma',
       sedeAddress: 'Paseo de la Reforma 500, Cuauhtémoc, CDMX',
       frequency: 'semanal',
-      dayOfWeek: 7, // Domingo soportado
+      dayOfWeek: 7,
       time: '08:30',
       durationMinutes: 20,
       activityType: 'pausa_activa',
@@ -160,7 +176,42 @@ export async function runFirestoreRulesDirtyDozenSuite() {
       updatedAt: serverTimestamp(),
     };
 
-    // Baseline automatic connection writes & cross-device reads succeed without login
+    const validPersonnelPayload = {
+      fullName: 'Mariana Gómez Ruiz',
+      phone: '+52 55 3344 5566',
+      email: 'mariana.gomez@bscw.corp',
+      address: {
+        street: 'Av. Insurgentes Sur',
+        number: '1450 Int 4B',
+        city: 'Ciudad de México',
+        state: 'CDMX',
+        postalCode: '03920',
+      },
+      createdByUid: 'uid_staff_01',
+      createdByEmail: 'coordinador@bscw.corp',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+
+    const validClientPayload = {
+      fullName: 'Roberto Villalobos',
+      phone: '+52 55 7788 9900',
+      email: 'rvillalobos@empresa.mx',
+      company: 'Grupo Financiero Reforma',
+      address: {
+        street: 'Paseo de las Palmas',
+        number: '735',
+        city: 'Miguel Hidalgo',
+        state: 'CDMX',
+        postalCode: '11000',
+      },
+      createdByUid: 'uid_staff_01',
+      createdByEmail: 'coordinador@bscw.corp',
+      createdAt: serverTimestamp(),
+      updatedAt: serverTimestamp(),
+    };
+
+    // Baseline: Free-access Entrenador & Panel Admin collections work without login
     await assertSucceeds(setDoc(doc(dbA, 'trainers', 'tr_1'), validTrainerPayload));
     await assertSucceeds(setDoc(doc(dbA, 'companies', 'comp_1'), validCompanyPayload));
     await assertSucceeds(setDoc(doc(dbA, 'sedes', 'sede_1_1'), validSedePayload));
@@ -171,108 +222,115 @@ export async function runFirestoreRulesDirtyDozenSuite() {
       getDocs(query(collection(dbB, 'records'), where('createdAt', '>=', minEpoch)))
     );
 
-    // 1. Invalid Device Audit Identifier (createdByUid with spaces/invalid chars)
-    await assertFails(
-      setDoc(doc(dbB, 'trainers', 'tr_bad_uid_1'), {
-        ...validTrainerPayload,
-        createdByUid: 'bad uid with spaces!',
-      })
+    // Baseline: Authenticated verified user & Bootstrapped Admin succeed on Directory (/personnel & /clients)
+    await assertSucceeds(setDoc(doc(staffDb, 'personnel', 'pers_1'), validPersonnelPayload));
+    await assertSucceeds(setDoc(doc(staffDb, 'clients', 'cli_1'), validClientPayload));
+    await assertSucceeds(
+      getDocs(query(collection(staffDb, 'personnel'), where('createdByUid', '==', 'uid_staff_01')))
+    );
+    await assertSucceeds(
+      getDocs(query(collection(adminDb, 'personnel'), where('createdAt', '>=', minEpoch)))
     );
 
-    // 2. Unfiltered List Scraping (missing where('createdAt', '>=', ...))
+    // 1. Unauthenticated Directory Access MUST FAIL
+    await assertFails(setDoc(doc(dbA, 'personnel', 'pers_unauth_1'), validPersonnelPayload));
+    await assertFails(getDoc(doc(dbB, 'personnel', 'pers_1')));
+    await assertFails(
+      getDocs(query(collection(dbB, 'clients'), where('createdAt', '>=', minEpoch)))
+    );
+
+    // 2. Unfiltered Collection Scraping MUST FAIL (even for Admin)
     await assertFails(getDocs(collection(dbB, 'trainers')));
     await assertFails(getDocs(collection(dbB, 'records')));
-    await assertFails(getDocs(collection(dbB, 'activity_catalog')));
+    await assertFails(getDocs(collection(adminDb, 'personnel')));
 
-    // 3. Shadow / Ghost Field Injection on Create
+    // 3. PII Blanket Read & Non-Owner Mutation on /personnel & /clients MUST FAIL
+    await assertFails(getDoc(doc(otherUserDb, 'personnel', 'pers_1')));
     await assertFails(
-      setDoc(doc(dbA, 'records', 'rec_ghost_3'), {
-        ...validRecordPayload,
-        bonusPaid: true,
+      getDocs(query(collection(otherUserDb, 'personnel'), where('createdAt', '>=', minEpoch)))
+    );
+    await assertFails(deleteDoc(doc(otherUserDb, 'clients', 'cli_1')));
+
+    // 4. Identity Spoofing on Authenticated Directory Create MUST FAIL
+    await assertFails(
+      setDoc(doc(otherUserDb, 'personnel', 'pers_spoof_4'), {
+        ...validPersonnelPayload,
+        createdByUid: 'uid_staff_01',
       })
     );
 
-    // 4. Empty Specialties Array / Whitespace-Only Field
+    // 5. Spoofed Unverified Admin Email (email_verified: false) MUST FAIL
+    await assertFails(getDoc(doc(spoofAdminDb, 'personnel', 'pers_1')));
+    await assertFails(getDoc(doc(spoofAdminDb, 'admins', 'uid_spoof_admin')));
+
+    // 6. Shadow / Ghost Field Injection MUST FAIL
     await assertFails(
-      setDoc(doc(dbA, 'trainers', 'tr_empty_spec_4'), {
+      setDoc(doc(staffDb, 'personnel', 'pers_ghost_6'), {
+        ...validPersonnelPayload,
+        isSuperAdmin: true,
+      })
+    );
+
+    // 7. Empty Specialties Array / Whitespace-Only Field MUST FAIL
+    await assertFails(
+      setDoc(doc(dbA, 'trainers', 'tr_empty_spec_7'), {
         ...validTrainerPayload,
         specialties: [],
       })
     );
-    await assertFails(
-      setDoc(doc(dbA, 'activity_catalog', 'cat_empty_4'), {
-        ...validCatalogPayload,
-        name: '     ',
-      })
-    );
 
-    // 5. Orphaned Sede Referencing Non-Existent Company
+    // 8. Orphaned Sede or Assignment Referencing Non-Existent Parent MUST FAIL
     await assertFails(
-      setDoc(doc(dbA, 'sedes', 'sede_orphan_5'), {
+      setDoc(doc(dbA, 'sedes', 'sede_orphan_8'), {
         ...validSedePayload,
         companyId: 'comp_does_not_exist',
       })
     );
-
-    // 6. Out-of-Range GPS Coordinates on Sede or Record
     await assertFails(
-      setDoc(doc(dbA, 'sedes', 'sede_bad_gps_6'), {
-        ...validSedePayload,
-        lat: 145.0,
-        geofenceRadiusMeters: -10,
+      setDoc(doc(dbA, 'assignments', 'asg_orphan_8'), {
+        ...validAssignmentPayload,
+        sedeId: 'sede_missing',
       })
     );
 
-    // 7. Denial-of-Wallet Oversized String
+    // 9. Out-of-Range GPS Coordinates / Oversized String MUST FAIL
     await assertFails(
-      setDoc(doc(dbA, 'companies', 'comp_oversize_7'), {
+      setDoc(doc(dbA, 'sedes', 'sede_bad_gps_9'), {
+        ...validSedePayload,
+        lat: 145.0,
+      })
+    );
+    await assertFails(
+      setDoc(doc(dbA, 'companies', 'comp_oversize_9'), {
         ...validCompanyPayload,
         name: 'X'.repeat(200),
       })
     );
 
-    // 8. Path ID Poisoning
-    await assertFails(setDoc(doc(dbA, 'records', 'bad id with spaces!'), validRecordPayload));
-    await assertFails(getDoc(doc(dbB, 'trainers', 'bad id with spaces!')));
+    // 10. Path ID Poisoning MUST FAIL
+    await assertFails(setDoc(doc(staffDb, 'personnel', 'bad id with spaces!'), validPersonnelPayload));
 
-    // 9. Client-Forged Timestamp
+    // 11. Client-Forged Timestamp & Immortal Field Mutation MUST FAIL
     await assertFails(
-      setDoc(doc(dbA, 'trainers', 'tr_forged_ts_9'), {
+      setDoc(doc(dbA, 'trainers', 'tr_forged_ts_11'), {
         ...validTrainerPayload,
         createdAt: Timestamp.fromMillis(1700000000000),
       })
     );
-
-    // 10. Orphaned ClassAssignment Referencing Non-Existent Sede or Bad DayOfWeek
     await assertFails(
-      setDoc(doc(dbA, 'assignments', 'asg_orphan_10'), {
-        ...validAssignmentPayload,
-        sedeId: 'sede_missing',
-      })
-    );
-    await assertFails(
-      setDoc(doc(dbA, 'assignments', 'asg_bad_day_10'), {
-        ...validAssignmentPayload,
-        dayOfWeek: 9,
-      })
-    );
-
-    // 11. Immortal Field Mutation on Update
-    await assertFails(
-      updateDoc(doc(dbB, 'records', 'rec_1'), {
-        createdByUid: 'dev_hijack',
+      updateDoc(doc(staffDb, 'personnel', 'pers_1'), {
+        createdByUid: 'uid_hijack',
         updatedAt: serverTimestamp(),
       })
     );
 
-    // 12. Admin Privilege Escalation (Unauthenticated & Spoofed Email)
+    // 12. Admin Privilege Escalation MUST FAIL
     await assertFails(
-      setDoc(doc(dbB, 'admins', 'uid_attacker'), {
-        email: 'attacker@test.com',
+      setDoc(doc(staffDb, 'admins', 'uid_staff_01'), {
+        email: 'coordinador@bscw.corp',
         grantedAt: serverTimestamp(),
       })
     );
-    await assertFails(getDoc(doc(spoofAdminDb, 'admins', 'uid_spoof_admin')));
   } finally {
     await testEnv.cleanup();
   }

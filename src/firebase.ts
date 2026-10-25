@@ -1,11 +1,40 @@
 import { initializeApp } from 'firebase/app';
-import { getAuth } from 'firebase/auth';
+import {
+  getAuth,
+  GoogleAuthProvider,
+  signInWithPopup,
+  signOut,
+  User,
+} from 'firebase/auth';
 import { doc, getDocFromServer, getFirestore, Timestamp } from 'firebase/firestore';
 import firebaseConfig from '../firebase-applet-config.json';
 
 const app = initializeApp(firebaseConfig);
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId);
 export const auth = getAuth(app);
+
+export const BOOTSTRAPPED_ADMIN_EMAIL = 'jjbscw@gmail.com';
+
+const googleAuthProvider = new GoogleAuthProvider();
+googleAuthProvider.setCustomParameters({ prompt: 'select_account' });
+
+export function isAuthorizedDirectoryUser(user: User | null | undefined): user is User {
+  return Boolean(
+    user &&
+      user.emailVerified &&
+      typeof user.email === 'string' &&
+      user.email.trim().length >= 5
+  );
+}
+
+export async function signInToDirectoryWithGoogle(): Promise<User> {
+  const credential = await signInWithPopup(auth, googleAuthProvider);
+  return credential.user;
+}
+
+export async function signOutFromDirectory(): Promise<void> {
+  await signOut(auth);
+}
 
 export const FIRESTORE_MIN_CREATED_AT = Timestamp.fromDate(
   new Date('2020-01-01T00:00:00.000Z')
@@ -18,6 +47,20 @@ export function getAutoDeviceMetadata(): {
   createdByUid: string;
   createdByEmail: string;
 } {
+  const currentUser = auth.currentUser;
+  if (
+    currentUser &&
+    /^[a-zA-Z0-9_\-]{1,128}$/.test(currentUser.uid) &&
+    typeof currentUser.email === 'string' &&
+    /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(currentUser.email.trim()) &&
+    currentUser.email.trim().length <= 254
+  ) {
+    return {
+      createdByUid: currentUser.uid,
+      createdByEmail: currentUser.email.trim(),
+    };
+  }
+
   let deviceId = 'dev_bscw_client';
   try {
     if (typeof window !== 'undefined' && window.localStorage) {

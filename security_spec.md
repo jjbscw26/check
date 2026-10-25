@@ -1,27 +1,27 @@
 # Security Specification (`security_spec.md`)
 
-## 1. Master Source of Truth & Data Invariants (Automatic Multi-Device Mode)
+## 1. Master Source of Truth & Data Invariants
 
-1. **Login-Free Automatic Multi-Device Workspace Invariant**:
-   - Per explicit user requirement, interactive sign-in is disabled so any corporate device (desktop, tablet, or mobile phone) connects automatically to the shared Firestore workspace (`ai-studio-bscwcheckcontrol-b05b50c5-aec1-462e-a57f-0f6aaeae2082`).
-   - Open `if true` rules remain strictly forbidden:
-     - `allow list` enforces query-side temporal validation (`resource.data.createdAt >= timestamp.date(2020, 1, 1)`), rejecting unfiltered scraping queries while preserving 100% compatibility with previously saved documents and new documents across all devices.
-     - `allow get` enforces `isValidId(docId) && (resource == null || existing().createdAt >= timestamp.date(2020, 1, 1))`.
-     - `allow create`, `allow update`, and `allow delete` enforce strict `isValidId(docId)` path hardening, exhaustive blueprint schema validation (`isValid[Entity]`), server timestamps (`request.time`), immutable audit metadata (`createdByUid`, `createdByEmail`, `createdAt`), and relational parent existence checks.
+1. **Authenticated Directory & Open Operational Access Invariant**:
+   - **Directorio Protegido (`/personnel/{personnelId}` y `/clients/{clientId}`)**:
+     - Requiere obligatoriamente autenticación verificada (`request.auth != null && request.auth.token.email_verified == true`).
+     - Aislamiento estricto de PII (Pilar 6 y Pilar 8): `get`, `update` y `delete` restringidos exclusivamente al creador del expediente (`existing().createdByUid == request.auth.uid`) o administrador verificado (`isAdmin()`). `list` exige filtro sobre `resource.data.createdByUid == request.auth.uid` o administrador titular verificado (`jjbscw@gmail.com`) con restricción temporal `resource.data.createdAt >= timestamp.date(2020, 1, 1)` sin llamadas `get()`/`exists()` dentro de `allow list`.
+     - En creación (`create`), `incoming().createdByUid == request.auth.uid` e `incoming().createdByEmail == request.auth.token.email`.
+   - **Acceso Libre Operativo para Entrenadores y Panel Administrativo (`/trainers`, `/companies`, `/sedes`, `/assignments`, `/records`, `/activity_catalog`)**:
+     - Conecta automáticamente en tiempo real desde cualquier dispositivo sin requerir inicio de sesión, prohibiendo reglas abiertas `if true`:
+       - `allow list` exige `resource.data.createdAt >= timestamp.date(2020, 1, 1)`.
+       - `allow get` exige `isValidId(docId) && (resource == null || isAccessibleOperationalDoc(existing()))` y `allow delete` exige `isValidId(docId) && resource != null && isAccessibleOperationalDoc(existing())` para permitir también la reconciliación segura de documentos heredados sin marca de tiempo `Timestamp`.
+       - `allow create` y `allow update` exigen `isValidId(docId)`, esquemas estrictos `isValid[Entity]`, marcas de tiempo del servidor (`request.time`), inmutabilidad de metadatos de auditoría y existencia relacional.
 2. **Global Consistency & Relational Integrity Invariant (Pillar 11)**:
-   - On `/sedes/{sedeId}` `create` and `update`, after static schema validation passes, `exists(/databases/$(database)/documents/companies/$(incoming().companyId))` MUST hold so orphaned sedes cannot be written.
+   - On `/sedes/{sedeId}` `create` and `update`, `exists(/databases/$(database)/documents/companies/$(incoming().companyId))` MUST hold.
    - On `/assignments/{assignmentId}` `create` and `update`, `exists(/databases/$(database)/documents/companies/$(incoming().companyId))` and `exists(/databases/$(database)/documents/sedes/$(incoming().sedeId))` MUST hold.
 3. **Complete Calendar Ecosystem Persistence Invariant**:
-   - `/assignments/{assignmentId}` persists all scheduled classes (`semanal` with `dayOfWeek` `0..7` including `7 = Domingo`, `mensual` `1..31`, `fecha_unica` `YYYY-MM-DD`, `closed`, `completedDates`, `nonCompliant`, `nonCompliantReason`, `missedDates`, `reopenedDates`).
-   - `/records/{recordId}` persists all live and historical calendar executions (`en_curso`, `completado`, `incumplido`, check-in/out times, GPS geofence proofs, watermarked photo evidence bounded `<= 280000` chars, biometric verification, and admin verification).
-   - `/activity_catalog/{catalogId}` persists all activity modalities and default durations (`5..480` min) used by the calendar and trainer check-in views.
+   - `/assignments/{assignmentId}`, `/records/{recordId}`, and `/activity_catalog/{catalogId}` persist all schedule frequencies, attendance states, GPS geofence proofs, and modalities across devices.
 4. **Total Array & Numeric Guarding Invariant (Pillar 2 & Pillar 5)**:
-   - `Trainer.specialties` must be a `list` with `size() >= 1 && size() <= 20` and head element validated as a trimmed non-empty `string` (`1..80` chars).
-   - `ClassAssignment.completedDates`, `missedDates`, and `reopenedDates` are bounded `<= 366` items with `YYYY-MM-DD` head validation.
-   - `Sede.lat` (`-90..90`), `Sede.lng` (`-180..180`), and `Sede.geofenceRadiusMeters` (`10..10000`) must be finite `number` values (not `NaN`).
+   - `Trainer.specialties` bounded `1..20` items; `ClassAssignment` date arrays bounded `<= 366` items; GPS coordinates and geofence radii bounded and non-`NaN`.
 5. **Ownership & Temporal Immutability Invariant**:
-   - On `create`: `createdByUid` (`1..128` alphanumeric/dash/underscore), `createdByEmail` (`5..254` email format), `createdAt == request.time`, and `updatedAt == request.time`.
-   - On `update`: `createdByUid`, `createdByEmail`, and `createdAt` are strictly immutable (`incoming().field == existing().field`), `updatedAt == request.time`, and only domain fields + `updatedAt` may change via `affectedKeys().hasOnly(...)`.
+   - On `create`: `createdAt == request.time` and `updatedAt == request.time`.
+   - On `update`: `createdByUid`, `createdByEmail`, and `createdAt` are strictly immutable (`incoming().field == existing().field`), `updatedAt == request.time`, and only allowlisted fields may change via `affectedKeys().hasOnly(...)`.
 6. **Path Variable Hardening Invariant (Pillar 3)**:
    - Single-document operations (`get`, `create`, `update`, `delete`) enforce `isValidId(docId)` (`^[a-zA-Z0-9_\-]+$`, `1..128` chars).
 
@@ -31,43 +31,43 @@
 
 All 12 payloads below MUST evaluate to `PERMISSION_DENIED`:
 
-1. **Payload 1 — Invalid Device Audit Identifier (`createdByUid` Injection)**:
-   Client attempts to create `/trainers/tr_bad_uid` with `createdByUid: ""` or containing spaces/special characters.
+1. **Payload 1 — Unauthenticated Directory Access (`/personnel` & `/clients`)**:
+   Unauthenticated client attempts `get`, `list`, `create`, `update`, or `delete` on `/personnel` or `/clients`.
 2. **Payload 2 — Unfiltered Collection Scraping (`list` without Query Enforcer)**:
-   Client executes unfiltered `getDocs(collection(db, 'trainers'))`, `getDocs(collection(db, 'records'))`, or `getDocs(collection(db, 'activity_catalog'))` without `where('createdAt', '>=', ...)`.
-3. **Payload 3 — Shadow / Ghost Field Injection on Create**:
-   Valid company, sede, assignment, record, or catalog payload plus unauthorized field `"role": "superadmin"` or `"creditLimit": 999999`.
-4. **Payload 4 — Empty / Unbounded Array or Whitespace-Only Field**:
-   Trainer payload with `specialties: []` or >20 items, or ActivityCatalog payload where `name` is `"     "`.
-5. **Payload 5 — Orphaned Sede Referencing Non-Existent Company**:
-   Creating `/sedes/sede_orphan` where `companyId` does not exist in `/companies`.
-6. **Payload 6 — Out-of-Range GPS Coordinates or Geofence Radius on Sede / Record**:
-   Creating `/sedes/sede_bad_gps` or `/records/rec_bad_gps` with `lat: 145.0` or `geofenceRadiusMeters: -50`.
-7. **Payload 7 — Denial-of-Wallet Oversized String**:
-   `name`, `address`, or `photoUrl` contains an oversized string exceeding `maxLength`.
-8. **Payload 8 — Path ID Poisoning**:
-   Creating or reading `/sedes/bad id with spaces $pecial!` or `/records/bad id!` (violates `isValidId`).
-9. **Payload 9 — Client-Forged Timestamp**:
-   `createdAt` or `updatedAt` set to a past/future client `Timestamp` instead of `request.time` (`serverTimestamp()`).
-10. **Payload 10 — Orphaned ClassAssignment Referencing Non-Existent Sede or Out-of-Range Day**:
-    Creating `/assignments/asg_orphan` referencing a non-existent `sedeId`, `dayOfWeek: 9`, or invalid `time: "99:99"`.
-11. **Payload 11 — Immortal Field Mutation on Update**:
-    Client updates `/trainers/tr_1`, `/records/rec_1`, or `/activity_catalog/cat_1` while mutating `createdByUid`, `createdByEmail`, or `createdAt`.
-12. **Payload 12 — Admin Role Escalation**:
+   Client executes unfiltered `getDocs(collection(db, 'trainers'))`, `getDocs(collection(db, 'records'))`, or `getDocs(collection(db, 'personnel'))`.
+3. **Payload 3 — PII Blanket Read & Non-Owner Mutation on `/personnel` / `/clients`**:
+   Authenticated verified user `uid_other` attempts `getDoc`, blanket `list`, `updateDoc`, or `deleteDoc` on `/personnel/pers_1` owned by `uid_staff`.
+4. **Payload 4 — Identity Spoofing on Authenticated Directory Create**:
+   Authenticated user `uid_staff` attempts to create `/personnel/pers_spoof` with `createdByUid: 'uid_victim'` or mismatched `createdByEmail`.
+5. **Payload 5 — Spoofed Unverified Admin Email (`email_verified: false`)**:
+   User with `email: 'jjbscw@gmail.com'` and `email_verified: false` attempts to read `/personnel`, `/clients`, or `/admins`.
+6. **Payload 6 — Shadow / Ghost Field Injection on Create or Update**:
+   Valid payload plus unauthorized field `"role": "superadmin"` or `"bonusPaid": true`.
+7. **Payload 7 — Empty Specialties Array or Whitespace-Only Field**:
+   Trainer payload with `specialties: []` or ActivityCatalog payload where `name` is `"     "`.
+8. **Payload 8 — Orphaned Sede or Assignment Referencing Non-Existent Parent**:
+   Creating `/sedes/sede_orphan` or `/assignments/asg_orphan` referencing missing `companyId` or `sedeId`.
+9. **Payload 9 — Out-of-Range GPS Coordinates or Oversized String (Denial of Wallet)**:
+   Creating `/sedes` with `lat: 145.0` or `/companies` with `name` exceeding `maxLength`.
+10. **Payload 10 — Path ID Poisoning**:
+    Creating or reading `/records/bad id with spaces!` or `/personnel/bad id!`.
+11. **Payload 11 — Client-Forged Timestamp or Immortal Field Mutation**:
+    Forged `createdAt` on create or mutating `createdByUid` on update.
+12. **Payload 12 — Admin Privilege Escalation**:
     Unauthenticated or non-bootstrapped user writes `/admins/uid_attacker`.
 
 ---
 
 ## 3. Red Team Audit & Conflict Report
 
-| Collection | Audit Field Integrity | State / Shadow Field Guard | Resource / Value Poisoning | Relational Consistency | Query Enforcer (`list`) | Update Validation Helper |
+| Collection | Identity & Auth Gate | PII & Shadow Field Guard | Resource / Value Poisoning | Relational Consistency | Query Enforcer (`list`) | Update Validation Helper |
 | :--- | :--- | :--- | :--- | :--- | :--- | :--- |
-| `/trainers/{trainerId}` | **PASS** | **PASS** (strict `affectedKeys().hasOnly`) | **PASS** (`isValidId` + `.size()` + RE2 regex + bounded `specialties`) | **PASS** | **PASS** (`resource.data.createdAt >= timestamp.date(2020, 1, 1)`) | **PASS** (`isValidTrainer(incoming())` wraps entire `update`) |
-| `/companies/{companyId}` | **PASS** | **PASS** (strict `affectedKeys().hasOnly`) | **PASS** (`isValidId` + `.size()` + RE2 regex) | **PASS** | **PASS** (`resource.data.createdAt >= timestamp.date(2020, 1, 1)`) | **PASS** (`isValidCompany(incoming())` wraps entire `update`) |
-| `/sedes/{sedeId}` | **PASS** | **PASS** (strict `affectedKeys().hasOnly`) | **PASS** (`isValidId` + GPS numeric bounds) | **PASS** (`exists(/companies/$(companyId))`) | **PASS** (`resource.data.createdAt >= timestamp.date(2020, 1, 1)`) | **PASS** (`isValidSede(incoming())` wraps entire `update`) |
-| `/assignments/{assignmentId}` | **PASS** | **PASS** (strict `affectedKeys().hasOnly`) | **PASS** (`isValidId` + `dayOfWeek 0..7` + bounded date lists) | **PASS** (`exists(/companies/...) && exists(/sedes/...)`) | **PASS** (`resource.data.createdAt >= timestamp.date(2020, 1, 1)`) | **PASS** (`isValidAssignment(incoming())` wraps entire `update`) |
-| `/records/{recordId}` | **PASS** | **PASS** (strict `affectedKeys().hasOnly`) | **PASS** (`isValidId` + GPS/biometric maps + bounded evidence size) | **PASS** | **PASS** (`resource.data.createdAt >= timestamp.date(2020, 1, 1)`) | **PASS** (`isValidAttendanceRecord(incoming())` wraps entire `update`) |
-| `/activity_catalog/{catalogId}` | **PASS** | **PASS** (strict `affectedKeys().hasOnly`) | **PASS** (`isValidId` + duration bounds `5..480` + `.size()`) | **PASS** | **PASS** (`resource.data.createdAt >= timestamp.date(2020, 1, 1)`) | **PASS** (`isValidActivityCatalogItem(incoming())` wraps entire `update`) |
-| `/personnel/{personnelId}` | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** |
-| `/clients/{clientId}` | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** | **PASS** |
-| `/admins/{adminUid}` | **PASS** | **PASS** (`allow update: if false;`) | **PASS** | **PASS** | **PASS** (`allow list: if false;`) | **PASS** |
+| `/trainers/{trainerId}` | **PASS** (Open operational + audit regex) | **PASS** (`affectedKeys().hasOnly`) | **PASS** (`isValidId` + `.size()` + bounded `specialties`) | **PASS** | **PASS** (`createdAt >= 2020-01-01`) | **PASS** (`isValidTrainer(incoming())`) |
+| `/companies/{companyId}` | **PASS** (Open operational + audit regex) | **PASS** (`affectedKeys().hasOnly`) | **PASS** (`isValidId` + `.size()` + RE2 regex) | **PASS** | **PASS** (`createdAt >= 2020-01-01`) | **PASS** (`isValidCompany(incoming())`) |
+| `/sedes/{sedeId}` | **PASS** (Open operational + audit regex) | **PASS** (`affectedKeys().hasOnly`) | **PASS** (`isValidId` + GPS bounds) | **PASS** (`exists(/companies/...)`) | **PASS** (`createdAt >= 2020-01-01`) | **PASS** (`isValidSede(incoming())`) |
+| `/assignments/{assignmentId}` | **PASS** (Open operational + audit regex) | **PASS** (`affectedKeys().hasOnly`) | **PASS** (`isValidId` + `dayOfWeek 0..7` + bounded lists) | **PASS** (`exists(/companies/...) && exists(/sedes/...)`) | **PASS** (`createdAt >= 2020-01-01`) | **PASS** (`isValidAssignment(incoming())`) |
+| `/records/{recordId}` | **PASS** (Open operational + audit regex) | **PASS** (`affectedKeys().hasOnly`) | **PASS** (`isValidId` + GPS/biometric maps + bounded evidence) | **PASS** | **PASS** (`createdAt >= 2020-01-01`) | **PASS** (`isValidAttendanceRecord(incoming())`) |
+| `/activity_catalog/{catalogId}` | **PASS** (Open operational + audit regex) | **PASS** (`affectedKeys().hasOnly`) | **PASS** (`isValidId` + duration `5..480` + `.size()`) | **PASS** | **PASS** (`createdAt >= 2020-01-01`) | **PASS** (`isValidActivityCatalogItem(incoming())`) |
+| `/personnel/{personnelId}` | **PASS** (`isVerifiedUser()` + `createdByUid == auth.uid`) | **PASS** (`isOwner` or `isAdmin`, `hasOnly`) | **PASS** (`isValidId` + `StructuredAddress` bounds) | **PASS** | **PASS** (`createdByUid == auth.uid` or verified bootstrapped admin) | **PASS** (`isValidPersonnel(incoming())`) |
+| `/clients/{clientId}` | **PASS** (`isVerifiedUser()` + `createdByUid == auth.uid`) | **PASS** (`isOwner` or `isAdmin`, `hasOnly`) | **PASS** (`isValidId` + `StructuredAddress` bounds) | **PASS** | **PASS** (`createdByUid == auth.uid` or verified bootstrapped admin) | **PASS** (`isValidClient(incoming())`) |
+| `/admins/{adminUid}` | **PASS** (`isBootstrappedAdmin()` with `email_verified`) | **PASS** (`allow update: if false;`) | **PASS** (`isValidId` + `isValidAdminRole`) | **PASS** | **PASS** (`allow list: if false;`) | **PASS** |

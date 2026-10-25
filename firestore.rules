@@ -27,16 +27,34 @@ service cloud.firestore {
       return request.auth != null;
     }
 
-    function isBootstrappedAdmin() {
+    function isVerifiedUser() {
       return isSignedIn() &&
         request.auth.token.email_verified == true &&
         request.auth.token.email is string &&
-        request.auth.token.email.size() <= 254 &&
+        request.auth.token.email.size() >= 5 &&
+        request.auth.token.email.size() <= 254;
+    }
+
+    function isBootstrappedAdmin() {
+      return isVerifiedUser() &&
         request.auth.token.email == 'jjbscw@gmail.com';
+    }
+
+    function isAdmin() {
+      return isBootstrappedAdmin() || (
+        isVerifiedUser() &&
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid))
+      );
     }
 
     function isValidWorkspaceEpoch(ts) {
       return ts is timestamp && ts >= timestamp.date(2020, 1, 1);
+    }
+
+    function isAccessibleOperationalDoc(data) {
+      return !('createdAt' in data) ||
+        !(data.createdAt is timestamp) ||
+        isValidWorkspaceEpoch(data.createdAt);
     }
 
     // Shared Audit Metadata Validator (supports automatic login-free device sync)
@@ -99,19 +117,19 @@ service cloud.firestore {
           'capturedAt'
         ]) &&
         gps.lat is number &&
-        !isNaN(gps.lat) &&
+        !math.isNaN(gps.lat) &&
         gps.lat >= -90 &&
         gps.lat <= 90 &&
         gps.lng is number &&
-        !isNaN(gps.lng) &&
+        !math.isNaN(gps.lng) &&
         gps.lng >= -180 &&
         gps.lng <= 180 &&
         gps.accuracy is number &&
-        !isNaN(gps.accuracy) &&
+        !math.isNaN(gps.accuracy) &&
         gps.accuracy >= 0 &&
         gps.accuracy <= 100000 &&
         gps.distanceToSedeMeters is number &&
-        !isNaN(gps.distanceToSedeMeters) &&
+        !math.isNaN(gps.distanceToSedeMeters) &&
         gps.distanceToSedeMeters >= 0 &&
         gps.distanceToSedeMeters <= 50000000 &&
         gps.isWithinGeofence is bool &&
@@ -142,7 +160,7 @@ service cloud.firestore {
         ]) &&
         fv.verified is bool &&
         fv.confidenceScore is number &&
-        !isNaN(fv.confidenceScore) &&
+        !math.isNaN(fv.confidenceScore) &&
         fv.confidenceScore >= 0 &&
         fv.confidenceScore <= 100 &&
         fv.facePhotoUrl is string &&
@@ -352,15 +370,15 @@ service cloud.firestore {
         data.city.size() <= 100 &&
         data.city.matches('^\\S(.*\\S)?$') &&
         data.lat is number &&
-        !isNaN(data.lat) &&
+        !math.isNaN(data.lat) &&
         data.lat >= -90 &&
         data.lat <= 90 &&
         data.lng is number &&
-        !isNaN(data.lng) &&
+        !math.isNaN(data.lng) &&
         data.lng >= -180 &&
         data.lng <= 180 &&
         data.geofenceRadiusMeters is number &&
-        !isNaN(data.geofenceRadiusMeters) &&
+        !math.isNaN(data.geofenceRadiusMeters) &&
         data.geofenceRadiusMeters >= 10 &&
         data.geofenceRadiusMeters <= 10000 &&
         data.contactPerson is string &&
@@ -480,7 +498,7 @@ service cloud.firestore {
         (
           !('dayOfWeek' in data) || (
             data.dayOfWeek is number &&
-            !isNaN(data.dayOfWeek) &&
+            !math.isNaN(data.dayOfWeek) &&
             data.dayOfWeek >= 0 &&
             data.dayOfWeek <= 7
           )
@@ -495,7 +513,7 @@ service cloud.firestore {
         (
           !('dayOfMonth' in data) || (
             data.dayOfMonth is number &&
-            !isNaN(data.dayOfMonth) &&
+            !math.isNaN(data.dayOfMonth) &&
             data.dayOfMonth >= 1 &&
             data.dayOfMonth <= 31
           )
@@ -503,7 +521,7 @@ service cloud.firestore {
         (
           !('durationMinutes' in data) || (
             data.durationMinutes is number &&
-            !isNaN(data.durationMinutes) &&
+            !math.isNaN(data.durationMinutes) &&
             data.durationMinutes >= 5 &&
             data.durationMinutes <= 480
           )
@@ -511,7 +529,7 @@ service cloud.firestore {
         (
           !('expectedAttendees' in data) || (
             data.expectedAttendees is number &&
-            !isNaN(data.expectedAttendees) &&
+            !math.isNaN(data.expectedAttendees) &&
             data.expectedAttendees >= 0 &&
             data.expectedAttendees <= 5000
           )
@@ -692,7 +710,7 @@ service cloud.firestore {
         data.punctualityStatus.size() <= 20 &&
         data.punctualityStatus in ['a_tiempo', 'con_retraso', 'adelantado'] &&
         data.punctualityDiffMinutes is number &&
-        !isNaN(data.punctualityDiffMinutes) &&
+        !math.isNaN(data.punctualityDiffMinutes) &&
         data.punctualityDiffMinutes >= -1440 &&
         data.punctualityDiffMinutes <= 1440 &&
         data.activityType is string &&
@@ -703,7 +721,7 @@ service cloud.firestore {
         data.activityName.size() <= 150 &&
         data.activityName.matches('^\\S(.*\\S)?$') &&
         data.attendeesCount is number &&
-        !isNaN(data.attendeesCount) &&
+        !math.isNaN(data.attendeesCount) &&
         data.attendeesCount >= 0 &&
         data.attendeesCount <= 10000 &&
         data.locationArea is string &&
@@ -735,7 +753,7 @@ service cloud.firestore {
         (
           !('durationMinutes' in data) || (
             data.durationMinutes is number &&
-            !isNaN(data.durationMinutes) &&
+            !math.isNaN(data.durationMinutes) &&
             data.durationMinutes >= 0 &&
             data.durationMinutes <= 1440
           )
@@ -743,7 +761,7 @@ service cloud.firestore {
         (
           !('plannedDurationMinutes' in data) || (
             data.plannedDurationMinutes is number &&
-            !isNaN(data.plannedDurationMinutes) &&
+            !math.isNaN(data.plannedDurationMinutes) &&
             data.plannedDurationMinutes >= 1 &&
             data.plannedDurationMinutes <= 480
           )
@@ -798,7 +816,7 @@ service cloud.firestore {
         data.activityType.size() <= 20 &&
         data.activityType in ['pausa_activa', 'clase_fitness'] &&
         data.defaultDurationMinutes is number &&
-        !isNaN(data.defaultDurationMinutes) &&
+        !math.isNaN(data.defaultDurationMinutes) &&
         data.defaultDurationMinutes >= 5 &&
         data.defaultDurationMinutes <= 480 &&
         (
@@ -921,7 +939,7 @@ service cloud.firestore {
     // Collection 1: /trainers/{trainerId}
     match /trainers/{trainerId} {
       allow get: if isValidId(trainerId) &&
-        (resource == null || isValidWorkspaceEpoch(existing().createdAt));
+        (resource == null || isAccessibleOperationalDoc(existing()));
 
       allow list: if resource.data.createdAt >= timestamp.date(2020, 1, 1);
 
@@ -950,13 +968,13 @@ service cloud.firestore {
 
       allow delete: if isValidId(trainerId) &&
         resource != null &&
-        isValidWorkspaceEpoch(existing().createdAt);
+        isAccessibleOperationalDoc(existing());
     }
 
     // Collection 2: /companies/{companyId}
     match /companies/{companyId} {
       allow get: if isValidId(companyId) &&
-        (resource == null || isValidWorkspaceEpoch(existing().createdAt));
+        (resource == null || isAccessibleOperationalDoc(existing()));
 
       allow list: if resource.data.createdAt >= timestamp.date(2020, 1, 1);
 
@@ -987,13 +1005,13 @@ service cloud.firestore {
 
       allow delete: if isValidId(companyId) &&
         resource != null &&
-        isValidWorkspaceEpoch(existing().createdAt);
+        isAccessibleOperationalDoc(existing());
     }
 
     // Collection 3: /sedes/{sedeId}
     match /sedes/{sedeId} {
       allow get: if isValidId(sedeId) &&
-        (resource == null || isValidWorkspaceEpoch(existing().createdAt));
+        (resource == null || isAccessibleOperationalDoc(existing()));
 
       allow list: if resource.data.createdAt >= timestamp.date(2020, 1, 1);
 
@@ -1030,13 +1048,13 @@ service cloud.firestore {
 
       allow delete: if isValidId(sedeId) &&
         resource != null &&
-        isValidWorkspaceEpoch(existing().createdAt);
+        isAccessibleOperationalDoc(existing());
     }
 
     // Collection 4: /assignments/{assignmentId}
     match /assignments/{assignmentId} {
       allow get: if isValidId(assignmentId) &&
-        (resource == null || isValidWorkspaceEpoch(existing().createdAt));
+        (resource == null || isAccessibleOperationalDoc(existing()));
 
       allow list: if resource.data.createdAt >= timestamp.date(2020, 1, 1);
 
@@ -1088,13 +1106,13 @@ service cloud.firestore {
 
       allow delete: if isValidId(assignmentId) &&
         resource != null &&
-        isValidWorkspaceEpoch(existing().createdAt);
+        isAccessibleOperationalDoc(existing());
     }
 
     // Collection 5: /records/{recordId}
     match /records/{recordId} {
       allow get: if isValidId(recordId) &&
-        (resource == null || isValidWorkspaceEpoch(existing().createdAt));
+        (resource == null || isAccessibleOperationalDoc(existing()));
 
       allow list: if resource.data.createdAt >= timestamp.date(2020, 1, 1);
 
@@ -1152,13 +1170,13 @@ service cloud.firestore {
 
       allow delete: if isValidId(recordId) &&
         resource != null &&
-        isValidWorkspaceEpoch(existing().createdAt);
+        isAccessibleOperationalDoc(existing());
     }
 
     // Collection 6: /activity_catalog/{catalogId}
     match /activity_catalog/{catalogId} {
       allow get: if isValidId(catalogId) &&
-        (resource == null || isValidWorkspaceEpoch(existing().createdAt));
+        (resource == null || isAccessibleOperationalDoc(existing()));
 
       allow list: if resource.data.createdAt >= timestamp.date(2020, 1, 1);
 
@@ -1186,24 +1204,35 @@ service cloud.firestore {
 
       allow delete: if isValidId(catalogId) &&
         resource != null &&
-        isValidWorkspaceEpoch(existing().createdAt);
+        isAccessibleOperationalDoc(existing());
     }
 
-    // Collection 7: /personnel/{personnelId}
+    // Collection 7: /personnel/{personnelId} (Authenticated Directory Only — PII Isolated)
     match /personnel/{personnelId} {
-      allow get: if isValidId(personnelId) &&
-        (resource == null || isValidWorkspaceEpoch(existing().createdAt));
+      allow get: if isVerifiedUser() &&
+        isValidId(personnelId) &&
+        resource != null &&
+        isValidWorkspaceEpoch(existing().createdAt) &&
+        (existing().createdByUid == request.auth.uid || isAdmin());
 
-      allow list: if resource.data.createdAt >= timestamp.date(2020, 1, 1);
+      allow list: if isVerifiedUser() && (
+        resource.data.createdByUid == request.auth.uid ||
+        (isBootstrappedAdmin() && resource.data.createdAt >= timestamp.date(2020, 1, 1))
+      );
 
-      allow create: if isValidId(personnelId) &&
+      allow create: if isVerifiedUser() &&
+        isValidId(personnelId) &&
         isValidPersonnel(incoming()) &&
+        incoming().createdByUid == request.auth.uid &&
+        incoming().createdByEmail == request.auth.token.email &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
 
       allow update: if (
+        isVerifiedUser() &&
         isValidId(personnelId) &&
         isValidPersonnel(incoming()) &&
+        (existing().createdByUid == request.auth.uid || isAdmin()) &&
         incoming().createdByUid == existing().createdByUid &&
         incoming().createdByEmail == existing().createdByEmail &&
         incoming().createdAt == existing().createdAt &&
@@ -1217,26 +1246,39 @@ service cloud.firestore {
         ])
       );
 
-      allow delete: if isValidId(personnelId) &&
+      allow delete: if isVerifiedUser() &&
+        isValidId(personnelId) &&
         resource != null &&
-        isValidWorkspaceEpoch(existing().createdAt);
+        isValidWorkspaceEpoch(existing().createdAt) &&
+        (existing().createdByUid == request.auth.uid || isAdmin());
     }
 
-    // Collection 8: /clients/{clientId}
+    // Collection 8: /clients/{clientId} (Authenticated Directory Only — PII Isolated)
     match /clients/{clientId} {
-      allow get: if isValidId(clientId) &&
-        (resource == null || isValidWorkspaceEpoch(existing().createdAt));
+      allow get: if isVerifiedUser() &&
+        isValidId(clientId) &&
+        resource != null &&
+        isValidWorkspaceEpoch(existing().createdAt) &&
+        (existing().createdByUid == request.auth.uid || isAdmin());
 
-      allow list: if resource.data.createdAt >= timestamp.date(2020, 1, 1);
+      allow list: if isVerifiedUser() && (
+        resource.data.createdByUid == request.auth.uid ||
+        (isBootstrappedAdmin() && resource.data.createdAt >= timestamp.date(2020, 1, 1))
+      );
 
-      allow create: if isValidId(clientId) &&
+      allow create: if isVerifiedUser() &&
+        isValidId(clientId) &&
         isValidClient(incoming()) &&
+        incoming().createdByUid == request.auth.uid &&
+        incoming().createdByEmail == request.auth.token.email &&
         incoming().createdAt == request.time &&
         incoming().updatedAt == request.time;
 
       allow update: if (
+        isVerifiedUser() &&
         isValidId(clientId) &&
         isValidClient(incoming()) &&
+        (existing().createdByUid == request.auth.uid || isAdmin()) &&
         incoming().createdByUid == existing().createdByUid &&
         incoming().createdByEmail == existing().createdByEmail &&
         incoming().createdAt == existing().createdAt &&
@@ -1251,9 +1293,11 @@ service cloud.firestore {
         ])
       );
 
-      allow delete: if isValidId(clientId) &&
+      allow delete: if isVerifiedUser() &&
+        isValidId(clientId) &&
         resource != null &&
-        isValidWorkspaceEpoch(existing().createdAt);
+        isValidWorkspaceEpoch(existing().createdAt) &&
+        (existing().createdByUid == request.auth.uid || isAdmin());
     }
 
     // Collection 9: /admins/{adminUid}

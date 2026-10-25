@@ -7,6 +7,8 @@ import {
   CheckCheck,
   BellRing,
   Database,
+  Lock,
+  LockOpen,
 } from 'lucide-react';
 import { Trainer } from '../types';
 
@@ -19,6 +21,8 @@ interface HeaderProps {
   activeSessionCount: number;
   overdueSessionCount?: number;
   isMobileOrTablet?: boolean;
+  isDirectoryAuthenticated?: boolean;
+  directoryUserEmail?: string | null;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -30,6 +34,8 @@ export const Header: React.FC<HeaderProps> = ({
   activeSessionCount,
   overdueSessionCount = 0,
   isMobileOrTablet = false,
+  isDirectoryAuthenticated = false,
+  directoryUserEmail = null,
 }) => {
   const [currentTime, setCurrentTime] = useState<string>('');
   const [currentDate, setCurrentDate] = useState<string>('');
@@ -125,6 +131,11 @@ export const Header: React.FC<HeaderProps> = ({
                 <button
                   type="button"
                   onClick={() => onViewChange('personnel')}
+                  title={
+                    isDirectoryAuthenticated
+                      ? `Directorio autenticado${directoryUserEmail ? ` (${directoryUserEmail})` : ''}`
+                      : 'Directorio (Requiere autenticación)'
+                  }
                   className={`flex items-center px-3 sm:px-3.5 py-1.5 rounded-lg transition-all ${
                     currentView === 'personnel'
                       ? 'bg-red-600 text-white shadow-sm font-semibold'
@@ -133,6 +144,19 @@ export const Header: React.FC<HeaderProps> = ({
                 >
                   <Database className="w-3.5 h-3.5 sm:w-4 sm:h-4 mr-1.5" />
                   <span>Directorio</span>
+                  {isDirectoryAuthenticated ? (
+                    <LockOpen
+                      className={`w-3 h-3 ml-1.5 ${
+                        currentView === 'personnel' ? 'text-emerald-200' : 'text-emerald-600'
+                      }`}
+                    />
+                  ) : (
+                    <Lock
+                      className={`w-3 h-3 ml-1.5 ${
+                        currentView === 'personnel' ? 'text-white/85' : 'text-slate-400'
+                      }`}
+                    />
+                  )}
                 </button>
 
                 <button

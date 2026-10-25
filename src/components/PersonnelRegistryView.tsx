@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
+import { User } from 'firebase/auth';
 import {
   collection,
   deleteDoc,
@@ -13,6 +14,7 @@ import {
 } from 'firebase/firestore';
 import {
   AlertCircle,
+  BarChart3,
   Briefcase,
   Building2,
   Calendar,
@@ -25,6 +27,9 @@ import {
   DownloadCloud,
   Edit3,
   Layers,
+  Lock,
+  LogIn,
+  LogOut,
   Mail,
   MapPin,
   Navigation,
@@ -34,6 +39,7 @@ import {
   RotateCcw,
   Save,
   Search,
+  ShieldCheck,
   Trash2,
   Upload,
   UserCheck,
@@ -42,12 +48,13 @@ import {
   X,
 } from 'lucide-react';
 import {
+  BOOTSTRAPPED_ADMIN_EMAIL,
   db,
   FIRESTORE_MIN_CREATED_AT,
-  getAutoDeviceMetadata,
   handleFirestoreError,
   OperationType,
 } from '../firebase';
+import { useDirectoryAuth } from '../hooks/useDirectoryAuth';
 import {
   AttendanceRecord,
   FirestoreActivityCatalogRecord,
@@ -84,8 +91,11 @@ import {
 import {
   deleteAssignmentFromFirestore,
   deleteCompanyAndSedesFromFirestore,
+  deleteSedeFromFirestore,
+  deleteTrainerFromFirestore,
   saveCompanyToFirestore,
   saveSedeToFirestore,
+  saveTrainerToFirestore,
   syncWorkspaceDataToFirestore,
 } from '../utils/firestoreDemoSync';
 import { getCurrentPositionAsync } from '../utils/geo';
@@ -351,10 +361,22 @@ function resizeImageFileToDataUrl(file: File): Promise<string> {
 
 export interface PersonnelRegistryViewProps {
   embeddedInAdmin?: boolean;
+  onNavigateView?: (view: 'trainer' | 'personnel' | 'admin') => void;
+  onExitEmbeddedDirectory?: () => void;
 }
 
-export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
-  embeddedInAdmin = false,
+interface PersonnelRegistryWorkspaceProps {
+  embeddedInAdmin: boolean;
+  authenticatedUser: User;
+  isAdminUser: boolean;
+  onSignOut: () => Promise<void>;
+}
+
+const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
+  embeddedInAdmin,
+  authenticatedUser,
+  isAdminUser,
+  onSignOut,
 }) => {
   const [activeCategory, setActiveCategory] = useState<FirestoreDirectoryCategory>('trainers');
 
@@ -502,7 +524,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     throw fatalFirestoreError;
   }
 
-  // Real-time automatic listeners for all collections (no login required)
+  // Real-time listeners attached ONLY after verified authentication in Directorio
   useEffect(() => {
     setLoadingByCat({
       trainers: true,
@@ -515,6 +537,11 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
 
     const mkQuery = (colName: string) =>
       query(collection(db, colName), where('createdAt', '>=', FIRESTORE_MIN_CREATED_AT));
+
+    const mkPrivateDirectoryQuery = (colName: 'personnel' | 'clients') =>
+      isAdminUser
+        ? query(collection(db, colName), where('createdAt', '>=', FIRESTORE_MIN_CREATED_AT))
+        : query(collection(db, colName), where('createdByUid', '==', authenticatedUser.uid));
 
     const unsubTrainers = onSnapshot(
       mkQuery('trainers'),
@@ -640,7 +667,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     );
 
     const unsubPersonnel = onSnapshot(
-      mkQuery('personnel'),
+      mkPrivateDirectoryQuery('personnel'),
       (snap) => {
         const items: PersonnelRecord[] = snap.docs.map((docSnap) => {
           const d = docSnap.data();
@@ -673,7 +700,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     );
 
     const unsubClients = onSnapshot(
-      mkQuery('clients'),
+      mkPrivateDirectoryQuery('clients'),
       (snap) => {
         const items: FirestoreClientRecord[] = snap.docs.map((docSnap) => {
           const d = docSnap.data();
@@ -883,7 +910,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
       unsubPersonnel();
       unsubClients();
     };
-  }, []);
+  }, [authenticatedUser.uid, isAdminUser]);
 
   // Keep selected company in Sede form synchronized when companiesList loads or updates
   useEffect(() => {
@@ -1035,60 +1062,31 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
       return;
     }
 
-    const meta = getAutoDeviceMetadata();
-
     setIsSaving(true);
     const { sanitized } = check;
     const editingId = editingIdByCat.trainers;
+    const targetTrainerId = editingId || `tr_${Date.now()}`;
 
     try {
-      if (editingId) {
-        await updateDoc(doc(db, 'trainers', editingId), {
-          name: sanitized.name,
-          email: sanitized.email,
-          phone: sanitized.phone,
-          avatar: sanitized.avatar,
-          specialties: sanitized.specialties,
-          active: sanitized.active,
-          updatedAt: serverTimestamp(),
-        });
-        resetCategoryForm('trainers');
-        setSaveFeedback({
-          category: 'trainers',
-          type: 'success',
-          message: `Entrenador "${sanitized.name}" actualizado en /trainers.`,
-        });
-      } else {
-        const newRef = doc(collection(db, 'trainers'));
-        await setDoc(newRef, {
-          name: sanitized.name,
-          email: sanitized.email,
-          phone: sanitized.phone,
-          avatar: sanitized.avatar,
-          specialties: sanitized.specialties,
-          active: sanitized.active,
-          createdByUid: meta.createdByUid,
-          createdByEmail: meta.createdByEmail,
-          createdAt: serverTimestamp(),
-          updatedAt: serverTimestamp(),
-        });
-        resetCategoryForm('trainers');
-        setSaveFeedback({
-          category: 'trainers',
-          type: 'success',
-          message: `Entrenador "${sanitized.name}" guardado en /trainers.`,
-        });
-      }
+      await saveTrainerToFirestore({
+        id: targetTrainerId,
+        name: sanitized.name,
+        email: sanitized.email,
+        phone: sanitized.phone,
+        avatar: sanitized.avatar,
+        specialties: sanitized.specialties,
+        active: sanitized.active,
+      });
+      resetCategoryForm('trainers');
+      setSaveFeedback({
+        category: 'trainers',
+        type: 'success',
+        message: editingId
+          ? `Entrenador "${sanitized.name}" actualizado en /trainers.`
+          : `Entrenador "${sanitized.name}" guardado en /trainers.`,
+      });
     } catch (error) {
-      try {
-        handleFirestoreError(
-          error,
-          editingId ? OperationType.UPDATE : OperationType.CREATE,
-          editingId ? `trainers/${editingId}` : 'trainers'
-        );
-      } catch (structuredErr) {
-        setFatalFirestoreError(structuredErr as Error);
-      }
+      setFatalFirestoreError(error as Error);
     } finally {
       setIsSaving(false);
     }
@@ -1223,7 +1221,8 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
       return;
     }
 
-    const meta = getAutoDeviceMetadata();
+    const ownerUid = authenticatedUser.uid;
+    const ownerEmail = (authenticatedUser.email || '').trim();
 
     setIsSaving(true);
     const { sanitized } = check;
@@ -1251,8 +1250,8 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
           phone: sanitized.phone,
           email: sanitized.email,
           address: { ...sanitized.address },
-          createdByUid: meta.createdByUid,
-          createdByEmail: meta.createdByEmail,
+          createdByUid: ownerUid,
+          createdByEmail: ownerEmail,
           createdAt: serverTimestamp(),
           updatedAt: serverTimestamp(),
         });
@@ -1294,7 +1293,8 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
       return;
     }
 
-    const meta = getAutoDeviceMetadata();
+    const ownerUid = authenticatedUser.uid;
+    const ownerEmail = (authenticatedUser.email || '').trim();
 
     setIsSaving(true);
     const { sanitized } = check;
@@ -1322,8 +1322,8 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
         const newRef = doc(collection(db, 'clients'));
         await setDoc(newRef, {
           ...basePayload,
-          createdByUid: meta.createdByUid,
-          createdByEmail: meta.createdByEmail,
+          createdByUid: ownerUid,
+          createdByEmail: ownerEmail,
           createdAt: serverTimestamp(),
         });
         resetCategoryForm('clients');
@@ -1355,6 +1355,10 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
         await deleteCompanyAndSedesFromFirestore(id);
       } else if (cat === 'calendar') {
         await deleteAssignmentFromFirestore(id);
+      } else if (cat === 'trainers') {
+        await deleteTrainerFromFirestore(id);
+      } else if (cat === 'sedes') {
+        await deleteSedeFromFirestore(id);
       } else {
         await deleteDoc(doc(db, cat, id));
       }
@@ -1622,27 +1626,48 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
 
   return (
     <div className={embeddedInAdmin ? 'space-y-5' : 'max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 space-y-6'}>
-      {/* Top Bar: Firestore Status, Demo Seed Action & Google Auth */}
-      <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 flex flex-col lg:flex-row lg:items-center lg:justify-between gap-4">
+      {/* Top Bar: Firestore Status, Authenticated Session & Demo Sync Action */}
+      <div className="bg-white border border-slate-200 rounded-2xl p-4 sm:p-5 flex flex-col xl:flex-row xl:items-center xl:justify-between gap-4">
         <div className="space-y-1">
           <div className="flex flex-wrap items-center gap-2">
             <Database className="w-5 h-5 text-red-600 shrink-0" />
             <h2 className="text-base sm:text-lg font-extrabold text-slate-900 tracking-tight">
-              Base de Datos Cloud Firestore — Directorio y Calendario de Asignaciones
+              Base de Datos Cloud Firestore — Directorio Protegido
             </h2>
             <span className="text-[11px] font-mono tabular-nums font-bold px-2 py-0.5 rounded bg-slate-100 text-slate-700 border border-slate-200">
               {totalDocumentsCount} registros
             </span>
+            <span className="inline-flex items-center gap-1 text-[11px] font-bold px-2 py-0.5 rounded bg-emerald-50 text-emerald-800 border border-emerald-200">
+              <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
+              {isAdminUser ? 'Admin Verificado' : 'Sesión Verificada'}
+            </span>
           </div>
           <p className="text-xs text-slate-600">
-            Sincronización en tiempo real desde cualquier dispositivo sin inicio de sesión: entrenadores, empresas, sedes, programación de calendario, ejecuciones y catálogo de modalidades.
+            Acceso autenticado al Directorio ({authenticatedUser.email}). Los módulos de Entrenador y Panel Administrativo mantienen acceso libre.
           </p>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 shrink-0">
-          <div className="flex items-center gap-1.5 text-xs text-slate-600">
-            <span className="w-2 h-2 rounded-full bg-emerald-500" aria-hidden="true" />
-            <span>Conexión automática · Multi-dispositivo</span>
+        <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200">
+            <img
+              src={
+                authenticatedUser.photoURL ||
+                generateInitialsAvatarDataUrl(
+                  authenticatedUser.displayName || authenticatedUser.email || 'US'
+                )
+              }
+              alt={authenticatedUser.displayName || authenticatedUser.email || 'Usuario'}
+              referrerPolicy="no-referrer"
+              className="w-6 h-6 rounded-full object-cover border border-slate-300"
+            />
+            <div className="text-left leading-tight">
+              <div className="text-[11px] font-bold text-slate-900 truncate max-w-[160px]">
+                {authenticatedUser.displayName || 'Usuario Autenticado'}
+              </div>
+              <div className="text-[10px] text-slate-500 font-mono truncate max-w-[180px]">
+                {authenticatedUser.email}
+              </div>
+            </div>
           </div>
 
           <button
@@ -1654,6 +1679,16 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
           >
             <DownloadCloud className="w-4 h-4 text-red-400" />
             <span>{isSeedingDemo ? 'Sincronizando...' : 'Sincronizar Base de Datos'}</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => void onSignOut()}
+            className="px-3 py-2 rounded-xl bg-white hover:bg-rose-50 text-slate-700 hover:text-rose-700 border border-slate-200 hover:border-rose-300 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+            title="Cerrar sesión en el Directorio"
+          >
+            <LogOut className="w-3.5 h-3.5" />
+            <span>Cerrar sesión</span>
           </button>
         </div>
       </div>
@@ -3890,3 +3925,198 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
     </div>
   );
 };
+
+export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
+  embeddedInAdmin = false,
+  onNavigateView,
+  onExitEmbeddedDirectory,
+}) => {
+  const {
+    user,
+    authReady,
+    isAuthenticated,
+    isAdminUser,
+    isSigningIn,
+    authError,
+    clearAuthError,
+    signInWithGoogle,
+    signOutDirectory,
+  } = useDirectoryAuth();
+
+  if (!authReady) {
+    return (
+      <div
+        className={
+          embeddedInAdmin
+            ? 'py-10 flex items-center justify-center'
+            : 'max-w-3xl mx-auto px-4 sm:px-6 lg:px-8 py-16 flex items-center justify-center'
+        }
+      >
+        <div className="bg-white border border-slate-200 rounded-2xl p-8 w-full text-center space-y-3 shadow-sm">
+          <RefreshCw className="w-6 h-6 text-red-600 animate-spin mx-auto" />
+          <p className="text-sm font-bold text-slate-900">
+            Verificando credenciales de acceso al Directorio...
+          </p>
+          <p className="text-xs text-slate-500">
+            Conectando con el servicio de autenticación de BSCW Check.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (!isAuthenticated || !user) {
+    const isUnverifiedAccount = Boolean(user && !user.emailVerified);
+
+    return (
+      <div
+        className={
+          embeddedInAdmin
+            ? 'py-4'
+            : 'max-w-2xl mx-auto px-4 sm:px-6 lg:px-8 py-12'
+        }
+      >
+        <div className="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+          <div className="bg-slate-900 px-6 py-5 flex items-center justify-between gap-4">
+            <div className="flex items-center gap-3">
+              <div className="w-11 h-11 rounded-xl bg-red-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+                <Lock className="w-5 h-5" />
+              </div>
+              <div>
+                <h2 className="text-base sm:text-lg font-extrabold text-white tracking-tight">
+                  Autenticación Requerida — Directorio
+                </h2>
+                <p className="text-xs text-slate-300">
+                  Módulo maestro de base de datos, expedientes de personal y clientes
+                </p>
+              </div>
+            </div>
+            <span className="hidden sm:inline-flex items-center gap-1 px-2.5 py-1 rounded-lg bg-white/10 text-white text-[11px] font-semibold border border-white/15">
+              <ShieldCheck className="w-3.5 h-3.5 text-red-400" />
+              Acceso Protegido
+            </span>
+          </div>
+
+          <div className="p-6 sm:p-8 space-y-6">
+            <div className="space-y-2 text-xs sm:text-sm text-slate-600 leading-relaxed">
+              <p className="font-semibold text-slate-900">
+                Inicia sesión con una cuenta de Google verificada para consultar o modificar el Directorio en Cloud Firestore.
+              </p>
+              <p>
+                Los módulos operativos de{' '}
+                <strong className="text-slate-900">Entrenador</strong> y{' '}
+                <strong className="text-slate-900">Panel Administrativo</strong> mantienen{' '}
+                <span className="text-emerald-700 font-bold">acceso libre sin inicio de sesión</span>.
+              </p>
+            </div>
+
+            {isUnverifiedAccount && (
+              <div className="rounded-xl bg-amber-50 border border-amber-300 px-4 py-3 text-xs text-amber-900 flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-bold">Correo electrónico pendiente de verificación</p>
+                    <p className="mt-0.5">
+                      La cuenta <span className="font-mono">{user?.email}</span> no tiene el correo verificado. Utiliza una cuenta de Google verificada ({BOOTSTRAPPED_ADMIN_EMAIL} u otra cuenta autorizada).
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => void signOutDirectory()}
+                  className="px-2.5 py-1 rounded-lg bg-amber-200/70 hover:bg-amber-200 text-amber-950 font-bold shrink-0 cursor-pointer"
+                >
+                  Cambiar cuenta
+                </button>
+              </div>
+            )}
+
+            {authError && (
+              <div className="rounded-xl bg-rose-50 border border-rose-300 px-4 py-3 text-xs text-rose-900 flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+                  <span className="font-semibold">{authError}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={clearAuthError}
+                  className="text-rose-700 hover:text-rose-950 font-bold shrink-0"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            )}
+
+            <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={() => void signInWithGoogle()}
+                disabled={isSigningIn}
+                className="flex-1 px-5 py-3 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white text-sm font-extrabold flex items-center justify-center gap-2.5 shadow-sm transition cursor-pointer"
+              >
+                {isSigningIn ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin" />
+                    <span>Conectando con Google...</span>
+                  </>
+                ) : (
+                  <>
+                    <LogIn className="w-4 h-4" />
+                    <span>Iniciar sesión con Google</span>
+                  </>
+                )}
+              </button>
+
+              {embeddedInAdmin && onExitEmbeddedDirectory && (
+                <button
+                  type="button"
+                  onClick={onExitEmbeddedDirectory}
+                  className="px-4 py-3 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 text-xs font-bold flex items-center justify-center gap-1.5 transition cursor-pointer"
+                >
+                  <BarChart3 className="w-4 h-4 text-slate-600" />
+                  <span>Volver a Reportes (Acceso Libre)</span>
+                </button>
+              )}
+            </div>
+
+            {!embeddedInAdmin && onNavigateView && (
+              <div className="pt-4 border-t border-slate-200 flex flex-wrap items-center justify-between gap-3">
+                <span className="text-xs text-slate-500 font-medium">
+                  ¿Deseas operar sin iniciar sesión?
+                </span>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => onNavigateView('trainer')}
+                    className="px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <UserCheck className="w-3.5 h-3.5 text-red-600" />
+                    <span>Ir a Entrenador (Libre)</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => onNavigateView('admin')}
+                    className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <BarChart3 className="w-3.5 h-3.5" />
+                    <span>Ir a Panel Admin (Libre)</span>
+                  </button>
+                </div>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <PersonnelRegistryWorkspace
+      embeddedInAdmin={embeddedInAdmin}
+      authenticatedUser={user}
+      isAdminUser={isAdminUser}
+      onSignOut={signOutDirectory}
+    />
+  );
+};
+

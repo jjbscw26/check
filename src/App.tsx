@@ -44,6 +44,7 @@ import {
   handleFirestoreError,
   OperationType,
 } from './firebase';
+import { useDirectoryAuth } from './hooks/useDirectoryAuth';
 import {
   deleteActivityCatalogItemFromFirestore,
   deleteAssignmentFromFirestore,
@@ -117,6 +118,8 @@ export default function App() {
   const [initialCalendarReady, setInitialCalendarReady] = useState<boolean>(false);
   const [syncErrorMessage, setSyncErrorMessage] = useState<string | null>(null);
   const [isRetryingSync, setIsRetryingSync] = useState<boolean>(false);
+
+  const { isAuthenticated: isDirectoryAuthenticated, user: directoryUser } = useDirectoryAuth();
 
   const autoSeedTriggeredRef = useRef<boolean>(false);
   const reconciledInitialAssignmentsRef = useRef<boolean>(false);
@@ -1181,6 +1184,8 @@ export default function App() {
         activeSessionCount={activeSessionCount}
         overdueSessionCount={overdueSessionCount}
         isMobileOrTablet={isMobileOrTablet}
+        isDirectoryAuthenticated={isDirectoryAuthenticated}
+        directoryUserEmail={directoryUser?.email}
       />
 
       {syncErrorMessage && (
@@ -1228,7 +1233,7 @@ export default function App() {
         {!isMobileOrTablet && currentView === 'personnel' && (
           <div className="hidden lg:block">
             <FirestoreErrorBoundary>
-              <PersonnelRegistryView />
+              <PersonnelRegistryView onNavigateView={handleViewChange} />
             </FirestoreErrorBoundary>
           </div>
         )}
@@ -1259,6 +1264,7 @@ export default function App() {
               onUpdateCatalogItem={handleUpdateCatalogItem}
               onDeleteCatalogItem={handleDeleteCatalogItem}
               onResetData={handleResetData}
+              isDirectoryAuthenticated={isDirectoryAuthenticated}
             />
           </div>
         )}

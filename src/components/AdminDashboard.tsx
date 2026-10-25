@@ -68,6 +68,7 @@ interface AdminDashboardProps {
   onUpdateCatalogItem: (item: ActivityCatalogItem, previousName?: string) => void;
   onDeleteCatalogItem: (id: string) => void;
   onResetData: () => void;
+  isDirectoryAuthenticated?: boolean;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
@@ -94,6 +95,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onUpdateCatalogItem,
   onDeleteCatalogItem,
   onResetData,
+  isDirectoryAuthenticated = false,
 }) => {
   const [activeTab, setActiveTab] = useState<'reports' | 'schedule' | 'activity_types' | 'log' | 'sedes' | 'trainers' | 'personnel'>('reports');
   const [selectedRecordForDetail, setSelectedRecordForDetail] = useState<AttendanceRecord | null>(null);
@@ -500,13 +502,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('personnel')}
-            className={`px-3.5 py-1.5 rounded-lg transition ${
+            title={
+              isDirectoryAuthenticated
+                ? 'Directorio (Sesión autenticada)'
+                : 'Directorio (Requiere autenticación)'
+            }
+            className={`px-3.5 py-1.5 rounded-lg transition inline-flex items-center gap-1.5 ${
               activeTab === 'personnel'
                 ? 'bg-red-600 text-white shadow-sm font-bold'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
             }`}
           >
-            🗂️ Directorio (Firestore)
+            <span>🗂️ Directorio (Firestore)</span>
+            {!isDirectoryAuthenticated && <Lock className="w-3 h-3 opacity-75" />}
           </button>
         </div>
       </div>
@@ -1593,10 +1601,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         />
       )}
 
-      {/* TAB: REGISTRO DE PERSONAL EN FIRESTORE */}
+      {/* TAB: REGISTRO DE PERSONAL EN FIRESTORE (REQUIERE AUTENTICACIÓN) */}
       {activeTab === 'personnel' && (
         <FirestoreErrorBoundary>
-          <PersonnelRegistryView embeddedInAdmin />
+          <PersonnelRegistryView
+            embeddedInAdmin
+            onExitEmbeddedDirectory={() => setActiveTab('reports')}
+          />
         </FirestoreErrorBoundary>
       )}
 
