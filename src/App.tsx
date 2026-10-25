@@ -856,7 +856,7 @@ export default function App() {
     let nextAssignments = assignments;
 
     const nextRecords: AttendanceRecord[] = records.map((rec) => {
-      if (rec.status !== 'en_curso') return rec;
+      if (rec.status !== 'en_curso' || rec.checkOutTime) return rec;
       const alarm = getSessionAlarmStatus(rec, activityCatalog, nowTick);
       if (!alarm.hasExceededUnclosedGrace) return rec;
 
@@ -864,18 +864,20 @@ export default function App() {
       stopAlarmAudioImmediately();
       void releaseSessionWakeLock();
 
-      const autoNote = `[Sistema BSCW] Sesión dada por NO CERRADA, bloqueada y alarma desactivada automáticamente en el lapso máximo de 30 min tras finalizar (${alarm.autoLockDeadlineFormatted} hrs).`;
-      const mergedObs = rec.observations
+      const autoNote = `[Sistema BSCW] Salida pendiente dada por TERMINADA a los 60 min después de la hora de término (${alarm.autoLockDeadlineFormatted} hrs) y calificada como NO CERRADA.`;
+      const rawMergedObs = rec.observations
         ? rec.observations.includes('[Sistema BSCW]')
           ? rec.observations
           : `${rec.observations} | ${autoNote}`
         : autoNote;
+      const mergedObs = rawMergedObs.slice(0, 950);
 
       const breachedRecord: AttendanceRecord = {
         ...rec,
         status: 'incumplido',
         nonComplianceReason: 'sin_cierre_30m',
-        markedNonCompliantAt: nowTimeStr,
+        markedNonCompliantAt: alarm.autoLockDeadlineFormatted || nowTimeStr,
+        durationMinutes: rec.durationMinutes ?? alarm.plannedDurationMinutes,
         alarmEnabled: false,
         alarmSnoozedUntilIso: null,
         observations: mergedObs,
@@ -1317,7 +1319,7 @@ export default function App() {
   ).length;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-800 flex flex-col selection:bg-red-600 selection:text-white font-sans">
+    <div className="min-h-screen w-full max-w-full overflow-x-hidden bg-slate-50 text-slate-800 flex flex-col selection:bg-red-600 selection:text-white font-sans">
       <Header
         currentView={isTrainerPortalActive ? 'trainer' : currentView}
         onViewChange={handleViewChange}
@@ -1334,14 +1336,14 @@ export default function App() {
       {syncErrorMessage && (
         <div className="bg-amber-50 border-b border-amber-200 px-4 py-2.5 text-xs text-amber-900 print:hidden">
           <div className="max-w-7xl mx-auto flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 font-semibold">
+            <div className="flex items-center justify-center sm:justify-start gap-2 font-semibold text-center sm:text-left flex-1">
               <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0" />
               <span>{syncErrorMessage}</span>
             </div>
             <button
               type="button"
               onClick={() => setSyncErrorMessage(null)}
-              className="px-2 py-1 text-amber-700 hover:text-amber-950 font-bold"
+              className="min-w-[36px] min-h-[36px] flex items-center justify-center text-amber-700 hover:text-amber-950 font-bold shrink-0"
             >
               ✕
             </button>
@@ -1349,7 +1351,7 @@ export default function App() {
         </div>
       )}
 
-      <main className="flex-1 pb-16">
+      <main className="flex-1 w-full pb-12 sm:pb-16">
         {isTrainerPortalActive && (
           authenticatedTrainer ? (
             <TrainerCheckInView
@@ -1411,19 +1413,21 @@ export default function App() {
         )}
       </main>
 
-      <footer className="border-t border-slate-200 bg-white py-4 text-center text-xs text-slate-500 print:hidden">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <div className="flex items-center space-x-2">
-            <span className="font-bold text-slate-900 flex items-center">
-              <CheckCheck className="w-4 h-4 text-red-600 mr-1" />
+      <footer className="border-t border-slate-200 bg-white py-4 px-4 text-center text-xs text-slate-500 print:hidden">
+        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-center sm:justify-between gap-2 text-center sm:text-left">
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-1 sm:gap-2">
+            <span className="font-bold text-slate-900 inline-flex items-center justify-center">
+              <CheckCheck className="w-4 h-4 text-red-600 mr-1 shrink-0" />
               BSCW <span className="text-red-600 ml-1">Check</span>
             </span>
-            <span>•</span>
-            <span className="text-slate-500">Sistema Corporativo de Asistencia y Puntualidad</span>
+            <span className="hidden sm:inline">•</span>
+            <span className="text-slate-500 text-[11px] sm:text-xs">
+              Sistema Corporativo de Asistencia y Puntualidad
+            </span>
           </div>
-          <div className="flex items-center space-x-1.5 text-[11px] text-red-600 font-semibold">
-            <ShieldCheck className="w-3.5 h-3.5" />
-            <span>Geolocalización GPS • Validación Facial Biométrica • Foto con Sello Indeleble</span>
+          <div className="flex items-center justify-center gap-1.5 text-[11px] text-red-600 font-semibold leading-snug">
+            <ShieldCheck className="w-3.5 h-3.5 shrink-0" />
+            <span>GPS • Acceso Facial Biométrico • Evidencia con Sello</span>
           </div>
         </div>
       </footer>

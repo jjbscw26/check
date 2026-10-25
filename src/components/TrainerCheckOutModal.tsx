@@ -139,32 +139,32 @@ export const TrainerCheckOutModal: React.FC<TrainerCheckOutModalProps> = ({
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto">
       <div className="bg-white border border-slate-200 rounded-2xl sm:rounded-3xl w-full max-w-xl max-h-[94vh] flex flex-col overflow-hidden shadow-2xl my-auto">
         {/* Header in BSCW Red */}
-        <div className="bg-gradient-to-r from-red-600 via-rose-600 to-red-700 p-4 sm:p-5 text-white flex items-center justify-between shrink-0">
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0">
+        <div className="bg-gradient-to-r from-red-600 via-rose-600 to-red-700 p-4 sm:p-5 text-white relative shrink-0">
+          <button
+            type="button"
+            onClick={onClose}
+            className="absolute top-3 right-3 min-w-[36px] min-h-[36px] flex items-center justify-center text-white/85 hover:text-white rounded-xl bg-white/15 hover:bg-white/25 text-sm"
+          >
+            ✕
+          </button>
+          <div className="flex flex-col sm:flex-row items-center sm:items-center gap-2 sm:gap-3 text-center sm:text-left pr-0 sm:pr-8">
+            <div className="w-10 h-10 rounded-xl bg-white/20 flex items-center justify-center shrink-0 mx-auto sm:mx-0">
               <LogOut className="w-5 h-5 sm:w-6 sm:h-6 text-white" />
             </div>
-            <div>
+            <div className="min-w-0">
               <h3 className="font-bold text-base sm:text-lg leading-tight">Registrar Salida de Sede</h3>
-              <p className="text-xs text-red-100 truncate max-w-[200px] sm:max-w-none">
+              <p className="text-xs text-red-100 truncate max-w-[260px] sm:max-w-none mx-auto sm:mx-0">
                 {record.companyName} — {record.sedeName}
               </p>
             </div>
           </div>
-          <button
-            type="button"
-            onClick={onClose}
-            className="text-white/80 hover:text-white p-1.5 rounded-lg text-sm"
-          >
-            ✕
-          </button>
         </div>
 
         {/* Content in Light Theme */}
         <div className="p-4 sm:p-6 space-y-4 text-slate-800 flex-1 overflow-y-auto">
           {validationError && (
-            <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-300 text-rose-900 text-xs flex items-start space-x-2.5 shadow-xs animate-fadeIn">
-              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0 mt-0.5" />
+            <div className="p-3.5 rounded-xl bg-rose-50 border border-rose-300 text-rose-900 text-xs flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-2 shadow-xs animate-fadeIn">
+              <AlertCircle className="w-4 h-4 text-rose-600 shrink-0" />
               <div>
                 <p className="font-bold">Requisito obligatorio pendiente</p>
                 <p className="mt-0.5">{validationError}</p>
@@ -173,12 +173,12 @@ export const TrainerCheckOutModal: React.FC<TrainerCheckOutModalProps> = ({
           )}
 
           {/* Assignment Date Banner */}
-          <div className="flex items-center justify-between text-xs bg-red-50 text-red-800 px-3.5 py-2.5 rounded-xl border border-red-200 shadow-xs">
-            <span className="flex items-center font-semibold">
-              <Calendar className="w-4 h-4 mr-1.5 text-red-600" />
-              Fecha de la Sesión Asignada: <strong className="ml-1 text-slate-900">{record.date}</strong>
+          <div className="flex flex-col sm:flex-row items-center justify-between gap-1.5 text-xs bg-red-50 text-red-800 px-3.5 py-2.5 rounded-xl border border-red-200 shadow-xs text-center sm:text-left">
+            <span className="flex items-center justify-center sm:justify-start font-semibold">
+              <Calendar className="w-4 h-4 mr-1.5 text-red-600 shrink-0" />
+              Fecha de la Sesión: <strong className="ml-1 text-slate-900 font-mono tabular-nums">{record.date}</strong>
             </span>
-            <span className="font-mono text-xs font-bold text-red-700 bg-white px-2 py-0.5 rounded border border-red-200">
+            <span className="font-mono tabular-nums text-xs font-bold text-red-700 bg-white px-2.5 py-0.5 rounded border border-red-200">
               Hora: {record.scheduledTime}
             </span>
           </div>
@@ -186,49 +186,49 @@ export const TrainerCheckOutModal: React.FC<TrainerCheckOutModalProps> = ({
           {/* Summary Box */}
           <div className="grid grid-cols-3 gap-2 bg-slate-50 p-3.5 rounded-2xl border border-slate-200 text-center shadow-inner">
             <div>
-              <span className="text-[11px] text-slate-500 font-semibold block">Hora Entrada</span>
-              <span className="font-mono text-sm font-bold text-slate-900">
+              <span className="text-[10px] sm:text-[11px] text-slate-500 font-semibold block">Entrada</span>
+              <span className="font-mono tabular-nums text-xs sm:text-sm font-bold text-slate-900">
                 {record.checkInTime}
               </span>
             </div>
-            <div className="border-x border-slate-200">
-              <span className="text-[11px] text-slate-500 font-semibold block">Hora Salida Estimada</span>
-              <span className="font-mono text-sm font-bold text-red-600">
+            <div className="border-x border-slate-200 px-1">
+              <span className="text-[10px] sm:text-[11px] text-slate-500 font-semibold block">Salida Est.</span>
+              <span className="font-mono tabular-nums text-xs sm:text-sm font-bold text-red-600">
                 {now.toLocaleTimeString('es-MX', { hour12: false })}
               </span>
             </div>
             <div>
-              <span className="text-[11px] text-slate-500 font-semibold block">Duración Total</span>
-              <span className="font-bold text-sm text-slate-900">
+              <span className="text-[10px] sm:text-[11px] text-slate-500 font-semibold block">Duración</span>
+              <span className="font-bold font-mono tabular-nums text-xs sm:text-sm text-slate-900">
                 {elapsedMinutes} min
               </span>
             </div>
           </div>
 
           {/* Activity Info */}
-          <div className="text-xs bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-1.5">
-            <div className="flex justify-between">
+          <div className="text-xs bg-slate-50 p-3.5 rounded-xl border border-slate-200 space-y-1.5 text-center sm:text-left">
+            <div className="flex flex-col sm:flex-row sm:justify-between gap-0.5">
               <span className="text-slate-500 font-medium">Actividad:</span>
               <span className="font-bold text-slate-900">{record.activityName}</span>
             </div>
-            <div className="flex justify-between">
+            <div className="flex flex-col sm:flex-row sm:justify-between gap-0.5">
               <span className="text-slate-500 font-medium">Salón / Área:</span>
               <span className="text-slate-700">{record.locationArea}</span>
             </div>
-            <div className="flex justify-between">
+            <div className="flex flex-col sm:flex-row sm:justify-between gap-0.5">
               <span className="text-slate-500 font-medium">Entrenador:</span>
               <span className="text-red-600 font-bold">{record.trainerName}</span>
             </div>
           </div>
 
           {/* Attendees input starting from 0 and keyboard editable */}
-          <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-2">
-            <div className="flex items-center justify-between">
+          <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-2 text-center sm:text-left">
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-1">
               <label
                 htmlFor="checkout-attendees-input"
-                className="text-xs font-bold text-slate-800 flex items-center"
+                className="text-xs font-bold text-slate-800 flex items-center justify-center sm:justify-start"
               >
-                <Users className="w-4 h-4 mr-1.5 text-red-600" />
+                <Users className="w-4 h-4 mr-1.5 text-red-600 shrink-0" />
                 Número Final de Colaboradores Participantes *
               </label>
               <button
@@ -238,11 +238,11 @@ export const TrainerCheckOutModal: React.FC<TrainerCheckOutModalProps> = ({
                 title="Reiniciar cuenta a cero"
               >
                 <RotateCcw className="w-3 h-3" />
-                <span>Cero</span>
+                <span>Reiniciar a 0</span>
               </button>
             </div>
 
-            <div className="flex items-center space-x-2">
+            <div className="flex items-center space-x-2 max-w-xs mx-auto sm:max-w-none">
               <button
                 type="button"
                 onClick={() => adjustAttendees(-1)}
@@ -266,7 +266,7 @@ export const TrainerCheckOutModal: React.FC<TrainerCheckOutModalProps> = ({
                     setAttendeesInput('0');
                   }
                 }}
-                className="flex-1 bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-center text-lg font-bold text-slate-900 focus:outline-none focus:border-red-500 focus:ring-2 focus:ring-red-500/20 font-mono shadow-sm"
+                className="flex-1 min-h-[44px] bg-white border border-slate-300 rounded-xl px-4 py-2.5 text-center text-lg font-bold text-slate-900 focus:outline-none focus:border-red-500 focus:ring-2 focus:ring-red-500/20 font-mono tabular-nums shadow-sm"
               />
 
               <button
@@ -280,34 +280,34 @@ export const TrainerCheckOutModal: React.FC<TrainerCheckOutModalProps> = ({
             </div>
 
             <p className="text-[11px] text-slate-500">
-              La cuenta inicia en <strong>0</strong>. Puedes escribir la cantidad directamente con tu teclado o usar los botones <strong>- / +</strong>.
+              La cuenta inicia en <strong>0</strong>. Puedes escribir la cantidad directamente o usar <strong>- / +</strong>.
             </p>
           </div>
 
           {/* Final Observations */}
-          <div>
-            <label className="block text-xs font-semibold text-slate-700 mb-1 flex items-center">
-              <FileText className="w-3.5 h-3.5 mr-1.5 text-red-600" />
+          <div className="text-center sm:text-left">
+            <label className="text-xs font-semibold text-slate-700 mb-1.5 flex items-center justify-center sm:justify-start">
+              <FileText className="w-3.5 h-3.5 mr-1.5 text-red-600 shrink-0" />
               Observaciones de Cierre o Novedades de la Sesión
             </label>
             <textarea
               rows={3}
               value={observations}
               onChange={(e) => setObservations(e.target.value)}
-              placeholder="Ej: Sesión completada con total éxito. El equipo solicitó ejercicios de estiramiento para el cuello..."
-              className="w-full bg-white border border-slate-300 rounded-xl p-2.5 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 shadow-sm"
+              placeholder="Ej: Sesión completada con total éxito. El equipo solicitó ejercicios de estiramiento..."
+              className="w-full bg-white border border-slate-300 rounded-xl p-2.5 text-xs text-slate-900 placeholder-slate-400 text-center sm:text-left focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 shadow-sm"
             />
           </div>
 
           {/* Mandatory Exit Photo Capture */}
           <div id="checkout-mandatory-photo" className="pt-3 border-t border-slate-200 space-y-2">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-slate-800 flex items-center">
-                <Camera className="w-4 h-4 mr-1.5 text-red-600" />
+            <div className="flex flex-col sm:flex-row items-center justify-between gap-1.5">
+              <span className="text-xs font-bold text-slate-800 flex items-center justify-center sm:justify-start">
+                <Camera className="w-4 h-4 mr-1.5 text-red-600 shrink-0" />
                 Foto Obligatoria de Salida con Sello *
               </span>
               <span
-                className={`px-2 py-0.5 rounded-md text-[10px] font-extrabold uppercase tracking-wider border ${
+                className={`px-2.5 py-0.5 rounded-md text-[10px] font-extrabold uppercase tracking-wider border ${
                   exitPhotoUrl
                     ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
                     : 'bg-red-50 text-red-700 border-red-200'
@@ -340,7 +340,7 @@ export const TrainerCheckOutModal: React.FC<TrainerCheckOutModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="w-full sm:w-auto px-4 py-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 text-xs sm:text-sm font-semibold border border-slate-300 transition text-center"
+              className="w-full sm:w-auto min-h-[46px] sm:min-h-0 px-4 py-2.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 text-xs sm:text-sm font-semibold border border-slate-300 transition text-center"
             >
               Cancelar
             </button>
@@ -356,10 +356,10 @@ export const TrainerCheckOutModal: React.FC<TrainerCheckOutModalProps> = ({
             type="button"
             onClick={handleFinish}
             disabled={submitting}
-            className="w-full sm:w-auto px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs sm:text-sm font-bold shadow-lg shadow-red-500/25 transition flex items-center justify-center"
+            className="w-full sm:w-auto min-h-[48px] sm:min-h-0 px-5 py-3 sm:py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs sm:text-sm font-bold shadow-lg shadow-red-500/25 transition flex items-center justify-center"
           >
-            <CheckCircle2 className="w-4 h-4 mr-2" />
-            {submitting ? 'Procesando Salida...' : 'Confirmar y Finalizar Salida'}
+            <CheckCircle2 className="w-4 h-4 mr-2 shrink-0" />
+            <span>{submitting ? 'Procesando Salida...' : 'Confirmar y Finalizar Salida'}</span>
           </button>
         </div>
       </div>

@@ -236,8 +236,8 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({
   if (photoUrl) {
     return (
       <div className="bg-white border-2 border-red-200 rounded-2xl p-4 sm:p-5 shadow-sm">
-        <div className="flex items-center justify-between gap-2 mb-3">
-          <div className="flex items-center text-red-600 font-bold text-sm">
+        <div className="flex flex-col sm:flex-row items-center justify-between gap-2.5 mb-3 text-center sm:text-left">
+          <div className="flex items-center justify-center sm:justify-start text-red-600 font-bold text-sm">
             <ShieldCheck className="w-4 h-4 mr-1.5 shrink-0" />
             <span>
               {recordType === 'SALIDA'
@@ -251,17 +251,18 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({
               onPhotoCleared();
               startCamera(facingMode);
             }}
-            className="flex items-center text-xs text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-lg border border-slate-200 transition font-semibold shrink-0 cursor-pointer"
+            className="w-full sm:w-auto min-h-[44px] sm:min-h-0 flex items-center justify-center text-xs text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-3.5 py-2 sm:py-1.5 rounded-xl sm:rounded-lg border border-slate-200 transition font-semibold shrink-0 cursor-pointer"
           >
-            <RotateCcw className="w-3.5 h-3.5 mr-1" />
-            Tomar Otra Foto
+            <RotateCcw className="w-3.5 h-3.5 mr-1.5 shrink-0" />
+            <span>Tomar Otra Foto</span>
           </button>
         </div>
 
-        <div className="relative rounded-xl overflow-hidden border border-slate-200 max-h-80 flex items-center justify-center bg-slate-900">
+        <div className="relative rounded-xl overflow-hidden border border-slate-200 max-h-80 flex items-center justify-center bg-slate-900 mx-auto">
           <img
             src={photoUrl}
             alt="Evidencia presencial certificada"
+            referrerPolicy="no-referrer"
             className="w-full h-auto object-contain max-h-80"
           />
           <div className="absolute top-2 right-2 px-2.5 py-1 rounded-md bg-red-600 text-white font-bold text-[11px] shadow">
@@ -274,15 +275,15 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({
 
   return (
     <div className="bg-slate-50 border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-sm">
-      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3">
+      <div className="flex flex-col sm:flex-row items-center sm:items-center justify-between gap-2 mb-3 text-center sm:text-left">
         <div>
-          <h4 className="text-sm font-bold text-slate-800 flex items-center">
+          <h4 className="text-sm font-bold text-slate-800 flex items-center justify-center sm:justify-start">
             <Camera className="w-4 h-4 mr-2 text-red-600 shrink-0" />
             {recordType === 'SALIDA'
               ? 'Foto Obligatoria de Salida en el Salón'
               : 'Foto Obligatoria de Presencia en el Salón'}
           </h4>
-          <p className="text-xs text-slate-500">
+          <p className="text-xs text-slate-500 mt-0.5">
             Se estampará automáticamente el sello de {recordType === 'SALIDA' ? 'SALIDA' : 'ENTRADA'}, hora exacta, GPS y entrenador.
           </p>
         </div>
@@ -297,7 +298,7 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({
           <button
             type="button"
             onClick={() => setCameraError(null)}
-            className="text-amber-700 hover:text-amber-950 font-bold"
+            className="min-w-[32px] min-h-[32px] flex items-center justify-center text-amber-700 hover:text-amber-950 font-bold shrink-0"
           >
             ✕
           </button>
@@ -315,7 +316,7 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({
 
       {/* Camera Viewfinder or Activation Prompt */}
       {isCameraOpen ? (
-        <div className="relative rounded-2xl overflow-hidden bg-slate-950 border border-slate-300 aspect-video max-h-88 mx-auto flex items-center justify-center shadow-lg">
+        <div className="relative rounded-2xl overflow-hidden bg-slate-950 border border-slate-300 aspect-[4/3] sm:aspect-video max-h-88 mx-auto flex items-center justify-center shadow-lg">
           <video
             ref={bindVideoElement}
             autoPlay
@@ -327,29 +328,29 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({
           />
 
           {(!isVideoReady || isStartingCamera) && (
-            <div className="absolute inset-0 bg-slate-950/75 flex flex-col items-center justify-center text-white text-xs space-y-2">
+            <div className="absolute inset-0 bg-slate-950/75 flex flex-col items-center justify-center text-white text-xs space-y-2 p-4 text-center">
               <RefreshCw className="w-6 h-6 text-red-500 animate-spin" />
               <span className="font-semibold">Activando transmisión de cámara en vivo...</span>
             </div>
           )}
 
           {/* Guide Overlay Grid */}
-          <div className="absolute inset-3 sm:inset-4 border border-dashed border-white/40 pointer-events-none rounded-xl flex items-start justify-between p-2.5">
-            <span className="text-[11px] font-mono text-white bg-black/70 px-2.5 py-1 rounded">
-              Enfoca el salón, área de entrenamiento o participantes
+          <div className="absolute inset-2.5 sm:inset-4 border border-dashed border-white/40 pointer-events-none rounded-xl flex items-start justify-center sm:justify-between p-2">
+            <span className="text-[10px] sm:text-[11px] font-mono text-white bg-black/70 px-2.5 py-1 rounded text-center">
+              Enfoca el salón, área o participantes
             </span>
           </div>
 
           {/* Floating Controls */}
-          <div className="absolute bottom-3 inset-x-0 flex items-center justify-center gap-2 sm:gap-3 px-3">
+          <div className="absolute bottom-2.5 inset-x-0 flex items-center justify-center gap-2 sm:gap-3 px-2.5">
             <button
               type="button"
               onClick={toggleFacingMode}
               disabled={isStartingCamera}
-              className="px-3 py-2 rounded-xl bg-slate-900/85 hover:bg-slate-800 text-white text-xs font-semibold border border-slate-700 shadow-lg flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+              className="min-h-[44px] min-w-[44px] px-3 py-2 rounded-xl bg-slate-900/85 hover:bg-slate-800 text-white text-xs font-semibold border border-slate-700 shadow-lg flex items-center justify-center gap-1.5 cursor-pointer disabled:opacity-50"
               title="Cambiar entre cámara trasera y frontal"
             >
-              <RefreshCw className="w-3.5 h-3.5" />
+              <RefreshCw className="w-4 h-4 shrink-0" />
               <span className="hidden sm:inline">Girar Cámara</span>
             </button>
 
@@ -357,16 +358,16 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({
               type="button"
               onClick={takeSnapshot}
               disabled={!isVideoReady || isStartingCamera}
-              className="flex items-center gap-1.5 px-4 sm:px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs sm:text-sm shadow-xl active:scale-95 transition cursor-pointer disabled:opacity-50"
+              className="min-h-[44px] flex-1 sm:flex-initial flex items-center justify-center gap-1.5 px-3.5 sm:px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs sm:text-sm shadow-xl active:scale-95 transition cursor-pointer disabled:opacity-50"
             >
               <Camera className="w-4 h-4 shrink-0" />
-              <span>Capturar Foto con Sello</span>
+              <span>Capturar Foto</span>
             </button>
 
             <button
               type="button"
               onClick={stopCamera}
-              className="p-2.5 rounded-xl bg-slate-900/85 hover:bg-red-900/90 text-slate-200 hover:text-white text-xs border border-slate-700 shadow-lg cursor-pointer"
+              className="min-h-[44px] min-w-[44px] p-2.5 rounded-xl bg-slate-900/85 hover:bg-red-900/90 text-slate-200 hover:text-white text-xs border border-slate-700 shadow-lg flex items-center justify-center cursor-pointer"
               title="Cerrar Cámara"
             >
               <X className="w-4 h-4" />
@@ -374,39 +375,39 @@ export const CameraCapture: React.FC<CameraCaptureProps> = ({
           </div>
         </div>
       ) : (
-        <div className="border-2 border-dashed border-slate-300 rounded-2xl p-6 text-center bg-white shadow-sm">
+        <div className="border-2 border-dashed border-slate-300 rounded-2xl p-5 sm:p-6 text-center bg-white shadow-xs">
           <div className="w-12 h-12 rounded-2xl bg-red-50 text-red-600 flex items-center justify-center mx-auto mb-3">
             <Camera className="w-6 h-6" />
           </div>
-          <h5 className="text-sm font-bold text-slate-800 mb-1">
+          <h5 className="text-sm font-bold text-slate-800 mb-1 text-balance">
             {recordType === 'SALIDA'
               ? 'Activa la cámara para registrar tu evidencia de salida'
               : 'Activa la cámara para registrar evidencia presencial en el salón'}
           </h5>
-          <p className="text-xs text-slate-500 mb-4 max-w-md mx-auto">
+          <p className="text-xs text-slate-500 mb-4 max-w-md mx-auto leading-relaxed">
             {recordType === 'SALIDA'
               ? 'La foto de salida es obligatoria para validar el cierre oficial de la sesión dentro de la sede.'
               : 'La foto es obligatoria para validar que el entrenador se encuentra presente en el salón o área asignada.'}
           </p>
 
-          <div className="flex flex-wrap items-center justify-center gap-2.5">
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center justify-center gap-2.5 max-w-md mx-auto">
             <button
               type="button"
               onClick={() => startCamera('environment')}
               disabled={isStartingCamera}
-              className="flex items-center text-xs sm:text-sm px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md transition disabled:opacity-50 cursor-pointer"
+              className="w-full sm:w-auto min-h-[46px] flex items-center justify-center text-xs sm:text-sm px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md transition disabled:opacity-50 cursor-pointer"
             >
-              <Camera className="w-4 h-4 mr-2" />
-              {isStartingCamera ? 'Iniciando Cámara...' : 'Abrir Cámara en Vivo'}
+              <Camera className="w-4 h-4 mr-2 shrink-0" />
+              <span>{isStartingCamera ? 'Iniciando Cámara...' : 'Abrir Cámara en Vivo'}</span>
             </button>
 
             <button
               type="button"
               onClick={() => fileInputRef.current?.click()}
-              className="flex items-center text-xs sm:text-sm px-3.5 py-2.5 rounded-xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 font-semibold transition shadow-sm cursor-pointer"
+              className="w-full sm:w-auto min-h-[46px] flex items-center justify-center text-xs sm:text-sm px-3.5 py-2.5 rounded-xl bg-white hover:bg-slate-50 text-slate-700 border border-slate-300 font-semibold transition shadow-xs cursor-pointer"
             >
-              <Upload className="w-4 h-4 mr-2 text-red-600" />
-              Subir Foto desde Galería
+              <Upload className="w-4 h-4 mr-2 text-red-600 shrink-0" />
+              <span>Subir Foto desde Galería</span>
             </button>
           </div>
         </div>

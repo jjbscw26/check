@@ -83,13 +83,13 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
       >
         <div className="bg-white border border-slate-200 rounded-2xl sm:rounded-3xl w-full max-w-3xl max-h-[94vh] flex flex-col overflow-hidden shadow-2xl my-auto print:max-h-none print:border-none print:shadow-none print:bg-white print:text-black">
           {/* Certificate Header */}
-          <div className="bg-slate-50 p-4 sm:p-5 border-b border-slate-200 flex flex-wrap items-center justify-between gap-3 print:bg-white print:text-black print:border-b-2 print:border-slate-300 shrink-0">
-            <div className="flex items-center space-x-2.5 sm:space-x-3">
+          <div className="bg-slate-50 p-4 sm:p-5 border-b border-slate-200 flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left print:bg-white print:text-black print:border-b-2 print:border-slate-300 shrink-0">
+            <div className="flex flex-col sm:flex-row items-center gap-2.5 sm:gap-3">
               <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-2xl bg-red-50 text-red-600 flex items-center justify-center border border-red-200 shadow-sm print:bg-red-50 print:text-red-700 shrink-0">
                 <ShieldCheck className="w-5 h-5 sm:w-6 sm:h-6" />
               </div>
               <div>
-                <div className="flex items-center space-x-1.5 sm:space-x-2">
+                <div className="flex flex-wrap items-center justify-center sm:justify-start gap-1.5 sm:gap-2">
                   <h3 className="font-bold text-base sm:text-lg text-slate-900 print:text-black">
                     Acta de Asistencia y Evidencia
                   </h3>
@@ -97,17 +97,17 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
                     · {record.id}
                   </span>
                 </div>
-                <p className="text-[11px] sm:text-xs text-slate-500 print:text-slate-600 font-medium truncate max-w-[220px] sm:max-w-none">
+                <p className="text-[11px] sm:text-xs text-slate-500 print:text-slate-600 font-medium">
                   Certificación oficial sincronizada en Firestore • BSCW Check
                 </p>
               </div>
             </div>
 
-            <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 print:hidden">
+            <div className="flex flex-wrap items-center justify-center sm:justify-end gap-1.5 sm:gap-2 print:hidden">
               <button
                 type="button"
                 onClick={() => setLightboxSlot('entry')}
-                className="px-2.5 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
+                className="min-h-[40px] px-3 py-1.5 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
                 title="Visualizar fotografías de evidencia en pantalla completa"
               >
                 <ZoomIn className="w-3.5 h-3.5 text-red-400" />
@@ -117,7 +117,7 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
               <button
                 type="button"
                 onClick={handleDownloadExcel}
-                className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-emerald-50 text-emerald-800 border border-slate-300 hover:border-emerald-300 text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
+                className="min-h-[40px] px-3 py-1.5 rounded-xl bg-white hover:bg-emerald-50 text-emerald-800 border border-slate-300 hover:border-emerald-300 text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
                 title="Descargar registro en Excel (.xlsx)"
               >
                 <FileSpreadsheet className="w-3.5 h-3.5 text-emerald-600" />
@@ -128,7 +128,7 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
                 type="button"
                 onClick={() => void handleDownloadPdf()}
                 disabled={isGeneratingPdf}
-                className="px-2.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
+                className="min-h-[40px] px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
                 title="Descargar Acta en PDF (.pdf) con fotografías"
               >
                 {isGeneratingPdf ? (
@@ -142,7 +142,7 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
               <button
                 type="button"
                 onClick={handlePrint}
-                className="px-2.5 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
+                className="min-h-[40px] px-3 py-1.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
                 title="Imprimir Acta Oficial"
               >
                 <Printer className="w-3.5 h-3.5 text-red-600" />
@@ -152,7 +152,7 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
               <button
                 type="button"
                 onClick={onClose}
-                className="text-slate-400 hover:text-slate-700 p-1.5 rounded-lg text-sm cursor-pointer"
+                className="min-h-[40px] min-w-[40px] flex items-center justify-center text-slate-400 hover:text-slate-700 p-1.5 rounded-lg text-sm cursor-pointer"
                 title="Cerrar"
               >
                 ✕
@@ -166,8 +166,8 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
             className="p-4 sm:p-6 space-y-4 sm:space-y-5 text-slate-800 print:text-black flex-1 overflow-y-auto"
           >
             {/* Status & Punctuality Summary */}
-            <div className="flex flex-wrap items-center justify-between gap-3 p-3.5 rounded-2xl bg-slate-50 border border-slate-200 print:bg-slate-50 print:border-slate-200">
-              <div className="flex items-center space-x-2">
+            <div className="flex flex-col sm:flex-row items-center justify-center sm:justify-between gap-2.5 p-3.5 rounded-2xl bg-slate-50 border border-slate-200 text-center sm:text-left print:bg-slate-50 print:border-slate-200">
+              <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
                 <span className="text-xs text-slate-500 font-medium">Resultado de Puntualidad:</span>
                 <span
                   className={`text-xs font-bold inline-flex items-center ${
@@ -200,7 +200,7 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
                 </span>
               </div>
 
-              <div className="flex items-center space-x-2">
+              <div className="flex flex-wrap items-center justify-center sm:justify-end gap-2">
                 <span className="text-xs text-slate-500 font-medium">Estado de Sesión:</span>
                 <span
                   className={`text-xs font-bold ${
@@ -214,23 +214,23 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
                   {record.status === 'completado'
                     ? 'Completado y Cerrado'
                     : record.status === 'incumplido'
-                    ? 'Incumplida • Sin Cierre (+30 min)'
+                    ? 'Terminada (+60 min) • No Cerrada'
                     : 'En Curso'}
                 </span>
               </div>
             </div>
 
             {record.status === 'incumplido' && (
-              <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-300 text-rose-950 text-xs flex items-start space-x-2.5">
-                <BadgeAlert className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+              <div className="p-3.5 rounded-2xl bg-rose-50 border border-rose-300 text-rose-950 text-xs flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-2.5">
+                <BadgeAlert className="w-5 h-5 text-rose-600 shrink-0 sm:mt-0.5" />
                 <div>
                   <p className="font-extrabold text-rose-900">
-                    Asignación Bloqueada y Marcada como Incumplida
+                    Sesión Dada por Terminada (+60 min) y Calificada como No Cerrada
                   </p>
                   <p className="mt-0.5 text-rose-800">
-                    No se registró la salida ni la evidencia final dentro de los 30 minutos posteriores al término programado de la sesión
+                    La salida quedó pendiente y transcurrieron 60 minutos después de la hora de término programada de la sesión
                     {record.markedNonCompliantAt
-                      ? ` (bloqueada a las ${record.markedNonCompliantAt} hrs)`
+                      ? ` (terminada automáticamente a las ${record.markedNonCompliantAt} hrs)`
                       : ''}
                     .
                   </p>
@@ -316,7 +316,7 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
                     {record.checkOutTime
                       ? record.checkOutTime
                       : record.status === 'incumplido'
-                      ? 'Sin cierre (+30m • Incumplida)'
+                      ? 'Terminada +60m (No cerrada)'
                       : 'En curso'}
                   </span>
                 </p>
@@ -507,9 +507,9 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
                 ) : record.status === 'incumplido' ? (
                   <div className="rounded-xl border border-dashed border-rose-300 bg-rose-50/70 p-4 flex flex-col items-center justify-center text-center text-xs text-rose-900">
                     <BadgeAlert className="w-5 h-5 text-rose-600 mb-1" />
-                    <span className="font-bold">Sin foto de salida — Sesión Incumplida</span>
+                    <span className="font-bold">Sin foto de salida — Sesión No Cerrada</span>
                     <span className="text-[11px] text-rose-700 mt-0.5">
-                      Excedió los 30 minutos posteriores al término sin registrar salida.
+                      Se dio por terminada automáticamente 60 minutos después de la hora de término.
                     </span>
                   </div>
                 ) : (
@@ -575,11 +575,11 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
           </div>
 
           {/* Footer */}
-          <div className="p-4 sm:p-5 bg-slate-50 border-t border-slate-200 flex items-center justify-between print:hidden">
+          <div className="p-4 sm:p-5 bg-slate-50 border-t border-slate-200 flex flex-col-reverse sm:flex-row items-stretch sm:items-center justify-between gap-2.5 print:hidden">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold border border-slate-300 transition cursor-pointer"
+              className="w-full sm:w-auto min-h-[44px] px-4 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold border border-slate-300 transition flex items-center justify-center cursor-pointer"
             >
               Cerrar
             </button>
@@ -587,7 +587,7 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
             <button
               type="button"
               onClick={handleSaveAudit}
-              className="px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold transition flex items-center cursor-pointer"
+              className="w-full sm:w-auto min-h-[44px] px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold transition flex items-center justify-center cursor-pointer"
             >
               <CheckCircle2 className="w-4 h-4 mr-1.5" />
               Guardar Auditoría en Base de Datos

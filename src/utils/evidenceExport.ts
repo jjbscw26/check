@@ -91,7 +91,7 @@ function formatStatusLabel(record: AttendanceRecord): string {
     if (record.nonComplianceReason === 'manual_admin') {
       return 'Incumplida (Marcada por Admin)';
     }
-    return 'Incumplida (+30m sin cierre)';
+    return 'No Cerrada (Terminada +60m)';
   }
   return 'En Curso (Sin salida)';
 }
@@ -211,7 +211,7 @@ export function exportEvidenceRecordsToExcel(
     'Hora Entrada Real': r.checkInTime,
     'Hora Salida Real':
       r.checkOutTime ||
-      (r.status === 'incumplido' ? 'SIN CIERRE (+30m)' : 'En curso'),
+      (r.status === 'incumplido' ? 'TERMINADA (+60m • NO CERRADA)' : 'En curso'),
     'Duración Efectiva (min)': r.durationMinutes ?? '',
     'Duración Planeada (min)': r.plannedDurationMinutes ?? '',
     'Estado de Sesión': formatStatusLabel(r),
@@ -277,7 +277,7 @@ export function exportEvidenceRecordsToExcel(
     { Indicador: 'Total de Registros en Bitácora', Valor: total },
     { Indicador: 'Sesiones Completadas y Cerradas', Valor: completed },
     { Indicador: 'Sesiones en Curso', Valor: inProgress },
-    { Indicador: 'Sesiones Incumplidas', Valor: nonCompliant },
+    { Indicador: 'Sesiones No Cerradas (Terminadas +60m)', Valor: nonCompliant },
     { Indicador: 'Llegadas Puntuales o Anticipadas', Valor: onTimeOrEarly },
     { Indicador: 'Llegadas con Retraso', Valor: late },
     { Indicador: 'Tasa de Puntualidad (%)', Valor: `${punctualityRate}%` },
@@ -563,7 +563,7 @@ export async function exportEvidenceRecordsToPdf(
     doc.setFont('helvetica', 'normal');
     doc.text(
       `Entrada ${rec.checkInTime} · Salida ${
-        rec.checkOutTime || (rec.status === 'incumplido' ? 'Sin cierre' : 'En curso')
+        rec.checkOutTime || (rec.status === 'incumplido' ? 'Terminada +60m (No cerrada)' : 'En curso')
       }${rec.durationMinutes ? ` (${rec.durationMinutes}m)` : ''}`,
       col1X + 15,
       row2Y

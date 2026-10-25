@@ -80,8 +80,8 @@ export const PdfEvidenceLogModal: React.FC<PdfEvidenceLogModalProps> = ({
     >
       <div className="bg-white border border-slate-200 rounded-2xl sm:rounded-3xl w-full max-w-5xl max-h-[94vh] flex flex-col overflow-hidden shadow-2xl my-auto print:max-h-none print:border-none print:shadow-none print:m-0 print:max-w-full">
         {/* Top Action Toolbar (Hidden in Print) */}
-        <div className="bg-slate-900 text-white px-4 py-3.5 flex flex-wrap items-center justify-between gap-3 print:hidden shrink-0">
-          <div className="flex items-center gap-2.5">
+        <div className="bg-slate-900 text-white px-4 py-3.5 flex flex-col sm:flex-row items-center justify-between gap-3 text-center sm:text-left print:hidden shrink-0">
+          <div className="flex flex-col sm:flex-row items-center gap-2.5">
             <span className="w-8 h-8 rounded-lg bg-red-600 flex items-center justify-center font-bold shrink-0">
               <CheckCheck className="w-5 h-5 text-white" />
             </span>
@@ -96,7 +96,7 @@ export const PdfEvidenceLogModal: React.FC<PdfEvidenceLogModalProps> = ({
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap items-center justify-center sm:justify-end gap-2">
             <label className="inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-xl bg-slate-800 border border-slate-700 text-xs font-medium text-slate-200 cursor-pointer whitespace-nowrap shrink-0">
               <input
                 type="checkbox"
@@ -194,8 +194,8 @@ export const PdfEvidenceLogModal: React.FC<PdfEvidenceLogModalProps> = ({
                 {total}
               </span>
             </div>
-            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200">
-              <span className="text-[11px] text-slate-500 font-medium block">Cerradas / Inc.</span>
+            <div className="p-3 bg-slate-50 rounded-xl border border-slate-200 text-center sm:text-left">
+              <span className="text-[11px] text-slate-500 font-medium block">Cerradas / No Cerr.</span>
               <span className="text-lg font-black font-mono tabular-nums text-emerald-700">
                 {completed}
                 {nonCompliant > 0 && (
@@ -282,7 +282,7 @@ export const PdfEvidenceLogModal: React.FC<PdfEvidenceLogModalProps> = ({
                           {rec.status === 'completado'
                             ? 'Completada y Cerrada'
                             : rec.status === 'incumplido'
-                            ? 'Incumplida (+30m sin cierre)'
+                            ? 'No Cerrada (Terminada +60m)'
                             : 'En Curso'}
                         </span>
                       </div>
@@ -312,7 +312,9 @@ export const PdfEvidenceLogModal: React.FC<PdfEvidenceLogModalProps> = ({
                         <span className="font-mono tabular-nums text-[11px] text-slate-600 block">
                           Sal:{' '}
                           {rec.checkOutTime ||
-                            (rec.status === 'incumplido' ? 'Sin cierre' : 'En curso')}
+                            (rec.status === 'incumplido'
+                              ? 'Terminada +60m (No cerrada)'
+                              : 'En curso')}
                           {rec.durationMinutes ? ` (${rec.durationMinutes} min)` : ''}
                         </span>
                       </div>

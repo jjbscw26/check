@@ -271,19 +271,19 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
   };
 
   return (
-    <div className="max-w-4xl mx-auto px-4 py-8 sm:py-12">
-      <div className="bg-white border border-slate-200/90 rounded-2xl shadow-sm overflow-hidden">
+    <div className="w-full max-w-4xl mx-auto px-3.5 sm:px-6 py-5 sm:py-12">
+      <div className="bg-white border border-slate-200/90 rounded-2xl sm:rounded-3xl shadow-sm overflow-hidden">
         {/* Top Header */}
-        <div className="p-6 sm:p-8 border-b border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-          <div className="flex items-start space-x-3.5">
-            <div className="w-12 h-12 rounded-2xl bg-red-600 text-white flex items-center justify-center shrink-0 shadow-sm">
+        <div className="p-5 sm:p-8 border-b border-slate-200 flex flex-col sm:flex-row items-center sm:items-center justify-between gap-4 text-center sm:text-left">
+          <div className="flex flex-col sm:flex-row items-center sm:items-start gap-3 sm:gap-3.5 w-full">
+            <div className="w-12 h-12 rounded-2xl bg-red-600 text-white flex items-center justify-center shrink-0 shadow-sm mx-auto sm:mx-0">
               <ScanFace className="w-6 h-6" />
             </div>
-            <div>
-              <h1 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
+            <div className="mx-auto sm:mx-0">
+              <h1 className="text-lg sm:text-2xl font-bold text-slate-900 tracking-tight text-balance">
                 Acceso Individual de Entrenador
               </h1>
-              <p className="text-xs sm:text-sm text-slate-500 mt-1 max-w-xl">
+              <p className="text-xs sm:text-sm text-slate-500 mt-1 max-w-xl mx-auto sm:mx-0 leading-relaxed">
                 Ingresa mediante reconocimiento facial en vivo. Al verificar tu identidad contra tu fotografía de registro, se abrirá tu sesión privada con acceso exclusivo a tus clases asignadas.
               </p>
             </div>
@@ -291,11 +291,11 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
         </div>
 
         {/* Body */}
-        <div className="p-6 sm:p-8 grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
+        <div className="p-4 sm:p-8 grid grid-cols-1 lg:grid-cols-12 gap-6 sm:gap-8 items-start">
           {/* Left Column: Camera Biometric Gate */}
-          <div className="lg:col-span-7 space-y-4">
+          <div className="lg:col-span-7 space-y-4 w-full">
             {/* Optional profile filter (only names, never schedules) */}
-            <div>
+            <div className="text-center sm:text-left">
               <label
                 htmlFor="trainer-face-login-filter"
                 className="block text-xs font-semibold text-slate-700 mb-1.5"
@@ -310,23 +310,23 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
                   setLoginFailure(null);
                 }}
                 disabled={isScanning}
-                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 font-medium focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500"
+                className="w-full min-h-[44px] bg-slate-50 border border-slate-300 rounded-xl px-3.5 py-2.5 text-xs sm:text-sm text-slate-900 font-medium text-center sm:text-left focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500"
               >
                 <option value="">
-                  Reconocimiento facial automático (Identificar mi rostro entre entrenadores activos)
+                  Reconocimiento facial automático (Identificar mi rostro)
                 </option>
                 {activeTrainers.map((tr) => (
                   <option key={tr.id} value={tr.id}>
-                    Corroboración directa 1:1 — {tr.name}
-                    {isPlaceholderOrMissingAvatar(tr.avatar) ? ' (Sin foto registrada)' : ''}
+                    Corroboración 1:1 — {tr.name}
+                    {isPlaceholderOrMissingAvatar(tr.avatar) ? ' (Sin foto)' : ''}
                   </option>
                 ))}
               </select>
             </div>
 
             {trainersWithFacePhoto.length === 0 && (
-              <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 text-xs flex items-start gap-2.5">
-                <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+              <div className="p-4 rounded-xl bg-amber-50 border border-amber-300 text-amber-950 text-xs flex flex-col sm:flex-row items-center sm:items-start text-center sm:text-left gap-2.5">
+                <ShieldAlert className="w-5 h-5 text-amber-600 shrink-0" />
                 <div>
                   <p className="font-bold">No hay fotografías faciales registradas todavía</p>
                   <p className="mt-0.5 text-amber-900">
@@ -345,7 +345,7 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setCameraError(null)}
-                  className="text-amber-800 font-bold"
+                  className="min-w-[32px] min-h-[32px] flex items-center justify-center text-amber-800 font-bold shrink-0"
                 >
                   ✕
                 </button>
@@ -369,7 +369,7 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
                 <button
                   type="button"
                   onClick={() => setLoginFailure(null)}
-                  className="text-rose-700 hover:text-rose-950 font-bold"
+                  className="min-w-[32px] min-h-[32px] flex items-center justify-center text-rose-700 hover:text-rose-950 font-bold shrink-0"
                 >
                   ✕
                 </button>
@@ -378,8 +378,8 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
 
             {/* Live Scanner Box */}
             {cameraActive ? (
-              <div className="space-y-3">
-                <div className="relative rounded-2xl overflow-hidden bg-slate-950 aspect-square max-w-sm mx-auto flex items-center justify-center border-2 border-red-500 shadow-lg">
+              <div className="space-y-3.5 flex flex-col items-center">
+                <div className="relative rounded-2xl overflow-hidden bg-slate-950 aspect-square w-full max-w-[310px] sm:max-w-sm mx-auto flex items-center justify-center border-2 border-red-500 shadow-lg">
                   <video
                     ref={bindVideoElement}
                     autoPlay
@@ -391,9 +391,9 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
                   />
 
                   {/* Oval Guide Overlay */}
-                  <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center p-6">
+                  <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center p-5 sm:p-6">
                     <div
-                      className={`w-52 h-68 sm:w-56 sm:h-72 rounded-full border-2 transition-colors ${
+                      className={`w-44 h-60 sm:w-56 sm:h-72 rounded-full border-2 transition-colors ${
                         isScanning
                           ? 'border-emerald-400 shadow-[0_0_0_9999px_rgba(15,23,42,0.55)]'
                           : 'border-white/85 shadow-[0_0_0_9999px_rgba(15,23,42,0.48)]'
@@ -402,7 +402,7 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
                   </div>
 
                   {/* Top Camera Controls */}
-                  <div className="absolute top-3 inset-x-3 flex items-center justify-between gap-2">
+                  <div className="absolute top-2.5 inset-x-2.5 flex items-center justify-between gap-2">
                     <span className="px-2.5 py-1 rounded-lg bg-slate-900/80 text-white text-[11px] font-semibold">
                       {isStartingCamera
                         ? 'Abriendo cámara...'
@@ -416,25 +416,25 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
                         type="button"
                         onClick={switchCameraDevice}
                         disabled={isScanning || isStartingCamera}
-                        className="p-2 rounded-lg bg-slate-900/80 hover:bg-slate-900 text-white border border-white/15 transition disabled:opacity-50"
+                        className="min-w-[38px] min-h-[38px] flex items-center justify-center rounded-xl bg-slate-900/80 hover:bg-slate-900 text-white border border-white/15 transition disabled:opacity-50"
                         title="Cambiar cámara frontal / trasera"
                       >
-                        <RefreshCw className="w-3.5 h-3.5" />
+                        <RefreshCw className="w-4 h-4" />
                       </button>
                       <button
                         type="button"
                         onClick={stopCamera}
                         disabled={isScanning}
-                        className="p-2 rounded-lg bg-slate-900/80 hover:bg-rose-600 text-white border border-white/15 transition disabled:opacity-50"
+                        className="min-w-[38px] min-h-[38px] flex items-center justify-center rounded-xl bg-slate-900/80 hover:bg-rose-600 text-white border border-white/15 transition disabled:opacity-50"
                         title="Cerrar cámara"
                       >
-                        <X className="w-3.5 h-3.5" />
+                        <X className="w-4 h-4" />
                       </button>
                     </div>
                   </div>
 
                   {/* Bottom Step Status + Progress */}
-                  <div className="absolute bottom-3 inset-x-3 bg-slate-900/85 border border-white/15 rounded-xl p-2.5 text-center space-y-1.5">
+                  <div className="absolute bottom-2.5 inset-x-2.5 bg-slate-900/85 border border-white/15 rounded-xl p-2.5 text-center space-y-1.5">
                     <p className="text-[11px] font-medium text-white leading-snug">{scanStepText}</p>
                     {isScanning && (
                       <div className="w-full h-1.5 bg-slate-700 rounded-full overflow-hidden">
@@ -451,7 +451,7 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
                   type="button"
                   onClick={() => void handleAuthenticateByFace()}
                   disabled={!isVideoReady || isScanning || isStartingCamera}
-                  className="w-full max-w-sm mx-auto py-3.5 px-5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-sm shadow-md transition flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed whitespace-nowrap"
+                  className="w-full max-w-sm mx-auto min-h-[48px] py-3.5 px-4 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-sm shadow-md transition flex items-center justify-center gap-2 text-center leading-snug disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                   <ScanFace className="w-5 h-5 shrink-0" />
                   <span>
@@ -462,12 +462,12 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
                 </button>
               </div>
             ) : (
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-6 sm:p-8 text-center space-y-4">
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5 sm:p-8 text-center space-y-4 flex flex-col items-center">
                 <div className="w-16 h-16 rounded-2xl bg-white border border-slate-200 text-red-600 flex items-center justify-center mx-auto shadow-xs">
                   <Camera className="w-8 h-8" />
                 </div>
                 <div className="space-y-1 max-w-md mx-auto">
-                  <h2 className="text-base font-bold text-slate-900">
+                  <h2 className="text-base font-bold text-slate-900 text-balance">
                     Verificación Facial Requerida para Ver Tus Sesiones
                   </h2>
                   <p className="text-xs text-slate-500 leading-relaxed">
@@ -479,7 +479,7 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
                   type="button"
                   onClick={() => void startCamera(facingMode)}
                   disabled={isStartingCamera}
-                  className="inline-flex items-center justify-center space-x-2 px-6 py-3.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-sm shadow-md transition disabled:opacity-50 whitespace-nowrap"
+                  className="w-full max-w-sm mx-auto min-h-[48px] inline-flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-sm shadow-md transition text-center leading-snug disabled:opacity-50"
                 >
                   <ScanFace className="w-5 h-5 shrink-0" />
                   <span>
@@ -491,13 +491,13 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
           </div>
 
           {/* Right Column: Privacy & Session Isolation Rules */}
-          <div className="lg:col-span-5 bg-slate-50 border border-slate-200 rounded-2xl p-5 sm:p-6 space-y-4">
-            <div className="flex items-center space-x-2 text-slate-900 font-bold text-sm">
+          <div className="lg:col-span-5 bg-slate-50 border border-slate-200 rounded-2xl p-5 sm:p-6 space-y-4 w-full">
+            <div className="flex items-center justify-center sm:justify-start space-x-2 text-slate-900 font-bold text-sm text-center sm:text-left">
               <ShieldCheck className="w-4 h-4 text-red-600 shrink-0" />
               <h3>Sesión Individual y Privacidad</h3>
             </div>
 
-            <div className="space-y-3 text-xs text-slate-600 leading-relaxed">
+            <div className="space-y-3 text-xs text-slate-600 leading-relaxed text-left">
               <div className="flex items-start space-x-2.5">
                 <UserCheck className="w-4 h-4 text-emerald-600 shrink-0 mt-0.5" />
                 <p>
@@ -515,7 +515,7 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
               <div className="flex items-start space-x-2.5">
                 <CheckCircle2 className="w-4 h-4 text-slate-700 shrink-0 mt-0.5" />
                 <p>
-                  <strong className="text-slate-900">Cierre de sesión individual:</strong> Al finalizar tu jornada o cambiar de dispositivo compartido, pulsa <strong>«Cerrar Sesión»</strong> en la barra superior para bloquear tu cuenta.
+                  <strong className="text-slate-900">Cierre de sesión individual:</strong> Al finalizar tu jornada o cambiar de dispositivo compartido, pulsa <strong>«Salir»</strong> en la barra superior para bloquear tu cuenta.
                 </p>
               </div>
             </div>

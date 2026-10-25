@@ -203,8 +203,8 @@ export function findMatchingAssignmentForRecord(
 /**
  * Evaluates whether an assignment on a target date (YYYY-MM-DD) is:
  * - 'completada_cerrada' (locked, completed & closed)
- * - 'incumplida' (locked: either not closed within 30 min max after session end, OR not loaded within +20 min of start)
- * - 'en_curso' (locked, currently active and within the 30-min post-session grace window)
+ * - 'incumplida' (locked: either pending exit auto-terminated 60 min after session end as No Cerrada, OR not loaded within +20 min of start)
+ * - 'en_curso' (locked, currently active and within the 60-min post-end grace window)
  * - 'disponible' (unlocked, can only be loaded on exact date between -30 min before start and +20 min after start)
  */
 export function getAssignmentOccurrenceStatus(
@@ -244,7 +244,7 @@ export function getAssignmentOccurrenceStatus(
     };
   }
 
-  // 2. Record explicitly marked as 'incumplido' (e.g., not closed after 30 minutes max)
+  // 2. Record explicitly marked as 'incumplido' (e.g., auto-terminated 60 minutes after end time as No Cerrada)
   if (matchedRecord?.status === 'incumplido') {
     const reason: NonComplianceReason = matchedRecord.nonComplianceReason || 'sin_cierre_30m';
     return {
@@ -261,19 +261,19 @@ export function getAssignmentOccurrenceStatus(
       record: matchedRecord,
       statusLabel:
         reason === 'sin_cierre_30m'
-          ? 'No Cerrada (+30 min) · Bloqueada · Alarma Desactivada'
+          ? 'Terminada (+60 min) · No Cerrada'
           : 'Cerrada por No Cargar (+20 min) · Bloqueada',
-      shortLabel: reason === 'sin_cierre_30m' ? 'No Cerrada (+30m)' : 'Cerrada (+20m)',
+      shortLabel: reason === 'sin_cierre_30m' ? 'No Cerrada (+60m)' : 'Cerrada (+20m)',
       detailText:
         reason === 'sin_cierre_30m'
-          ? `Entrada ${matchedRecord.checkInTime} dada por no cerrada, bloqueada y alarma desactivada al cumplir 30 min máx.${
-              matchedRecord.markedNonCompliantAt ? ` (${matchedRecord.markedNonCompliantAt})` : ''
+          ? `Entrada ${matchedRecord.checkInTime} · Salida pendiente dada por terminada a los 60 min de la hora de término y calificada como No Cerrada${
+              matchedRecord.markedNonCompliantAt ? ` (${matchedRecord.markedNonCompliantAt} hrs)` : ''
             }`
           : 'Sesión dada por cerrada y bloqueada',
     };
   }
 
-  // 3. Record currently 'en_curso' — check if 30 minutes max have elapsed since planned session end
+  // 3. Record currently 'en_curso' — check if 60 minutes have elapsed since session end time
   if (matchedRecord?.status === 'en_curso') {
     const alarm = getSessionAlarmStatus(matchedRecord, catalog, nowMs);
     if (alarm.hasExceededUnclosedGrace) {
@@ -289,9 +289,9 @@ export function getAssignmentOccurrenceStatus(
         unlockTimeHHMM: win?.loadOpenHHMM,
         loadDeadlineHHMM: win?.loadCloseHHMM,
         record: matchedRecord,
-        statusLabel: 'No Cerrada (+30 min) · Bloqueada · Alarma Desactivada',
-        shortLabel: 'No Cerrada (+30m)',
-        detailText: `Entrada ${matchedRecord.checkInTime} · No cerrada en 30 min máx. tras finalizar (${alarm.expectedEndTimeFormatted} hrs). Alarma desactivada.`,
+        statusLabel: 'Terminada (+60 min) · No Cerrada',
+        shortLabel: 'No Cerrada (+60m)',
+        detailText: `Entrada ${matchedRecord.checkInTime} · Terminada a los 60 min después de la hora de término (${alarm.expectedEndTimeFormatted} hrs) y calificada como No Cerrada.`,
       };
     }
 
@@ -360,12 +360,12 @@ export function getAssignmentOccurrenceStatus(
         loadDeadlineHHMM: win?.loadCloseHHMM,
         statusLabel:
           reason === 'sin_cierre_30m'
-            ? 'No Cerrada (+30 min) · Bloqueada · Alarma Desactivada'
+            ? 'Terminada (+60 min) · No Cerrada'
             : 'Sesión Cerrada · No Cargada (+20 min) · Bloqueada',
-        shortLabel: reason === 'sin_cierre_30m' ? 'No Cerrada (+30m)' : 'Cerrada (+20m sin carga)',
+        shortLabel: reason === 'sin_cierre_30m' ? 'No Cerrada (+60m)' : 'Cerrada (+20m sin carga)',
         detailText:
           reason === 'sin_cierre_30m'
-            ? 'Dada por no cerrada y bloqueada tras 30 minutos sin cierre · Alarma desactivada'
+            ? 'Salida pendiente dada por terminada a los 60 minutos de la hora de término y calificada como No Cerrada'
             : `No se cargó dentro de los 20 min posteriores al inicio (límite ${limitLabel}) · Dada por cerrada`,
       };
     }

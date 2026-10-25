@@ -353,14 +353,14 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
   return (
     <div className="space-y-5">
       {/* Top Banner and View Selector */}
-      <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-sm flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+      <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-sm flex flex-col lg:flex-row items-center lg:justify-between gap-4 text-center lg:text-left">
         <div>
-          <div className="flex items-center space-x-3">
+          <div className="flex flex-col sm:flex-row items-center gap-3">
             <span className="p-2.5 rounded-xl bg-red-50 text-red-600 border border-red-200/80 shadow-xs">
               <CalendarDays className="w-5 h-5" />
             </span>
             <div>
-              <div className="flex items-center space-x-2">
+              <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
                 <h3 className="font-extrabold text-slate-900 text-base sm:text-lg tracking-tight">
                   Calendario de Programación y Asignación
                 </h3>
@@ -375,7 +375,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-2.5">
+        <div className="flex flex-wrap items-center justify-center lg:justify-end gap-2.5">
           {/* Mode Switcher: Mes / Semana / Día */}
           <div className="bg-slate-100 p-1 rounded-xl border border-slate-200 flex text-xs font-bold">
             <button
@@ -451,8 +451,8 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
       </div>
 
       {/* Calendar Navigation Bar & Controls */}
-      <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm flex flex-col md:flex-row md:items-center justify-between gap-3">
-        <div className="flex items-center space-x-2">
+      <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm flex flex-col md:flex-row items-center justify-between gap-3">
+        <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2">
           <button
             type="button"
             onClick={handlePrev}
@@ -481,12 +481,12 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
 
           <div className="h-6 w-[1px] bg-slate-200 mx-1 hidden sm:block"></div>
 
-          <h4 className="font-extrabold text-slate-900 text-sm sm:text-base tracking-tight capitalize">
+          <h4 className="font-extrabold text-slate-900 text-sm sm:text-base tracking-tight capitalize text-center sm:text-left">
             {calendarHeaderTitle}
           </h4>
         </div>
 
-        <div className="flex items-center space-x-2">
+        <div className="flex items-center justify-center space-x-2">
           <span className="text-[11px] font-semibold text-slate-500 hidden sm:inline">Ir a fecha:</span>
           <input
             type="date"
@@ -563,7 +563,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
             <option value="all">Todos los Estados</option>
             <option value="pendientes">Disponibles / En Horario</option>
             <option value="cerradas">Completadas y Cerradas (Bloqueadas)</option>
-            <option value="incumplidas">Incumplidas (Fuera de Horario / +30m sin cierre)</option>
+            <option value="incumplidas">Bloqueadas / No Cerradas (Fuera de Horario o +60m)</option>
           </select>
 
           <div className="relative">
@@ -578,7 +578,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
           </div>
         </div>
 
-        <div className="flex flex-wrap items-center gap-3 text-slate-500 font-medium">
+        <div className="flex flex-wrap items-center justify-center sm:justify-end gap-3 text-slate-500 font-medium">
           <span className="flex items-center">
             <span className="w-2 h-2 rounded-full bg-blue-500 mr-1.5"></span>
             Fitness
@@ -593,7 +593,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
           </span>
           <span className="flex items-center text-rose-700 font-semibold">
             <Ban className="w-3 h-3 mr-1 text-rose-600" />
-            Incumplida (Bloqueada)
+            No Cerrada / Bloqueada
           </span>
           <span className="text-slate-400">|</span>
           <span className="text-slate-700">
@@ -1115,7 +1115,9 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                             {dayLock.isNonCompliant ? (
                               <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-rose-700 text-white inline-flex items-center">
                                 <Ban className="w-2.5 h-2.5 mr-0.5 text-rose-200" />
-                                Incumplida
+                                {dayLock.nonComplianceReason === 'sin_cierre_30m'
+                                  ? 'No Cerrada'
+                                  : 'Bloqueada'}
                               </span>
                             ) : dayLock.isCompletedAndClosed ? (
                               <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-slate-800 text-white inline-flex items-center">

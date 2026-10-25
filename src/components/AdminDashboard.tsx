@@ -425,16 +425,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   };
 
   return (
-    <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6 sm:py-8 space-y-6">
+    <div className="w-full max-w-7xl mx-auto px-3.5 sm:px-6 lg:px-8 py-4 sm:py-8 space-y-5 sm:space-y-6">
       {/* Top Banner & Tab Navigation in Light Theme */}
       <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-6 shadow-sm flex flex-col gap-4">
-        <div className="flex flex-col md:flex-row md:items-center justify-between gap-3">
-          <div className="flex items-center space-x-3">
+        <div className="flex flex-col md:flex-row items-center md:justify-between gap-3 text-center md:text-left">
+          <div className="flex flex-col sm:flex-row items-center gap-3">
             <span className="p-2.5 rounded-xl bg-red-50 text-red-600 border border-red-200/80 shadow-sm shrink-0">
               <BarChart3 className="w-5 h-5" />
             </span>
             <div>
-              <h2 className="text-xl font-bold text-slate-900">Panel Administrativo BSCW Check</h2>
+              <h2 className="text-lg sm:text-xl font-bold text-slate-900">Panel Administrativo BSCW Check</h2>
               <p className="text-xs text-slate-500 font-medium">
                 Control de gestión, asignación de clases, reportes y configuración de empresas y sedes
               </p>
@@ -443,7 +443,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
 
         {/* Tab Buttons */}
-        <div className="flex flex-wrap items-center gap-1.5 bg-slate-100 p-1.5 rounded-xl border border-slate-200 text-xs font-semibold">
+        <div className="flex flex-wrap items-center justify-center sm:justify-start gap-1.5 bg-slate-100 p-1.5 rounded-xl border border-slate-200 text-xs font-semibold">
           <button
             type="button"
             onClick={() => setActiveTab('reports')}
@@ -538,14 +538,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       {/* Admin Overdue Checkout Alert Banner */}
       {overdueSessions.length > 0 && (
-        <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3">
-          <div className="flex items-start space-x-3">
+        <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 shadow-xs flex flex-col md:flex-row items-center md:justify-between gap-3 text-center md:text-left">
+          <div className="flex flex-col sm:flex-row items-center sm:items-start gap-3">
             <div className="w-10 h-10 rounded-xl bg-red-600 text-white flex items-center justify-center shrink-0 shadow-xs">
               <BellRing className="w-5 h-5 animate-bounce" />
             </div>
             <div>
               <p className="text-[11px] font-extrabold uppercase tracking-wide text-red-700">
-                Alerta de Salida No Registrada ({overdueSessions.length})
+                Alerta de Salida Pendiente ({overdueSessions.length})
               </p>
               <p className="text-xs font-bold text-slate-900 mt-0.5">
                 {overdueSessions
@@ -553,14 +553,14 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     ({ record, alarm }) =>
                       `${record.trainerName} en ${record.companyName} (${record.sedeName}) · +${formatSecondsClock(
                         alarm.overdueSeconds
-                      )} excedidos · Bloqueo por incumplimiento en ${formatSecondsClock(
+                      )} tras hora de término · Se dará por terminada como No Cerrada en ${formatSecondsClock(
                         alarm.remainingBeforeNonComplianceSeconds
                       )} (${alarm.autoLockDeadlineFormatted} hrs)`
                   )
                   .join(' • ')}
               </p>
               <p className="text-[11px] text-slate-600 mt-0.5">
-                Si no se registra la salida dentro de los 30 minutos posteriores al término, la sesión y la asignación se bloquearán automáticamente como incumplidas.
+                Cualquier salida pendiente se dará por terminada automáticamente a los 60 minutos después de la hora de término y se calificará como No Cerrada.
               </p>
             </div>
           </div>
@@ -568,7 +568,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('log')}
-            className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold shrink-0 transition self-start md:self-center"
+            className="w-full sm:w-auto min-h-[42px] px-4 py-2 rounded-xl bg-slate-900 hover:bg-black text-white text-xs font-bold shrink-0 transition"
           >
             Ver en Bitácora
           </button>
@@ -577,21 +577,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
       {/* Admin Blocked & Non-Compliant Assignments Summary Banner */}
       {nonCompliantSummary.hasAny && (
-        <div className="bg-rose-50/80 border border-rose-200 rounded-2xl p-4 shadow-xs flex flex-col md:flex-row md:items-center justify-between gap-3">
-          <div className="flex items-start space-x-3">
+        <div className="bg-rose-50/80 border border-rose-200 rounded-2xl p-4 shadow-xs flex flex-col md:flex-row items-center md:justify-between gap-3 text-center md:text-left">
+          <div className="flex flex-col sm:flex-row items-center sm:items-start gap-3">
             <div className="w-10 h-10 rounded-xl bg-rose-700 text-white flex items-center justify-center shrink-0 shadow-xs">
               <Ban className="w-5 h-5" />
             </div>
             <div>
               <p className="text-[11px] font-extrabold uppercase tracking-wide text-rose-800">
-                Control de Asignaciones Bloqueadas por Incumplimiento
+                Control de Asignaciones Bloqueadas y Sesiones No Cerradas
               </p>
               <p className="text-xs font-bold text-slate-900 mt-0.5">
-                {nonCompliantSummary.lockedAssignmentsCount} asignación(es) bloqueada(s) como incumplida(s)
+                {nonCompliantSummary.lockedAssignmentsCount} asignación(es) bloqueada(s)
                 {' · '}
                 {nonCompliantSummary.outOfScheduleUnreportedCount} fuera de horario sin reporte
                 {' · '}
-                {nonCompliantSummary.unclosedRecordsCount} sesión(es) sin cierre tras +30 min
+                {nonCompliantSummary.unclosedRecordsCount} sesión(es) no cerrada(s) (terminadas +60 min)
               </p>
               <p className="text-[11px] text-slate-600 mt-0.5">
                 Estas asignaciones están bloqueadas para el entrenador. Desde Asignación de Clases puedes auditar o rehabilitar una fecha si procede justificación.
@@ -599,11 +599,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
           </div>
 
-          <div className="flex items-center gap-2 shrink-0 self-start md:self-center">
+          <div className="flex flex-wrap items-center justify-center gap-2 shrink-0">
             <button
               type="button"
               onClick={() => setActiveTab('schedule')}
-              className="px-3.5 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold transition"
+              className="min-h-[42px] px-3.5 py-2 rounded-xl bg-rose-700 hover:bg-rose-800 text-white text-xs font-bold transition"
             >
               Revisar Asignaciones
             </button>
@@ -614,9 +614,9 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   setFilterPunctuality('incumplido');
                   setActiveTab('log');
                 }}
-                className="px-3.5 py-2 rounded-xl bg-white hover:bg-rose-100 text-rose-800 border border-rose-300 text-xs font-bold transition"
+                className="min-h-[42px] px-3.5 py-2 rounded-xl bg-white hover:bg-rose-100 text-rose-800 border border-rose-300 text-xs font-bold transition"
               >
-                Ver Sin Cierre (+30m)
+                Ver No Cerradas (+60m)
               </button>
             )}
           </div>
@@ -627,8 +627,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {activeTab === 'reports' && (
         <div className="space-y-6">
           {/* Filter Bar for Daily / Monthly Mode */}
-          <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-sm flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <div className="flex flex-wrap items-center gap-3">
+          <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-sm flex flex-col sm:flex-row items-center justify-between gap-4">
+            <div className="flex flex-wrap items-center justify-center sm:justify-start gap-3">
               <span className="text-xs font-bold text-slate-700 flex items-center">
                 <Calendar className="w-4 h-4 mr-1.5 text-red-600" />
                 Periodo del Reporte:
@@ -692,7 +692,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             </div>
 
             {/* Action buttons with PDF and Excel */}
-            <div className="flex items-center space-x-2">
+            <div className="flex flex-wrap items-center justify-center gap-2">
               <button
                 type="button"
                 onClick={() => setIsPdfModalOpen(true)}
@@ -722,7 +722,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <span className="text-xs font-semibold text-right">
                   <span className="text-emerald-700">{stats.completed} cerradas</span>
                   {stats.nonCompliant > 0 && (
-                    <span className="text-rose-700"> · {stats.nonCompliant} incumplidas</span>
+                    <span className="text-rose-700"> · {stats.nonCompliant} no cerradas</span>
                   )}
                 </span>
               </div>
@@ -791,7 +791,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                     <th className="py-3 px-3 text-center">% Puntualidad</th>
                     <th className="py-3 px-3 text-center">A Tiempo</th>
                     <th className="py-3 px-3 text-center">Con Retraso</th>
-                    <th className="py-3 px-3 text-center">Incumplidas</th>
+                    <th className="py-3 px-3 text-center">No Cerradas</th>
                     <th className="py-3 px-3 text-center">Horas Brindadas</th>
                     <th className="py-3 px-3 text-center">Colaboradores</th>
                     <th className="py-3 px-4 text-right">Calificación</th>
@@ -859,7 +859,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           }`}
                         >
                           {nonCompliant > 0
-                            ? '⚠ Con incumplimiento'
+                            ? '⚠ Con no cerradas'
                             : punctualityRate >= 95
                             ? '★ Excelente'
                             : punctualityRate >= 80
@@ -1126,7 +1126,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   <option value="con_retraso">Con retraso</option>
                   <option value="adelantado">Adelantadas</option>
                   <option value="en_curso">En curso (sin salida)</option>
-                  <option value="incumplido">Incumplida (+30m sin cierre)</option>
+                  <option value="incumplido">No Cerrada (Terminada +60m)</option>
                 </select>
               </div>
             </div>
@@ -1215,7 +1215,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                               {isNonCompliantRecord ? (
                                 <span className="ml-1.5 text-rose-700 font-sans font-extrabold inline-flex items-center gap-1">
                                   <Lock className="w-3 h-3 inline" />
-                                  Incumplida (+30m sin cierre)
+                                  No Cerrada (Terminada +60m)
                                 </span>
                               ) : rec.checkOutTime ? (
                                 <span className="text-slate-700 ml-1">
@@ -1230,7 +1230,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                                   );
                                   return st.isOverdue ? (
                                     <span className="ml-1.5 text-amber-800 font-sans font-extrabold">
-                                      ⚠ Salida vencida (+{formatSecondsClock(st.overdueSeconds)} · bloqueo en{' '}
+                                      ⚠ Salida pendiente (+{formatSecondsClock(st.overdueSeconds)} · termina en{' '}
                                       {formatSecondsClock(st.remainingBeforeNonComplianceSeconds)})
                                     </span>
                                   ) : (
@@ -1461,7 +1461,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                           }`}
                         >
                           {isNonCompliantRecord
-                            ? 'Incumplida'
+                            ? 'No Cerrada (+60m)'
                             : rec.status === 'completado'
                             ? 'Completada'
                             : 'En Curso'}

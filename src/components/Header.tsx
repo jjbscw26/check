@@ -69,17 +69,48 @@ export const Header: React.FC<HeaderProps> = ({
   }, []);
 
   return (
-    <header className="bg-white border-b border-slate-200/90 text-slate-900 sticky top-0 z-40 shadow-sm">
-      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-        <div className="flex items-center justify-between h-16 sm:h-20 gap-2 sm:gap-4">
-          {/* Logo & Brand */}
-          <div className="flex items-center space-x-3">
-            <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-xl bg-gradient-to-tr from-red-600 via-red-500 to-rose-600 flex items-center justify-center shadow-md shadow-red-500/25 text-white font-black text-lg shrink-0">
-              <CheckCheck className="w-6 h-6 stroke-[2.5]" />
+    <header className="bg-white/95 backdrop-blur-md border-b border-slate-200/90 text-slate-900 sticky top-0 z-40 shadow-xs">
+      <div className="max-w-7xl mx-auto px-3 sm:px-6 lg:px-8">
+        <div className="grid grid-cols-[1fr_auto_1fr] sm:flex items-center sm:justify-between h-14 sm:h-20 gap-1.5 sm:gap-4">
+          {/* Mobile Left Slot: Compact Status / Avatar */}
+          <div className="flex sm:hidden items-center justify-start min-w-0">
+            {overdueSessionCount > 0 ? (
+              <span
+                className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-100 border border-amber-300 text-amber-950 text-[11px] font-bold tabular-nums whitespace-nowrap"
+                title="Salida pendiente"
+              >
+                <BellRing className="w-3.5 h-3.5 text-red-600 shrink-0" />
+                <span>Salida ({overdueSessionCount})</span>
+              </span>
+            ) : activeSessionCount > 0 && currentView === 'trainer' ? (
+              <span className="inline-flex items-center gap-1 px-2 py-1 rounded-lg bg-red-50 border border-red-200 text-red-700 text-[11px] font-bold tabular-nums whitespace-nowrap">
+                <span>En Sede ({activeSessionCount})</span>
+              </span>
+            ) : authenticatedTrainer && trainerSession ? (
+              <div className="inline-flex items-center gap-1.5 min-w-0">
+                <img
+                  src={authenticatedTrainer.avatar}
+                  alt={authenticatedTrainer.name}
+                  referrerPolicy="no-referrer"
+                  className="w-8 h-8 rounded-xl object-cover border border-emerald-500 shrink-0"
+                />
+              </div>
+            ) : (
+              <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-slate-500 whitespace-nowrap">
+                <ShieldCheck className="w-3.5 h-3.5 text-red-600 shrink-0" />
+                <span>GPS</span>
+              </span>
+            )}
+          </div>
+
+          {/* Center on Mobile / Left on Desktop: Brand Wordmark */}
+          <div className="justify-self-center sm:justify-self-auto flex items-center justify-center sm:justify-start gap-2 sm:gap-3">
+            <div className="w-8 h-8 sm:w-11 sm:h-11 rounded-xl bg-gradient-to-tr from-red-600 via-red-500 to-rose-600 flex items-center justify-center shadow-sm shadow-red-500/20 text-white font-black shrink-0">
+              <CheckCheck className="w-4 h-4 sm:w-6 sm:h-6 stroke-[2.5]" />
             </div>
-            <div>
-              <div className="flex items-center space-x-2">
-                <span className="text-lg sm:text-xl font-black tracking-tight text-slate-900 whitespace-nowrap">
+            <div className="text-center sm:text-left">
+              <div className="flex items-center justify-center sm:justify-start gap-2">
+                <span className="text-base sm:text-xl font-black tracking-tight text-slate-900 whitespace-nowrap">
                   BSCW <span className="text-red-600 font-extrabold">Check</span>
                 </span>
                 <span className="hidden md:inline-flex items-center text-xs font-semibold text-red-700">
@@ -92,7 +123,7 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
           </div>
 
-          {/* Center: Live Clock & Date */}
+          {/* Center on Desktop: Live Clock & Date */}
           <div
             className={`${
               isMobileOrTablet ? 'hidden md:flex' : 'hidden xl:flex'
@@ -108,8 +139,8 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
           </div>
 
-          {/* Right: Desktop View Switcher and Individual Biometric Trainer Session */}
-          <div className="flex items-center space-x-1.5 sm:space-x-3">
+          {/* Right: Desktop View Switcher & Biometric Session Action */}
+          <div className="justify-self-end flex items-center justify-end gap-1.5 sm:gap-3">
             {!isMobileOrTablet && (
               <div className="hidden lg:flex bg-slate-100 p-1 rounded-xl border border-slate-200 items-center text-xs sm:text-sm font-medium">
                 <button
@@ -176,23 +207,22 @@ export const Header: React.FC<HeaderProps> = ({
               </div>
             )}
 
-            {/* Overdue Session Alert Badge */}
+            {/* Overdue Session Alert Badge (Tablet/Desktop) */}
             {overdueSessionCount > 0 && (
               <div
-                className="flex items-center px-2.5 py-1.5 bg-amber-100 border border-amber-300 rounded-xl text-amber-950 text-[11px] font-bold shadow-xs whitespace-nowrap shrink-0 tabular-nums"
+                className="hidden sm:flex items-center px-2.5 py-1.5 bg-amber-100 border border-amber-300 rounded-xl text-amber-950 text-[11px] font-bold shadow-xs whitespace-nowrap shrink-0 tabular-nums"
                 title="Hay sesiones finalizadas pendientes de registrar salida"
               >
                 <BellRing className="w-3.5 h-3.5 text-red-600 mr-1.5 shrink-0" />
-                <span className="hidden sm:inline">Salida Pendiente ({overdueSessionCount})</span>
-                <span className="sm:hidden">{overdueSessionCount}</span>
+                <span>Salida Pendiente ({overdueSessionCount})</span>
               </div>
             )}
 
-            {/* Active Session Badge on phones & tablets when clocked in */}
+            {/* Active Session Badge on tablets when clocked in */}
             {activeSessionCount > 0 && overdueSessionCount === 0 && currentView === 'trainer' && (
               <div
-                className={`${
-                  isMobileOrTablet ? 'flex' : 'lg:hidden flex'
+                className={`hidden ${
+                  isMobileOrTablet ? 'sm:flex' : 'sm:flex lg:hidden'
                 } items-center px-2.5 py-1 bg-red-50 border border-red-200 rounded-lg text-red-700 text-[11px] font-bold whitespace-nowrap shrink-0 tabular-nums`}
               >
                 <span>En Sede ({activeSessionCount})</span>
@@ -202,11 +232,12 @@ export const Header: React.FC<HeaderProps> = ({
             {/* Individual Trainer Biometric Session Chip / Logout */}
             {(isMobileOrTablet || currentView === 'trainer') && (
               authenticatedTrainer && trainerSession ? (
-                <div className="flex items-center space-x-2 bg-slate-50 border border-slate-200 rounded-xl pl-2 pr-1.5 py-1">
+                <div className="flex items-center sm:space-x-2 sm:bg-slate-50 sm:border sm:border-slate-200 rounded-xl sm:pl-2 sm:pr-1.5 sm:py-1">
                   <img
                     src={authenticatedTrainer.avatar}
                     alt={authenticatedTrainer.name}
-                    className="w-7 h-7 rounded-lg object-cover border border-emerald-500 shrink-0"
+                    referrerPolicy="no-referrer"
+                    className="hidden sm:block w-7 h-7 rounded-lg object-cover border border-emerald-500 shrink-0"
                   />
                   <div className="hidden sm:block leading-tight max-w-[140px]">
                     <span className="text-xs font-bold text-slate-900 block truncate">
@@ -220,7 +251,7 @@ export const Header: React.FC<HeaderProps> = ({
                     <button
                       type="button"
                       onClick={onLogoutTrainerSession}
-                      className="inline-flex items-center space-x-1 px-2.5 py-1.5 rounded-lg bg-white hover:bg-red-50 text-slate-700 hover:text-red-700 border border-slate-200 hover:border-red-200 text-xs font-semibold transition whitespace-nowrap shrink-0"
+                      className="inline-flex items-center justify-center gap-1 min-h-[38px] px-2.5 py-1.5 rounded-xl bg-white hover:bg-red-50 text-slate-700 hover:text-red-700 border border-slate-200 hover:border-red-200 text-xs font-semibold transition whitespace-nowrap shrink-0"
                       title="Cerrar sesión individual del entrenador"
                     >
                       <LogOut className="w-3.5 h-3.5 text-red-600 shrink-0" />
@@ -229,7 +260,7 @@ export const Header: React.FC<HeaderProps> = ({
                   )}
                 </div>
               ) : (
-                <div className="flex items-center space-x-1.5 px-3 py-1.5 rounded-xl bg-slate-100 border border-slate-200 text-xs font-semibold text-slate-600 whitespace-nowrap shrink-0">
+                <div className="inline-flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl bg-slate-100 border border-slate-200 text-[11px] sm:text-xs font-semibold text-slate-600 whitespace-nowrap shrink-0">
                   <ScanFace className="w-3.5 h-3.5 text-red-600 shrink-0" />
                   <span className="hidden sm:inline">Acceso Facial Requerido</span>
                   <span className="sm:hidden">Facial</span>

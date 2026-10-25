@@ -1,6 +1,6 @@
 import { ActivityCatalogItem, ActivityType, AttendanceRecord, ClassAssignment } from '../types';
 
-export const UNCLOSED_GRACE_MINUTES = 30;
+export const UNCLOSED_GRACE_MINUTES = 60;
 export const UNCLOSED_GRACE_SECONDS = UNCLOSED_GRACE_MINUTES * 60;
 
 export interface SessionAlarmStatus {
@@ -68,6 +68,26 @@ export function parseRecordStartMs(record: AttendanceRecord): number {
       return parsed;
     }
   }
+  const dateParts = (record.date || '').split('-').map(Number);
+  const rawTime = (record.checkInTime || record.scheduledTime || '09:00').trim();
+  const timeMatch = rawTime.match(/(\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (dateParts.length === 3 && !dateParts.some(Number.isNaN) && timeMatch) {
+    const hh = parseInt(timeMatch[1], 10);
+    const mm = parseInt(timeMatch[2], 10);
+    const ss = timeMatch[3] ? parseInt(timeMatch[3], 10) : 0;
+    const localMs = new Date(
+      dateParts[0],
+      dateParts[1] - 1,
+      dateParts[2],
+      hh,
+      mm,
+      ss,
+      0
+    ).getTime();
+    if (!Number.isNaN(localMs)) {
+      return localMs;
+    }
+  }
   const fallback = new Date(`${record.date}T${record.checkInTime}`).getTime();
   return Number.isNaN(fallback) ? Date.now() : fallback;
 }
@@ -115,7 +135,7 @@ export function getSessionAlarmStatus(
   const remainingBeforeNonComplianceSeconds = Math.max(0, UNCLOSED_GRACE_SECONDS - overdueSeconds);
   const hasExceededUnclosedGrace = isInProgress && (nowMs >= autoLockDeadlineMs || overdueSeconds >= UNCLOSED_GRACE_SECONDS);
 
-  // Deactivate alarm automatically if 30-minute unclosed limit has been reached
+  // Deactivate alarm automatically if 60-minute post-end unclosed limit has been reached
   const alarmEnabled = record.alarmEnabled !== false && !hasExceededUnclosedGrace;
 
   let snoozedUntilMs: number | null = null;
