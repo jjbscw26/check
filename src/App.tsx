@@ -16,8 +16,6 @@ import {
 import {
   AttendanceRecord,
   Company,
-  FacialVerificationData,
-  GpsData,
   Sede,
   Trainer,
   ClassAssignment,
@@ -53,6 +51,7 @@ import {
   deleteSedeFromFirestore,
   deleteTrainerFromFirestore,
   normalizeHHMM,
+  parseFirestoreAttendanceRecord,
   saveActivityCatalogItemToFirestore,
   saveAssignmentToFirestore,
   saveCompanyToFirestore,
@@ -61,6 +60,7 @@ import {
   saveTrainerToFirestore,
   seedDemoDataToFirestore,
   syncDataSetsToFirestore,
+  syncEvidenceRecordsToFirestore,
   syncWorkspaceDataToFirestore,
   toSafeDocId,
 } from './utils/firestoreDemoSync';
@@ -74,33 +74,6 @@ function checkIsMobileOrTablet(): boolean {
     window.innerWidth <= 1366 &&
     window.matchMedia('(hover: none) and (pointer: coarse)').matches;
   return isTabletOrMobileWidth || isTouchTabletDevice;
-}
-
-function parseFirestoreGpsData(raw: unknown): GpsData {
-  const g = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
-  return {
-    lat: Number(g.lat ?? 19.42694),
-    lng: Number(g.lng ?? -99.16782),
-    accuracy: Number(g.accuracy ?? 10),
-    distanceToSedeMeters: Number(g.distanceToSedeMeters ?? 0),
-    isWithinGeofence: Boolean(g.isWithinGeofence),
-    capturedAt: String(g.capturedAt || ''),
-  };
-}
-
-function parseFirestoreFacialData(raw: unknown): FacialVerificationData | undefined {
-  if (!raw || typeof raw !== 'object') return undefined;
-  const fv = raw as Record<string, unknown>;
-  if (typeof fv.facePhotoUrl !== 'string' || !fv.facePhotoUrl) return undefined;
-  return {
-    verified: Boolean(fv.verified),
-    confidenceScore: Number(fv.confidenceScore ?? 98),
-    facePhotoUrl: fv.facePhotoUrl,
-    capturedAt: String(fv.capturedAt || ''),
-    biometricId: String(fv.biometricId || ''),
-    livenessPassed: fv.livenessPassed !== false,
-    trainerName: String(fv.trainerName || ''),
-  };
 }
 
 export default function App() {
@@ -123,15 +96,24 @@ export default function App() {
 
   const autoSeedTriggeredRef = useRef<boolean>(false);
   const reconciledInitialAssignmentsRef = useRef<boolean>(false);
+  const reconciledInitialRecordsRef = useRef<boolean>(false);
   const pendingSedesByIdRef = useRef<Map<string, Sede>>(new Map());
   const pendingAssignmentsByIdRef = useRef<Map<string, ClassAssignment>>(new Map());
   const inFlightAssignmentWritesRef = useRef<Map<string, number>>(new Map());
   const deletedAssignmentIdsRef = useRef<Set<string>>(new Set());
+  const pendingRecordsByIdRef = useRef<Map<string, AttendanceRecord>>(new Map());
+  const inFlightRecordWritesRef = useRef<Map<string, number>>(new Map());
+  const deletedRecordIdsRef = useRef<Set<string>>(new Set());
   const companiesRef = useRef<Company[]>([]);
+  const recordsRef = useRef<AttendanceRecord[]>([]);
 
   useEffect(() => {
     companiesRef.current = companies;
   }, [companies]);
+
+  useEffect(() => {
+    recordsRef.current = records;
+  }, [records]);
 
   const resolveAssignmentParents = useCallback((asg: ClassAssignment, companyPool?: Company[]) => {
     const pool = companyPool ?? companiesRef.current;
@@ -189,6 +171,44 @@ export default function App() {
     [resolveAssignmentParents]
   );
 
+  const persistRecordToFirestore = useCallback((rawRecord: AttendanceRecord) => {
+    const safeId = toSafeDocId(rawRecord.id, 'rec');
+    const normalized: AttendanceRecord = {
+      ...rawRecord,
+      id: safeId,
+      scheduledTime: normalizeHHMM(rawRecord.scheduledTime, '09:00'),
+    };
+
+    deletedRecordIdsRef.current.delete(safeId);
+    pendingRecordsByIdRef.current.set(safeId, normalized);
+    inFlightRecordWritesRef.current.set(
+      safeId,
+      (inFlightRecordWritesRef.current.get(safeId) || 0) + 1
+    );
+
+    void saveRecordToFirestore(normalized)
+      .then(() => {
+        setSyncErrorMessage(null);
+      })
+      .catch((err) => {
+        console.error(err);
+        setSyncErrorMessage(
+          'No se pudo sincronizar un registro de la bitácora de evidencias con Firestore. Pulsa "Sincronizar ahora" para reintentar.'
+        );
+      })
+      .finally(() => {
+        const remaining = (inFlightRecordWritesRef.current.get(safeId) || 1) - 1;
+        if (remaining <= 0) {
+          inFlightRecordWritesRef.current.delete(safeId);
+          pendingRecordsByIdRef.current.delete(safeId);
+        } else {
+          inFlightRecordWritesRef.current.set(safeId, remaining);
+        }
+      });
+
+    return normalized;
+  }, []);
+
   const handleRetryWorkspaceSync = async () => {
     setIsRetryingSync(true);
     try {
@@ -200,6 +220,12 @@ export default function App() {
       setIsRetryingSync(false);
     }
   };
+
+  const handleSyncEvidenceDatabase = useCallback(async () => {
+    const res = await syncEvidenceRecordsToFirestore(recordsRef.current);
+    setSyncErrorMessage(null);
+    return res;
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => setNowTick(Date.now()), 5000);
@@ -611,104 +637,87 @@ export default function App() {
       mkQuery('records'),
       (snap) => {
         const isServerSnapshot = !snap.metadata.fromCache;
+        const fsRecords: AttendanceRecord[] = snap.docs.map((docSnap) =>
+          parseFirestoreAttendanceRecord(docSnap.id, docSnap.data() as Record<string, unknown>)
+        );
+
         if (isServerSnapshot) {
           serverSeen.records = true;
           serverEmpty.records = snap.empty;
           checkCalendarReady();
           maybeReconcileEmptyServerCollections();
+
+          // One-time reconciliation of any local evidence records/photos not yet reflected in /records
+          if (!reconciledInitialRecordsRef.current) {
+            reconciledInitialRecordsRef.current = true;
+            const serverById = new Map(fsRecords.map((r) => [r.id, r]));
+            for (const localRec of initialLocalRecords) {
+              const safeId = toSafeDocId(localRec.id, 'rec');
+              if (deletedRecordIdsRef.current.has(safeId)) continue;
+              const serverMatch = serverById.get(safeId);
+              if (!serverMatch) {
+                if (!snap.empty) {
+                  persistRecordToFirestore(localRec);
+                }
+              } else {
+                const localHasExit = Boolean(localRec.exitPhotoUrl && !serverMatch.exitPhotoUrl);
+                const localClosed =
+                  localRec.status !== 'en_curso' && serverMatch.status === 'en_curso';
+                const localAudited =
+                  (localRec.adminVerified && !serverMatch.adminVerified) ||
+                  Boolean(localRec.adminNotes && localRec.adminNotes !== serverMatch.adminNotes);
+                if (localHasExit || localClosed || localAudited) {
+                  persistRecordToFirestore(localRec);
+                }
+              }
+            }
+          }
         }
+
         if (snap.empty) {
-          if (isServerSnapshot && autoSeedTriggeredRef.current) {
+          if (
+            isServerSnapshot &&
+            autoSeedTriggeredRef.current &&
+            pendingRecordsByIdRef.current.size === 0
+          ) {
             setRecords([]);
             saveStoredRecords([]);
+          } else if (pendingRecordsByIdRef.current.size > 0) {
+            const optimisticOnly = Array.from(pendingRecordsByIdRef.current.values());
+            setRecords(optimisticOnly);
+            saveStoredRecords(optimisticOnly);
           }
           return;
         }
+
         serverEmpty.records = false;
-        const fsRecords: AttendanceRecord[] = snap.docs.map((docSnap) => {
-          const d = docSnap.data();
-          const facial = parseFirestoreFacialData(d.facialVerification);
-          return {
-            id: docSnap.id,
-            ...(typeof d.assignmentId === 'string' && d.assignmentId
-              ? { assignmentId: d.assignmentId }
-              : {}),
-            trainerId: String(d.trainerId || ''),
-            trainerName: String(d.trainerName || ''),
-            companyId: String(d.companyId || ''),
-            companyName: String(d.companyName || ''),
-            sedeId: String(d.sedeId || ''),
-            sedeName: String(d.sedeName || ''),
-            sedeAddress: String(d.sedeAddress || ''),
-            date: String(d.date || ''),
-            scheduledTime: normalizeHHMM(d.scheduledTime, '09:00'),
-            checkInTime: String(d.checkInTime || '09:00:00'),
-            checkInIso: String(d.checkInIso || ''),
-            checkOutTime:
-              d.checkOutTime === null
-                ? null
-                : typeof d.checkOutTime === 'string'
-                ? d.checkOutTime
-                : null,
-            ...(d.checkOutIso === null
-              ? { checkOutIso: null }
-              : typeof d.checkOutIso === 'string'
-              ? { checkOutIso: d.checkOutIso }
-              : {}),
-            status:
-              d.status === 'completado' || d.status === 'incumplido' ? d.status : 'en_curso',
-            ...(d.nonComplianceReason === 'fuera_de_horario' ||
-            d.nonComplianceReason === 'sin_cierre_30m' ||
-            d.nonComplianceReason === 'manual_admin'
-              ? { nonComplianceReason: d.nonComplianceReason }
-              : {}),
-            ...(typeof d.markedNonCompliantAt === 'string'
-              ? { markedNonCompliantAt: d.markedNonCompliantAt }
-              : {}),
-            punctualityStatus:
-              d.punctualityStatus === 'con_retraso' || d.punctualityStatus === 'adelantado'
-                ? d.punctualityStatus
-                : 'a_tiempo',
-            punctualityDiffMinutes: Number(d.punctualityDiffMinutes ?? 0),
-            activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
-            activityName: String(d.activityName || ''),
-            attendeesCount: Number(d.attendeesCount ?? 0),
-            locationArea: String(d.locationArea || ''),
-            ...(typeof d.observations === 'string' ? { observations: d.observations } : {}),
-            checkInGps: parseFirestoreGpsData(d.checkInGps),
-            ...(d.checkOutGps ? { checkOutGps: parseFirestoreGpsData(d.checkOutGps) } : {}),
-            photoUrl: String(d.photoUrl || ''),
-            ...(typeof d.exitPhotoUrl === 'string' && d.exitPhotoUrl
-              ? { exitPhotoUrl: d.exitPhotoUrl }
-              : {}),
-            ...(facial ? { facialVerification: facial } : {}),
-            ...(typeof d.durationMinutes === 'number'
-              ? { durationMinutes: d.durationMinutes }
-              : {}),
-            ...(typeof d.plannedDurationMinutes === 'number'
-              ? { plannedDurationMinutes: d.plannedDurationMinutes }
-              : {}),
-            ...(typeof d.alarmEnabled === 'boolean' ? { alarmEnabled: d.alarmEnabled } : {}),
-            ...(d.alarmSnoozedUntilIso === null
-              ? { alarmSnoozedUntilIso: null }
-              : typeof d.alarmSnoozedUntilIso === 'string'
-              ? { alarmSnoozedUntilIso: d.alarmSnoozedUntilIso }
-              : {}),
-            adminVerified: Boolean(d.adminVerified),
-            ...(typeof d.adminNotes === 'string' ? { adminNotes: d.adminNotes } : {}),
-          };
+
+        const mergedMap = new Map<string, AttendanceRecord>();
+        for (const serverRec of fsRecords) {
+          if (deletedRecordIdsRef.current.has(serverRec.id)) continue;
+          const pending = pendingRecordsByIdRef.current.get(serverRec.id);
+          mergedMap.set(serverRec.id, pending ?? serverRec);
+        }
+        pendingRecordsByIdRef.current.forEach((pendingRec, pendingId) => {
+          if (!mergedMap.has(pendingId) && !deletedRecordIdsRef.current.has(pendingId)) {
+            mergedMap.set(pendingId, pendingRec);
+          }
         });
 
-        fsRecords.sort((a, b) => {
+        const mergedRecords = Array.from(mergedMap.values());
+        mergedRecords.sort((a, b) => {
           const keyA = `${a.date}T${a.checkInTime}`;
           const keyB = `${b.date}T${b.checkInTime}`;
           return keyB.localeCompare(keyA);
         });
 
-        setRecords(fsRecords);
-        saveStoredRecords(fsRecords);
+        setRecords(mergedRecords);
+        saveStoredRecords(mergedRecords);
       },
       (err) => {
+        setSyncErrorMessage(
+          'No se pudo leer la bitácora de evidencias (/records) en Firestore.'
+        );
         try {
           handleFirestoreError(err, OperationType.LIST, 'records');
         } catch (e) {
@@ -758,7 +767,7 @@ export default function App() {
       unsubRecords();
       unsubCatalog();
     };
-  }, [persistAssignmentToFirestore]);
+  }, [persistAssignmentToFirestore, persistRecordToFirestore]);
 
   // Automatic compliance sweep (persisted in real time to both /records and /assignments)
   useEffect(() => {
@@ -850,7 +859,7 @@ export default function App() {
       saveStoredRecords(nextRecords);
       nextRecords.forEach((updatedRec, idx) => {
         if (updatedRec !== records[idx]) {
-          void saveRecordToFirestore(updatedRec).catch((err) => console.error(err));
+          persistRecordToFirestore(updatedRec);
         }
       });
     }
@@ -870,6 +879,7 @@ export default function App() {
     assignments,
     activityCatalog,
     persistAssignmentToFirestore,
+    persistRecordToFirestore,
   ]);
 
   // Enforce that Directorio and Panel Admin are hidden and inactive on phones & tablets
@@ -933,11 +943,11 @@ export default function App() {
         ? { ...newRecord, assignmentId: matchedAsg.id }
         : newRecord;
 
-    const updated = [recordWithAsg, ...records];
+    const normalized = persistRecordToFirestore(recordWithAsg);
+    const updated = [normalized, ...records.filter((r) => r.id !== normalized.id)];
     setRecords(updated);
     saveStoredRecords(updated);
-    saveRecordToFirestore(recordWithAsg).catch(console.error);
-    syncAssignmentLockFromRecord(recordWithAsg);
+    syncAssignmentLockFromRecord(normalized);
   };
 
   const handleUpdateRecord = (updatedRecord: AttendanceRecord) => {
@@ -947,18 +957,30 @@ export default function App() {
         ? { ...updatedRecord, assignmentId: matchedAsg.id }
         : updatedRecord;
 
-    const updated = records.map((r) => (r.id === recordWithAsg.id ? recordWithAsg : r));
+    const normalized = persistRecordToFirestore(recordWithAsg);
+    const updated = records.map((r) =>
+      r.id === updatedRecord.id || r.id === normalized.id ? normalized : r
+    );
     setRecords(updated);
     saveStoredRecords(updated);
-    saveRecordToFirestore(recordWithAsg).catch(console.error);
-    syncAssignmentLockFromRecord(recordWithAsg);
+    syncAssignmentLockFromRecord(normalized);
   };
 
   const handleDeleteRecord = (recordId: string) => {
-    const updated = records.filter((r) => r.id !== recordId);
+    const safeId = toSafeDocId(recordId, 'rec');
+    deletedRecordIdsRef.current.add(safeId);
+    pendingRecordsByIdRef.current.delete(safeId);
+
+    const updated = records.filter((r) => r.id !== recordId && r.id !== safeId);
     setRecords(updated);
     saveStoredRecords(updated);
-    deleteRecordFromFirestore(recordId).catch(console.error);
+    deleteRecordFromFirestore(safeId)
+      .catch(console.error)
+      .finally(() => {
+        setTimeout(() => {
+          deletedRecordIdsRef.current.delete(safeId);
+        }, 4000);
+      });
   };
 
   // Company CRUD handlers (automatically synced with Firestore /companies)
@@ -1264,6 +1286,7 @@ export default function App() {
               onUpdateCatalogItem={handleUpdateCatalogItem}
               onDeleteCatalogItem={handleDeleteCatalogItem}
               onResetData={handleResetData}
+              onSyncEvidenceDatabase={handleSyncEvidenceDatabase}
               isDirectoryAuthenticated={isDirectoryAuthenticated}
             />
           </div>

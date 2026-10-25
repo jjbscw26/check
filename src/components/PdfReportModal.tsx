@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { AttendanceRecord, Company, Trainer } from '../types';
 import { 
   Printer, 
@@ -10,9 +10,15 @@ import {
   Users, 
   Building2, 
   CheckCircle2, 
-  AlertTriangle 
+  AlertTriangle,
+  FileSpreadsheet,
+  RefreshCw,
 } from 'lucide-react';
 import { formatDistance } from '../utils/geo';
+import {
+  exportEvidenceRecordsToExcel,
+  exportEvidenceRecordsToPdf,
+} from '../utils/evidenceExport';
 
 interface PdfReportModalProps {
   isOpen: boolean;
@@ -35,6 +41,8 @@ export const PdfReportModal: React.FC<PdfReportModalProps> = ({
   selectedDate,
   selectedMonth,
 }) => {
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState(false);
+
   if (!isOpen) return null;
 
   const total = records.length;
@@ -57,35 +65,83 @@ export const PdfReportModal: React.FC<PdfReportModalProps> = ({
     window.print();
   };
 
+  const handleDownloadPdf = async () => {
+    setIsDownloadingPdf(true);
+    try {
+      await exportEvidenceRecordsToPdf(records, {
+        title: `Reporte Oficial de Puntualidad y Evidencias`,
+        subtitle: periodLabel,
+        filenamePrefix: `Reporte_BSCW_${reportType}_${
+          reportType === 'daily' ? selectedDate : selectedMonth
+        }`,
+        includePhotos: true,
+      });
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  };
+
+  const handleDownloadExcel = () => {
+    exportEvidenceRecordsToExcel(records, {
+      filenamePrefix: `Reporte_BSCW_${reportType}_${
+        reportType === 'daily' ? selectedDate : selectedMonth
+      }`,
+      periodLabel,
+    });
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/70 backdrop-blur-sm overflow-y-auto print:p-0 print:bg-white print:static">
+    <div
+      data-printable-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/70 backdrop-blur-sm overflow-y-auto print:p-0 print:bg-white print:static"
+    >
       <div className="bg-white border border-slate-200 rounded-2xl sm:rounded-3xl w-full max-w-4xl max-h-[94vh] flex flex-col overflow-hidden shadow-2xl my-auto print:max-h-none print:border-none print:shadow-none print:m-0 print:max-w-full">
         {/* Top Action Bar (Hidden in Print) */}
-        <div className="bg-slate-900 text-white p-3.5 sm:p-4 flex items-center justify-between print:hidden shrink-0">
+        <div className="bg-slate-900 text-white p-3.5 sm:p-4 flex flex-wrap items-center justify-between gap-2 print:hidden shrink-0">
           <div className="flex items-center space-x-2">
             <span className="w-8 h-8 rounded-lg bg-red-600 flex items-center justify-center font-bold shrink-0">
               <CheckCheck className="w-5 h-5 text-white" />
             </span>
             <div>
               <h3 className="font-bold text-xs sm:text-sm">Vista Previa de Reporte Oficial PDF</h3>
-              <p className="text-[10px] sm:text-[11px] text-slate-400">Listo para imprimir o guardar como PDF</p>
+              <p className="text-[10px] sm:text-[11px] text-slate-400">Listo para imprimir o descargar en PDF / Excel</p>
             </div>
           </div>
 
-          <div className="flex items-center space-x-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <button
+              type="button"
+              onClick={handleDownloadExcel}
+              className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <FileSpreadsheet className="w-3.5 h-3.5 shrink-0" />
+              <span>Excel (.xlsx)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleDownloadPdf()}
+              disabled={isDownloadingPdf}
+              className="px-3 sm:px-4 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              {isDownloadingPdf ? (
+                <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+              ) : (
+                <Download className="w-4 h-4 shrink-0" />
+              )}
+              <span>{isDownloadingPdf ? 'Generando PDF...' : 'Descargar PDF'}</span>
+            </button>
             <button
               type="button"
               onClick={handlePrint}
-              className="px-3 sm:px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs flex items-center shadow transition"
+              className="px-3 sm:px-4 py-2 bg-white hover:bg-slate-100 text-slate-900 font-bold rounded-xl text-xs flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <Printer className="w-4 h-4 sm:mr-1.5 shrink-0" />
-              <span className="hidden sm:inline">Imprimir / Guardar como PDF</span>
-              <span className="sm:hidden">PDF</span>
+              <Printer className="w-4 h-4 text-red-600 shrink-0" />
+              <span>Imprimir</span>
             </button>
             <button
               type="button"
               onClick={onClose}
-              className="p-1.5 sm:p-2 text-slate-400 hover:text-white rounded-lg text-sm"
+              className="p-1.5 sm:p-2 text-slate-400 hover:text-white rounded-lg text-sm cursor-pointer"
             >
               ✕
             </button>
@@ -93,7 +149,10 @@ export const PdfReportModal: React.FC<PdfReportModalProps> = ({
         </div>
 
         {/* Printable Document Sheet */}
-        <div className="p-4 sm:p-8 md:p-12 space-y-6 text-slate-900 bg-white flex-1 overflow-y-auto">
+        <div
+          data-printable-scroll="true"
+          className="p-4 sm:p-8 md:p-12 space-y-6 text-slate-900 bg-white flex-1 overflow-y-auto"
+        >
           {/* Corporate Header */}
           <div className="flex items-start justify-between border-b-2 border-red-600 pb-5">
             <div className="flex items-center space-x-3">

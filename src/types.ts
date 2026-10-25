@@ -154,8 +154,16 @@ export type FirestoreDirectoryCategory =
   | 'companies'
   | 'sedes'
   | 'calendar'
+  | 'evidences'
   | 'personnel'
   | 'clients';
+
+export interface FirestoreAttendanceRecord extends AttendanceRecord {
+  createdByUid: string;
+  createdByEmail: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
 
 export interface FirestoreTrainerRecord extends Trainer {
   createdByUid: string;

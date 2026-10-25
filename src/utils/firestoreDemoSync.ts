@@ -42,6 +42,7 @@ import {
   ClassAssignment,
   Company,
   FacialVerificationData,
+  FirestoreAttendanceRecord,
   GpsData,
   Sede,
   Trainer,
@@ -1416,6 +1417,116 @@ export async function saveRecordToFirestore(
   return changed;
 }
 
+export function parseFirestoreGpsField(raw: unknown): GpsData {
+  const g = (typeof raw === 'object' && raw !== null ? raw : {}) as Record<string, unknown>;
+  return {
+    lat: Number(g.lat ?? 19.42694),
+    lng: Number(g.lng ?? -99.16782),
+    accuracy: Number(g.accuracy ?? 10),
+    distanceToSedeMeters: Number(g.distanceToSedeMeters ?? 0),
+    isWithinGeofence: Boolean(g.isWithinGeofence),
+    capturedAt: String(g.capturedAt || ''),
+  };
+}
+
+export function parseFirestoreFacialField(raw: unknown): FacialVerificationData | undefined {
+  if (!raw || typeof raw !== 'object') return undefined;
+  const fv = raw as Record<string, unknown>;
+  if (typeof fv.facePhotoUrl !== 'string' || !fv.facePhotoUrl) return undefined;
+  return {
+    verified: Boolean(fv.verified),
+    confidenceScore: Number(fv.confidenceScore ?? 98),
+    facePhotoUrl: fv.facePhotoUrl,
+    capturedAt: String(fv.capturedAt || ''),
+    biometricId: String(fv.biometricId || ''),
+    livenessPassed: fv.livenessPassed !== false,
+    trainerName: String(fv.trainerName || ''),
+  };
+}
+
+export function parseFirestoreAttendanceRecord(
+  docId: string,
+  d: Record<string, unknown>
+): FirestoreAttendanceRecord {
+  const createdTs = d.createdAt instanceof Timestamp ? d.createdAt.toMillis() : 0;
+  const updatedTs = d.updatedAt instanceof Timestamp ? d.updatedAt.toMillis() : createdTs;
+  const facial = parseFirestoreFacialField(d.facialVerification);
+
+  return {
+    id: docId,
+    ...(typeof d.assignmentId === 'string' && d.assignmentId
+      ? { assignmentId: d.assignmentId }
+      : {}),
+    trainerId: String(d.trainerId || ''),
+    trainerName: String(d.trainerName || ''),
+    companyId: String(d.companyId || ''),
+    companyName: String(d.companyName || ''),
+    sedeId: String(d.sedeId || ''),
+    sedeName: String(d.sedeName || ''),
+    sedeAddress: String(d.sedeAddress || ''),
+    date: String(d.date || ''),
+    scheduledTime: normalizeHHMM(d.scheduledTime, '09:00'),
+    checkInTime: String(d.checkInTime || '09:00:00'),
+    checkInIso: String(d.checkInIso || ''),
+    checkOutTime:
+      d.checkOutTime === null
+        ? null
+        : typeof d.checkOutTime === 'string'
+        ? d.checkOutTime
+        : null,
+    ...(d.checkOutIso === null
+      ? { checkOutIso: null }
+      : typeof d.checkOutIso === 'string'
+      ? { checkOutIso: d.checkOutIso }
+      : {}),
+    status:
+      d.status === 'completado' || d.status === 'incumplido' ? d.status : 'en_curso',
+    ...(d.nonComplianceReason === 'fuera_de_horario' ||
+    d.nonComplianceReason === 'sin_cierre_30m' ||
+    d.nonComplianceReason === 'manual_admin'
+      ? { nonComplianceReason: d.nonComplianceReason }
+      : {}),
+    ...(typeof d.markedNonCompliantAt === 'string'
+      ? { markedNonCompliantAt: d.markedNonCompliantAt }
+      : {}),
+    punctualityStatus:
+      d.punctualityStatus === 'con_retraso' || d.punctualityStatus === 'adelantado'
+        ? d.punctualityStatus
+        : 'a_tiempo',
+    punctualityDiffMinutes: Number(d.punctualityDiffMinutes ?? 0),
+    activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
+    activityName: String(d.activityName || ''),
+    attendeesCount: Number(d.attendeesCount ?? 0),
+    locationArea: String(d.locationArea || ''),
+    ...(typeof d.observations === 'string' ? { observations: d.observations } : {}),
+    checkInGps: parseFirestoreGpsField(d.checkInGps),
+    ...(d.checkOutGps ? { checkOutGps: parseFirestoreGpsField(d.checkOutGps) } : {}),
+    photoUrl: String(d.photoUrl || ''),
+    ...(typeof d.exitPhotoUrl === 'string' && d.exitPhotoUrl
+      ? { exitPhotoUrl: d.exitPhotoUrl }
+      : {}),
+    ...(facial ? { facialVerification: facial } : {}),
+    ...(typeof d.durationMinutes === 'number'
+      ? { durationMinutes: d.durationMinutes }
+      : {}),
+    ...(typeof d.plannedDurationMinutes === 'number'
+      ? { plannedDurationMinutes: d.plannedDurationMinutes }
+      : {}),
+    ...(typeof d.alarmEnabled === 'boolean' ? { alarmEnabled: d.alarmEnabled } : {}),
+    ...(d.alarmSnoozedUntilIso === null
+      ? { alarmSnoozedUntilIso: null }
+      : typeof d.alarmSnoozedUntilIso === 'string'
+      ? { alarmSnoozedUntilIso: d.alarmSnoozedUntilIso }
+      : {}),
+    adminVerified: Boolean(d.adminVerified),
+    ...(typeof d.adminNotes === 'string' ? { adminNotes: d.adminNotes } : {}),
+    createdByUid: String(d.createdByUid || ''),
+    createdByEmail: String(d.createdByEmail || ''),
+    createdAtMs: createdTs,
+    updatedAtMs: updatedTs,
+  };
+}
+
 export async function deleteRecordFromFirestore(recordId: string): Promise<void> {
   const docId = toSafeDocId(recordId, 'rec');
   const path = `records/${docId}`;
@@ -1516,7 +1627,11 @@ export async function syncDataSetsToFirestore(
     assignments?: ClassAssignment[];
     records?: AttendanceRecord[];
   },
-  options?: { upsertAssignments?: boolean; upsertCoreEntities?: boolean }
+  options?: {
+    upsertAssignments?: boolean;
+    upsertCoreEntities?: boolean;
+    upsertRecords?: boolean;
+  }
 ): Promise<{
   trainersCount: number;
   companiesCount: number;
@@ -1532,6 +1647,7 @@ export async function syncDataSetsToFirestore(
     const assignmentsToSync = dataSets.assignments ?? [];
     const recordsToSync = dataSets.records ?? [];
     const upsertAssignments = Boolean(options?.upsertAssignments);
+    const upsertRecords = Boolean(options?.upsertRecords);
     const onlyIfMissingCore = !options?.upsertCoreEntities;
 
     let trainersCount = 0;
@@ -1594,9 +1710,9 @@ export async function syncDataSetsToFirestore(
       if (wrote) assignmentsCount++;
     }
 
-    // Step 6: Attendance Records
+    // Step 6: Attendance & Evidence Log Records (/records)
     for (const rec of recordsToSync) {
-      const wrote = await saveRecordToFirestore(rec, { onlyIfMissing: true });
+      const wrote = await saveRecordToFirestore(rec, { onlyIfMissing: !upsertRecords });
       if (wrote) recordsCount++;
     }
 
@@ -1630,7 +1746,7 @@ export async function seedDemoDataToFirestore(): Promise<{
 
 /**
  * Reconciles all active workspace data (including custom user-created assignments,
- * sedes, companies, trainers, catalog items, and session records) into Firestore.
+ * sedes, companies, trainers, catalog items, and full evidence log records) into Firestore.
  */
 export async function syncWorkspaceDataToFirestore(): Promise<{
   trainersCount: number;
@@ -1652,8 +1768,23 @@ export async function syncWorkspaceDataToFirestore(): Promise<{
       companies: storedCompanies.length > 0 ? storedCompanies : INITIAL_COMPANIES,
       activityCatalog: storedCatalog.length > 0 ? storedCatalog : INITIAL_ACTIVITY_CATALOG,
       assignments: storedAssignments.length > 0 ? storedAssignments : INITIAL_ASSIGNMENTS,
-      records: storedRecords,
+      records: storedRecords.length > 0 ? storedRecords : getInitialRecords(),
     },
-    { upsertAssignments: true, upsertCoreEntities: true }
+    { upsertAssignments: true, upsertCoreEntities: true, upsertRecords: true }
   );
+}
+
+/**
+ * Dedicated reconciliation helper for Bitácora de Evidencias (/records).
+ */
+export async function syncEvidenceRecordsToFirestore(
+  explicitRecords?: AttendanceRecord[]
+): Promise<{ syncedCount: number; totalCount: number }> {
+  const list = explicitRecords ?? getStoredRecords();
+  let syncedCount = 0;
+  for (const rec of list) {
+    const wrote = await saveRecordToFirestore(rec, { onlyIfMissing: false });
+    if (wrote) syncedCount++;
+  }
+  return { syncedCount, totalCount: list.length };
 }

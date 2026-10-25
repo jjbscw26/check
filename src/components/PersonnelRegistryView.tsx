@@ -24,9 +24,16 @@ import {
   Clock,
   Compass,
   Database,
+  Download,
   DownloadCloud,
   Edit3,
+  Eye,
+  FileSpreadsheet,
+  FileText,
+  Image as ImageIcon,
   Layers,
+  LayoutGrid,
+  List,
   Lock,
   LogIn,
   LogOut,
@@ -35,6 +42,7 @@ import {
   Navigation,
   Phone,
   Plus,
+  Printer,
   RefreshCw,
   RotateCcw,
   Save,
@@ -46,6 +54,7 @@ import {
   UserCircle2,
   Users,
   X,
+  ZoomIn,
 } from 'lucide-react';
 import {
   BOOTSTRAPPED_ADMIN_EMAIL,
@@ -91,14 +100,26 @@ import {
 import {
   deleteAssignmentFromFirestore,
   deleteCompanyAndSedesFromFirestore,
+  deleteRecordFromFirestore,
   deleteSedeFromFirestore,
   deleteTrainerFromFirestore,
+  parseFirestoreAttendanceRecord,
   saveCompanyToFirestore,
+  saveRecordToFirestore,
   saveSedeToFirestore,
   saveTrainerToFirestore,
+  syncEvidenceRecordsToFirestore,
   syncWorkspaceDataToFirestore,
 } from '../utils/firestoreDemoSync';
-import { getCurrentPositionAsync } from '../utils/geo';
+import { formatDistance, getCurrentPositionAsync } from '../utils/geo';
+import {
+  EvidencePhotoSlot,
+  exportEvidenceRecordsToExcel,
+  exportEvidenceRecordsToPdf,
+} from '../utils/evidenceExport';
+import { EvidencePhotoLightbox } from './EvidencePhotoLightbox';
+import { PdfEvidenceLogModal } from './PdfEvidenceLogModal';
+import { RecordDetailModal } from './RecordDetailModal';
 import {
   attachStreamToVideoElement,
   captureSquareAvatarFromSource,
@@ -298,10 +319,19 @@ const CATEGORIES: CategoryMeta[] = [
     id: 'calendar',
     label: 'Calendario',
     singularLabel: 'Calendario de Asignaciones',
-    collectionPath: '/assignments · /records · /activity_catalog',
-    description: 'Programación de asignaciones, ejecuciones de sesiones (en curso, completadas, incumplidas) y modalidades sincronizadas en tiempo real.',
+    collectionPath: '/assignments · /activity_catalog',
+    description: 'Programación de asignaciones, modalidades y estado operativo sincronizado en tiempo real.',
     isDemoCore: true,
     icon: Calendar,
+  },
+  {
+    id: 'evidences',
+    label: 'Bitácora de Evidencias',
+    singularLabel: 'Evidencia de Asistencia',
+    collectionPath: '/records',
+    description: 'Bitácora oficial en Firestore con fotos de entrada, salida, validación biométrica facial, GPS e impresión o descarga en PDF y Excel.',
+    isDemoCore: true,
+    icon: Camera,
   },
   {
     id: 'personnel',
@@ -402,6 +432,7 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
     companies: false,
     sedes: false,
     calendar: false,
+    evidences: false,
     personnel: false,
     clients: false,
   });
@@ -413,6 +444,7 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
     companies: null,
     sedes: null,
     calendar: null,
+    evidences: null,
     personnel: null,
     clients: null,
   });
@@ -420,6 +452,24 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
   const [isSaving, setIsSaving] = useState<boolean>(false);
   const [isSeedingDemo, setIsSeedingDemo] = useState<boolean>(false);
   const [gettingSedeGps, setGettingSedeGps] = useState<boolean>(false);
+
+  // Bitácora de Evidencias (/records) UI & export state
+  const [evidenceViewMode, setEvidenceViewMode] = useState<'list' | 'gallery'>('list');
+  const [evidenceStatusFilter, setEvidenceStatusFilter] = useState<
+    'all' | 'completado' | 'en_curso' | 'incumplido'
+  >('all');
+  const [evidenceDateFilter, setEvidenceDateFilter] = useState<string>('');
+  const [isSyncingEvidences, setIsSyncingEvidences] = useState<boolean>(false);
+  const [isExportingPdf, setIsExportingPdf] = useState<boolean>(false);
+  const [singlePdfRecordId, setSinglePdfRecordId] = useState<string | null>(null);
+  const [isEvidencePdfModalOpen, setIsEvidencePdfModalOpen] = useState<boolean>(false);
+  const [selectedRecordForAudit, setSelectedRecordForAudit] = useState<AttendanceRecord | null>(
+    null
+  );
+  const [lightboxState, setLightboxState] = useState<{
+    record: AttendanceRecord;
+    slot: EvidencePhotoSlot;
+  } | null>(null);
 
   const [saveFeedback, setSaveFeedback] = useState<{
     category: FirestoreDirectoryCategory;
@@ -442,6 +492,7 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
     companies: false,
     sedes: false,
     calendar: false,
+    evidences: false,
     personnel: false,
     clients: false,
   });
@@ -451,6 +502,7 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
     companies: '',
     sedes: '',
     calendar: '',
+    evidences: '',
     personnel: '',
     clients: '',
   });
@@ -531,6 +583,7 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
       companies: true,
       sedes: true,
       calendar: true,
+      evidences: true,
       personnel: true,
       clients: true,
     });
@@ -805,61 +858,17 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
     const unsubRecords = onSnapshot(
       mkQuery('records'),
       (snap) => {
-        const items: AttendanceRecord[] = snap.docs.map((docSnap) => {
-          const d = docSnap.data();
-          const gpsObj =
-            d.checkInGps && typeof d.checkInGps === 'object'
-              ? (d.checkInGps as Record<string, unknown>)
-              : {};
-          return {
-            id: docSnap.id,
-            ...(typeof d.assignmentId === 'string' && d.assignmentId
-              ? { assignmentId: d.assignmentId }
-              : {}),
-            trainerId: String(d.trainerId || ''),
-            trainerName: String(d.trainerName || ''),
-            companyId: String(d.companyId || ''),
-            companyName: String(d.companyName || ''),
-            sedeId: String(d.sedeId || ''),
-            sedeName: String(d.sedeName || ''),
-            sedeAddress: String(d.sedeAddress || ''),
-            date: String(d.date || ''),
-            scheduledTime: String(d.scheduledTime || '09:00'),
-            checkInTime: String(d.checkInTime || '09:00:00'),
-            checkInIso: String(d.checkInIso || ''),
-            checkOutTime: typeof d.checkOutTime === 'string' ? d.checkOutTime : null,
-            checkOutIso: typeof d.checkOutIso === 'string' ? d.checkOutIso : null,
-            status:
-              d.status === 'en_curso' || d.status === 'completado' || d.status === 'incumplido'
-                ? d.status
-                : 'en_curso',
-            punctualityStatus:
-              d.punctualityStatus === 'a_tiempo' ||
-              d.punctualityStatus === 'con_retraso' ||
-              d.punctualityStatus === 'adelantado'
-                ? d.punctualityStatus
-                : 'a_tiempo',
-            punctualityDiffMinutes: Number(d.punctualityDiffMinutes ?? 0),
-            activityType: d.activityType === 'clase_fitness' ? 'clase_fitness' : 'pausa_activa',
-            activityName: String(d.activityName || ''),
-            attendeesCount: Number(d.attendeesCount ?? 0),
-            locationArea: String(d.locationArea || ''),
-            checkInGps: {
-              lat: Number(gpsObj.lat ?? 19.42694),
-              lng: Number(gpsObj.lng ?? -99.16782),
-              accuracy: Number(gpsObj.accuracy ?? 10),
-              distanceToSedeMeters: Number(gpsObj.distanceToSedeMeters ?? 0),
-              isWithinGeofence: Boolean(gpsObj.isWithinGeofence),
-              capturedAt: String(gpsObj.capturedAt || ''),
-            },
-            photoUrl: String(d.photoUrl || ''),
-            adminVerified: Boolean(d.adminVerified),
-          };
-        });
-        items.sort((a, b) => `${b.date}T${b.checkInTime}`.localeCompare(`${a.date}T${a.checkInTime}`));
+        const items: AttendanceRecord[] = snap.docs.map((docSnap) =>
+          parseFirestoreAttendanceRecord(docSnap.id, docSnap.data() as Record<string, unknown>)
+        );
+        items.sort((a, b) =>
+          `${b.date}T${b.checkInTime}`.localeCompare(`${a.date}T${a.checkInTime}`)
+        );
         setRecordsList(items);
+        setLoadingByCat((prev) => ({ ...prev, evidences: false }));
       },
       (error) => {
+        setLoadingByCat((prev) => ({ ...prev, evidences: false }));
         try {
           handleFirestoreError(error, OperationType.LIST, 'records');
         } catch (err) {
@@ -958,7 +967,8 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
     trainers: trainersList.length,
     companies: companiesList.length,
     sedes: sedesList.length,
-    calendar: assignmentsList.length + recordsList.length + catalogList.length,
+    calendar: assignmentsList.length + catalogList.length,
+    evidences: recordsList.length,
     personnel: personnelList.length,
     clients: clientsList.length,
   };
@@ -981,9 +991,9 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
       setSaveFeedback({
         category: activeCategory,
         type: 'success',
-        message: `Sincronización completada con Firestore: ${res.assignmentsCount} asignaciones verificadas/actualizadas${
-          res.trainersCount + res.companiesCount + res.sedesCount + res.recordsCount + res.catalogCount > 0
-            ? ` (+${res.trainersCount} entrenadores, ${res.companiesCount} empresas, ${res.sedesCount} sedes, ${res.recordsCount} ejecuciones, ${res.catalogCount} modalidades)`
+        message: `Sincronización completada con Firestore: ${res.assignmentsCount} asignaciones y ${res.recordsCount} evidencias verificadas/actualizadas${
+          res.trainersCount + res.companiesCount + res.sedesCount + res.catalogCount > 0
+            ? ` (+${res.trainersCount} entrenadores, ${res.companiesCount} empresas, ${res.sedesCount} sedes, ${res.catalogCount} modalidades)`
             : ''
         }.`,
       });
@@ -991,6 +1001,46 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
       setFatalFirestoreError(err as Error);
     } finally {
       setIsSeedingDemo(false);
+    }
+  };
+
+  const handleSyncEvidenceLog = async () => {
+    setIsSyncingEvidences(true);
+    setSaveFeedback(null);
+    try {
+      if (recordsList.length === 0) {
+        const res = await syncWorkspaceDataToFirestore();
+        setSaveFeedback({
+          category: 'evidences',
+          type: 'success',
+          message: `Bitácora sincronizada en /records: ${res.recordsCount} registros cargados y verificados en Cloud Firestore.`,
+        });
+      } else {
+        const res = await syncEvidenceRecordsToFirestore();
+        setSaveFeedback({
+          category: 'evidences',
+          type: 'success',
+          message: `Bitácora de evidencias sincronizada con /records (${res.syncedCount} actualizados de ${res.totalCount} registros locales).`,
+        });
+      }
+    } catch (err) {
+      setFatalFirestoreError(err as Error);
+    } finally {
+      setIsSyncingEvidences(false);
+    }
+  };
+
+  const handleAuditRecordSave = async (updated: AttendanceRecord) => {
+    try {
+      await saveRecordToFirestore(updated);
+      setSelectedRecordForAudit(null);
+      setSaveFeedback({
+        category: activeCategory,
+        type: 'success',
+        message: `Acta de asistencia de "${updated.trainerName}" (${updated.date}) auditada y guardada en /records.`,
+      });
+    } catch (err) {
+      setFatalFirestoreError(err as Error);
     }
   };
 
@@ -1349,12 +1399,15 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
   };
 
   const handleDeleteDocument = async (cat: FirestoreDirectoryCategory, id: string) => {
-    const path = `${cat}/${id}`;
+    const path =
+      cat === 'evidences' ? `records/${id}` : cat === 'calendar' ? `assignments/${id}` : `${cat}/${id}`;
     try {
       if (cat === 'companies') {
         await deleteCompanyAndSedesFromFirestore(id);
       } else if (cat === 'calendar') {
         await deleteAssignmentFromFirestore(id);
+      } else if (cat === 'evidences') {
+        await deleteRecordFromFirestore(id);
       } else if (cat === 'trainers') {
         await deleteTrainerFromFirestore(id);
       } else if (cat === 'sedes') {
@@ -1374,6 +1427,8 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
             ? 'Empresa, sus sedes y asignaciones vinculadas eliminadas de Firestore.'
             : cat === 'calendar'
             ? 'Asignación eliminada de /assignments en Firestore.'
+            : cat === 'evidences'
+            ? 'Registro de evidencia eliminado de /records en Firestore.'
             : `Documento eliminado de /${cat}.`,
       });
     } catch (error) {
@@ -1433,9 +1488,17 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
   }, [assignmentsList, searchQuery]);
 
   const filteredRecords = useMemo(() => {
-    if (!searchQuery) return recordsList;
-    return recordsList.filter((r) =>
-      [
+    return recordsList.filter((r) => {
+      if (activeCategory === 'evidences') {
+        if (evidenceStatusFilter !== 'all' && r.status !== evidenceStatusFilter) {
+          return false;
+        }
+        if (evidenceDateFilter && r.date !== evidenceDateFilter) {
+          return false;
+        }
+      }
+      if (!searchQuery) return true;
+      return [
         r.activityName,
         r.companyName,
         r.sedeName,
@@ -1443,12 +1506,71 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
         r.date,
         r.status,
         r.locationArea,
+        r.observations || '',
+        r.adminNotes || '',
       ]
         .join(' ')
         .toLowerCase()
-        .includes(searchQuery)
-    );
-  }, [recordsList, searchQuery]);
+        .includes(searchQuery);
+    });
+  }, [recordsList, searchQuery, activeCategory, evidenceStatusFilter, evidenceDateFilter]);
+
+  const evidenceSummaryLabel = useMemo(() => {
+    const parts: string[] = ['Colección /records (Cloud Firestore)'];
+    if (evidenceStatusFilter !== 'all') {
+      parts.push(
+        evidenceStatusFilter === 'completado'
+          ? 'Estado: Completadas'
+          : evidenceStatusFilter === 'incumplido'
+          ? 'Estado: Incumplidas'
+          : 'Estado: En Curso'
+      );
+    }
+    if (evidenceDateFilter) {
+      parts.push(`Fecha: ${evidenceDateFilter}`);
+    }
+    if (searchByCat.evidences.trim()) {
+      parts.push(`Búsqueda: "${searchByCat.evidences.trim()}"`);
+    }
+    return parts.join(' · ');
+  }, [evidenceStatusFilter, evidenceDateFilter, searchByCat.evidences]);
+
+  const handleDownloadDirectoryPdf = async () => {
+    if (filteredRecords.length === 0) return;
+    setIsExportingPdf(true);
+    try {
+      await exportEvidenceRecordsToPdf(filteredRecords, {
+        title: 'Bitácora Oficial de Evidencias — Directorio Cloud Firestore',
+        subtitle: evidenceSummaryLabel,
+        filenamePrefix: 'Directorio_Bitacora_Evidencias',
+        includePhotos: true,
+      });
+    } finally {
+      setIsExportingPdf(false);
+    }
+  };
+
+  const handleDownloadSingleRecordPdf = async (rec: AttendanceRecord) => {
+    setSinglePdfRecordId(rec.id);
+    try {
+      await exportEvidenceRecordsToPdf([rec], {
+        title: `Acta Oficial de Evidencia — ${rec.companyName}`,
+        subtitle: `${rec.sedeName} · Entrenador: ${rec.trainerName} · ${rec.date}`,
+        filenamePrefix: `Evidencia_${rec.date}_${rec.id}`,
+        includePhotos: true,
+      });
+    } finally {
+      setSinglePdfRecordId(null);
+    }
+  };
+
+  const handleDownloadDirectoryExcel = () => {
+    if (filteredRecords.length === 0) return;
+    exportEvidenceRecordsToExcel(filteredRecords, {
+      filenamePrefix: 'Directorio_Bitacora_Evidencias',
+      periodLabel: evidenceSummaryLabel,
+    });
+  };
 
   const filteredPersonnel = useMemo(() => {
     if (!searchQuery) return personnelList;
@@ -1817,6 +1939,8 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                   <h3 className="text-sm sm:text-base font-extrabold text-slate-900">
                     {activeCategory === 'calendar'
                       ? 'Estado del Calendario en Cloud Firestore'
+                      : activeCategory === 'evidences'
+                      ? 'Bitácora Oficial de Evidencias en Cloud Firestore'
                       : editingIdByCat[activeCategory]
                       ? `Editar ${activeCategoryMeta.singularLabel}`
                       : `Registrar ${activeCategoryMeta.singularLabel}`}
@@ -1828,16 +1952,18 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                 <p className="text-xs text-slate-500 mt-0.5">{activeCategoryMeta.description}</p>
               </div>
 
-              {editingIdByCat[activeCategory] && activeCategory !== 'calendar' && (
-                <button
-                  type="button"
-                  onClick={() => resetCategoryForm(activeCategory)}
-                  className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold flex items-center gap-1"
-                >
-                  <RotateCcw className="w-3.5 h-3.5" />
-                  <span>Cancelar edición</span>
-                </button>
-              )}
+              {editingIdByCat[activeCategory] &&
+                activeCategory !== 'calendar' &&
+                activeCategory !== 'evidences' && (
+                  <button
+                    type="button"
+                    onClick={() => resetCategoryForm(activeCategory)}
+                    className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs font-bold flex items-center gap-1 whitespace-nowrap shrink-0"
+                  >
+                    <RotateCcw className="w-3.5 h-3.5" />
+                    <span>Cancelar edición</span>
+                  </button>
+                )}
             </div>
 
             {activeCategory === 'calendar' && (
@@ -1848,7 +1974,9 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                       <Calendar className="w-4 h-4 text-red-600" />
                       Asignaciones Programadas
                     </span>
-                    <span className="font-mono text-sm text-slate-900">{assignmentsList.length}</span>
+                    <span className="font-mono tabular-nums text-sm text-slate-900">
+                      {assignmentsList.length}
+                    </span>
                   </div>
                   <p className="text-[11px] text-slate-500">
                     Colección <strong className="font-mono">/assignments</strong> (Lunes a Domingo, mensuales, fecha única, cierres e incumplimientos).
@@ -1861,10 +1989,12 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                       <Clock className="w-4 h-4 text-emerald-600" />
                       Ejecuciones y Check-ins
                     </span>
-                    <span className="font-mono text-sm text-slate-900">{recordsList.length}</span>
+                    <span className="font-mono tabular-nums text-sm text-slate-900">
+                      {recordsList.length}
+                    </span>
                   </div>
                   <p className="text-[11px] text-slate-500">
-                    Colección <strong className="font-mono">/records</strong> (sesiones en curso, completadas, evidencias GPS/foto y alarmas).
+                    Colección <strong className="font-mono">/records</strong> sincronizada con la pestaña Bitácora de Evidencias.
                   </p>
                 </div>
 
@@ -1874,11 +2004,189 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                       <Layers className="w-4 h-4 text-blue-600" />
                       Catálogo de Modalidades
                     </span>
-                    <span className="font-mono text-sm text-slate-900">{catalogList.length}</span>
+                    <span className="font-mono tabular-nums text-sm text-slate-900">
+                      {catalogList.length}
+                    </span>
                   </div>
                   <p className="text-[11px] text-slate-500">
                     Colección <strong className="font-mono">/activity_catalog</strong> (duraciones por defecto y tipos de pausa/fitness).
                   </p>
+                </div>
+              </div>
+            )}
+
+            {activeCategory === 'evidences' && (
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                    <div className="text-[11px] font-semibold text-slate-500">
+                      Registros en /records
+                    </div>
+                    <div className="mt-1 text-lg font-extrabold font-mono tabular-nums text-slate-900">
+                      {filteredRecords.length}
+                      <span className="text-xs font-normal text-slate-400">
+                        {' '}
+                        / {recordsList.length}
+                      </span>
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                    <div className="text-[11px] font-semibold text-slate-500">
+                      Con Foto de Entrada
+                    </div>
+                    <div className="mt-1 text-lg font-extrabold font-mono tabular-nums text-slate-900">
+                      {filteredRecords.filter((r) => Boolean(r.photoUrl)).length}
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                    <div className="text-[11px] font-semibold text-slate-500">
+                      Con Foto de Salida
+                    </div>
+                    <div className="mt-1 text-lg font-extrabold font-mono tabular-nums text-emerald-700">
+                      {filteredRecords.filter((r) => Boolean(r.exitPhotoUrl)).length}
+                    </div>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                    <div className="text-[11px] font-semibold text-slate-500">
+                      Biometría Facial Validada
+                    </div>
+                    <div className="mt-1 text-lg font-extrabold font-mono tabular-nums text-blue-700">
+                      {filteredRecords.filter((r) => Boolean(r.facialVerification?.verified)).length}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 pt-1">
+                  {/* Filters & View Mode */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <div className="inline-flex items-center p-1 bg-slate-100 border border-slate-200 rounded-xl">
+                      {(
+                        [
+                          { id: 'all', label: 'Todas' },
+                          { id: 'completado', label: 'Completadas' },
+                          { id: 'en_curso', label: 'En Curso' },
+                          { id: 'incumplido', label: 'Incumplidas' },
+                        ] as const
+                      ).map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          onClick={() => setEvidenceStatusFilter(opt.id)}
+                          className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer whitespace-nowrap shrink-0 ${
+                            evidenceStatusFilter === opt.id
+                              ? 'bg-white text-slate-900 shadow-xs'
+                              : 'text-slate-600 hover:text-slate-900'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        type="date"
+                        value={evidenceDateFilter}
+                        onChange={(e) => setEvidenceDateFilter(e.target.value)}
+                        className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs font-mono tabular-nums text-slate-800 focus:outline-none focus:border-red-600"
+                        title="Filtrar bitácora por fecha"
+                      />
+                      {evidenceDateFilter && (
+                        <button
+                          type="button"
+                          onClick={() => setEvidenceDateFilter('')}
+                          className="px-2 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-600 text-[11px] font-bold cursor-pointer whitespace-nowrap shrink-0"
+                        >
+                          Limpiar fecha
+                        </button>
+                      )}
+                    </div>
+
+                    <div className="inline-flex items-center p-1 bg-slate-100 border border-slate-200 rounded-xl">
+                      <button
+                        type="button"
+                        onClick={() => setEvidenceViewMode('list')}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 transition cursor-pointer whitespace-nowrap shrink-0 ${
+                          evidenceViewMode === 'list'
+                            ? 'bg-white text-slate-900 shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        <List className="w-3.5 h-3.5" />
+                        <span>Registros</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setEvidenceViewMode('gallery')}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-bold inline-flex items-center gap-1 transition cursor-pointer whitespace-nowrap shrink-0 ${
+                          evidenceViewMode === 'gallery'
+                            ? 'bg-white text-slate-900 shadow-xs'
+                            : 'text-slate-600 hover:text-slate-900'
+                        }`}
+                      >
+                        <LayoutGrid className="w-3.5 h-3.5" />
+                        <span>Galería de Fotos</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Export & Sync Toolbar */}
+                  <div className="flex flex-wrap items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void handleSyncEvidenceLog()}
+                      disabled={isSyncingEvidences}
+                      className="px-3 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 disabled:opacity-60 text-slate-800 border border-slate-200 text-xs font-bold inline-flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap shrink-0"
+                      title="Sincronizar bitácora local con /records en Cloud Firestore"
+                    >
+                      <RefreshCw
+                        className={`w-3.5 h-3.5 text-red-600 ${
+                          isSyncingEvidences ? 'animate-spin' : ''
+                        }`}
+                      />
+                      <span>{isSyncingEvidences ? 'Sincronizando...' : 'Sincronizar BD'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={handleDownloadDirectoryExcel}
+                      disabled={filteredRecords.length === 0}
+                      className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 disabled:opacity-50 text-white text-xs font-bold inline-flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap shrink-0"
+                      title="Descargar registros filtrados en formato Excel (.xlsx)"
+                    >
+                      <FileSpreadsheet className="w-3.5 h-3.5" />
+                      <span>Excel (.xlsx)</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => void handleDownloadDirectoryPdf()}
+                      disabled={filteredRecords.length === 0 || isExportingPdf}
+                      className="px-3 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-bold inline-flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap shrink-0"
+                      title="Descargar bitácora con fotografías incrustadas en archivo PDF"
+                    >
+                      {isExportingPdf ? (
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                      ) : (
+                        <Download className="w-3.5 h-3.5" />
+                      )}
+                      <span>{isExportingPdf ? 'Generando PDF...' : 'Descargar PDF'}</span>
+                    </button>
+
+                    <button
+                      type="button"
+                      onClick={() => setIsEvidencePdfModalOpen(true)}
+                      disabled={filteredRecords.length === 0}
+                      className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-50 text-white text-xs font-bold inline-flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap shrink-0"
+                      title="Abrir vista previa oficial para imprimir bitácora de evidencias"
+                    >
+                      <Printer className="w-3.5 h-3.5" />
+                      <span>Imprimir</span>
+                    </button>
+                  </div>
                 </div>
               </div>
             )}
@@ -3728,47 +4036,87 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
 
                     {/* Session Executions (/records) */}
                     <div className="space-y-2">
-                      <h5 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
-                        Historial y Ejecuciones del Calendario (`/records`: {filteredRecords.length})
-                      </h5>
+                      <div className="flex items-center justify-between gap-2">
+                        <h5 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
+                          Historial de Ejecuciones (`/records`: {filteredRecords.length})
+                        </h5>
+                        <button
+                          type="button"
+                          onClick={() => setActiveCategory('evidences')}
+                          className="text-[11px] font-bold text-red-600 hover:text-red-700 inline-flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
+                        >
+                          <Camera className="w-3.5 h-3.5" />
+                          <span>Abrir Bitácora Completa y Exportación</span>
+                        </button>
+                      </div>
                       <div className="divide-y divide-slate-200 border border-slate-200 rounded-xl overflow-hidden">
-                        {filteredRecords.map((rec) => (
+                        {filteredRecords.slice(0, 8).map((rec) => (
                           <div
                             key={rec.id}
-                            className="p-3.5 bg-white hover:bg-slate-50/80 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                            className="p-3.5 bg-white hover:bg-slate-50/80 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
                           >
-                            <div className="space-y-1">
-                              <div className="flex flex-wrap items-center gap-2">
-                                <span className="font-mono text-[11px] font-bold text-slate-700">
-                                  {rec.date} · {rec.scheduledTime}
-                                </span>
-                                <span className="font-bold text-xs text-slate-900">
-                                  {rec.activityName}
-                                </span>
-                                <span
-                                  className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
-                                    rec.status === 'completado'
-                                      ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                                      : rec.status === 'incumplido'
-                                      ? 'bg-rose-50 text-rose-700 border-rose-200'
-                                      : 'bg-amber-50 text-amber-800 border-amber-200'
-                                  }`}
+                            <div className="flex items-center gap-3 min-w-0">
+                              {rec.photoUrl && (
+                                <button
+                                  type="button"
+                                  onClick={() => setLightboxState({ record: rec, slot: 'entry' })}
+                                  className="relative w-11 h-11 rounded-lg overflow-hidden border border-slate-200 shrink-0 group cursor-pointer"
+                                  title="Visualizar fotografías de evidencia"
                                 >
-                                  {rec.status === 'completado'
-                                    ? 'Completada'
-                                    : rec.status === 'incumplido'
-                                    ? 'Incumplida'
-                                    : 'En Curso'}
-                                </span>
-                              </div>
-                              <div className="text-[11px] text-slate-600">
-                                <strong>{rec.companyName}</strong> — {rec.sedeName} • Entrenador:{' '}
-                                {rec.trainerName} • Asistentes: {rec.attendeesCount}
+                                  <img
+                                    src={rec.photoUrl}
+                                    alt={`Evidencia ${rec.activityName}`}
+                                    referrerPolicy="no-referrer"
+                                    className="w-full h-full object-cover"
+                                  />
+                                  <span className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
+                                    <ZoomIn className="w-3.5 h-3.5 text-white" />
+                                  </span>
+                                </button>
+                              )}
+                              <div className="space-y-1 min-w-0">
+                                <div className="flex flex-wrap items-center gap-2">
+                                  <span className="font-mono tabular-nums text-[11px] font-bold text-slate-700">
+                                    {rec.date} · {rec.scheduledTime}
+                                  </span>
+                                  <span className="font-bold text-xs text-slate-900">
+                                    {rec.activityName}
+                                  </span>
+                                  <span
+                                    className={`text-[10px] font-bold px-2 py-0.5 rounded border ${
+                                      rec.status === 'completado'
+                                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                        : rec.status === 'incumplido'
+                                        ? 'bg-rose-50 text-rose-700 border-rose-200'
+                                        : 'bg-amber-50 text-amber-800 border-amber-200'
+                                    }`}
+                                  >
+                                    {rec.status === 'completado'
+                                      ? 'Completada'
+                                      : rec.status === 'incumplido'
+                                      ? 'Incumplida'
+                                      : 'En Curso'}
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-slate-600 truncate">
+                                  <strong>{rec.companyName}</strong> — {rec.sedeName} · Entrenador:{' '}
+                                  {rec.trainerName} · Asistentes: {rec.attendeesCount}
+                                </div>
                               </div>
                             </div>
-                            <div className="text-[11px] font-mono text-slate-500">
-                              Entrada: {rec.checkInTime}
-                              {rec.checkOutTime ? ` · Salida: ${rec.checkOutTime}` : ''}
+                            <div className="flex items-center gap-2 self-end sm:self-center shrink-0">
+                              <span className="text-[11px] font-mono tabular-nums text-slate-500">
+                                {rec.checkInTime}
+                                {rec.checkOutTime ? ` → ${rec.checkOutTime}` : ''}
+                              </span>
+                              <button
+                                type="button"
+                                onClick={() => setLightboxState({ record: rec, slot: 'entry' })}
+                                className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
+                              >
+                                <Eye className="w-3 h-3" />
+                                <span>Fotos</span>
+                              </button>
                             </div>
                           </div>
                         ))}
@@ -3794,11 +4142,11 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                             >
                               <div className="min-w-0">
                                 <div className="font-bold text-slate-900 truncate">{cat.name}</div>
-                                <div className="text-[11px] text-slate-500">
+                                <div className="text-[11px] text-slate-500 font-mono tabular-nums">
                                   {cat.activityType === 'clase_fitness'
                                     ? 'Clase Fitness'
                                     : 'Pausa Activa'}{' '}
-                                  • {cat.defaultDurationMinutes} min
+                                  · {cat.defaultDurationMinutes} min
                                 </div>
                               </div>
                               <span
@@ -3816,6 +4164,367 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                       </div>
                     )}
                   </div>
+                )}
+
+                {/* LIST & PHOTO GALLERY: BITÁCORA DE EVIDENCIAS (/records) */}
+                {activeCategory === 'evidences' && (
+                  <>
+                    {filteredRecords.length === 0 ? (
+                      <div className="py-10 text-center space-y-2 border border-slate-200 rounded-xl bg-slate-50/60">
+                        <ImageIcon className="w-7 h-7 text-slate-400 mx-auto" />
+                        <p className="text-xs font-semibold text-slate-700">
+                          No hay evidencias que coincidan con los filtros seleccionados.
+                        </p>
+                        <p className="text-[11px] text-slate-500">
+                          Ajusta el estado, la fecha o el término de búsqueda para visualizar más registros.
+                        </p>
+                      </div>
+                    ) : evidenceViewMode === 'gallery' ? (
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        {filteredRecords.map((rec) => {
+                          const photoSlots: {
+                            slot: EvidencePhotoSlot;
+                            label: string;
+                            url?: string;
+                          }[] = [
+                            { slot: 'entry', label: 'Entrada', url: rec.photoUrl },
+                            { slot: 'exit', label: 'Salida', url: rec.exitPhotoUrl },
+                            {
+                              slot: 'facial',
+                              label: 'Biometría',
+                              url: rec.facialVerification?.facePhotoUrl,
+                            },
+                          ];
+
+                          return (
+                            <div
+                              key={rec.id}
+                              className="border border-slate-200 rounded-xl bg-white p-4 space-y-3 hover:border-slate-300 transition"
+                            >
+                              <div className="flex items-start justify-between gap-2">
+                                <div className="min-w-0 space-y-0.5">
+                                  <div className="flex items-center gap-1.5 text-[11px] text-slate-500 font-mono tabular-nums">
+                                    <span>{rec.date}</span>
+                                    <span aria-hidden="true">·</span>
+                                    <span>{rec.checkInTime}</span>
+                                    {rec.checkOutTime && (
+                                      <>
+                                        <span aria-hidden="true">→</span>
+                                        <span>{rec.checkOutTime}</span>
+                                      </>
+                                    )}
+                                  </div>
+                                  <div className="text-sm font-bold text-slate-900 truncate">
+                                    {rec.companyName} — {rec.sedeName}
+                                  </div>
+                                  <div className="text-xs text-slate-600 truncate">
+                                    {rec.activityName} · Entrenador: <strong>{rec.trainerName}</strong>
+                                  </div>
+                                </div>
+                                <span
+                                  className={`text-[11px] font-bold shrink-0 ${
+                                    rec.status === 'completado'
+                                      ? 'text-emerald-700'
+                                      : rec.status === 'incumplido'
+                                      ? 'text-rose-700'
+                                      : 'text-amber-700'
+                                  }`}
+                                >
+                                  {rec.status === 'completado'
+                                    ? 'Completada'
+                                    : rec.status === 'incumplido'
+                                    ? 'Incumplida'
+                                    : 'En Curso'}
+                                </span>
+                              </div>
+
+                              <div className="grid grid-cols-3 gap-2">
+                                {photoSlots.map((item) =>
+                                  item.url ? (
+                                    <button
+                                      key={item.slot}
+                                      type="button"
+                                      onClick={() =>
+                                        setLightboxState({ record: rec, slot: item.slot })
+                                      }
+                                      className="group relative aspect-4/3 rounded-lg overflow-hidden border border-slate-200 bg-slate-900 cursor-pointer"
+                                      title={`Ampliar evidencia: ${item.label}`}
+                                    >
+                                      <img
+                                        src={item.url}
+                                        alt={`${item.label} - ${rec.trainerName}`}
+                                        referrerPolicy="no-referrer"
+                                        className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-200"
+                                      />
+                                      <div className="absolute inset-0 bg-gradient-to-t from-black/75 via-black/15 to-transparent flex items-end justify-between p-1.5">
+                                        <span className="text-[10px] font-bold text-white">
+                                          {item.label}
+                                        </span>
+                                        <ZoomIn className="w-3.5 h-3.5 text-white opacity-85" />
+                                      </div>
+                                    </button>
+                                  ) : (
+                                    <div
+                                      key={item.slot}
+                                      className="aspect-4/3 rounded-lg border border-dashed border-slate-200 bg-slate-50 flex flex-col items-center justify-center p-2 text-center"
+                                    >
+                                      <span className="text-[10px] font-semibold text-slate-400">
+                                        {item.label}
+                                      </span>
+                                      <span className="text-[9px] text-slate-400 mt-0.5">
+                                        Pendiente
+                                      </span>
+                                    </div>
+                                  )
+                                )}
+                              </div>
+
+                              <div className="pt-2 border-t border-slate-100 flex flex-wrap items-center justify-between gap-2 text-[11px] text-slate-500">
+                                <span className="font-mono tabular-nums">
+                                  GPS: {formatDistance(rec.checkInGps.distanceToSedeMeters)} ·{' '}
+                                  {rec.attendeesCount} asistentes
+                                  {rec.adminVerified ? ' · Auditada' : ''}
+                                </span>
+                                <div className="flex items-center gap-1.5">
+                                  <button
+                                    type="button"
+                                    onClick={() => setSelectedRecordForAudit(rec)}
+                                    className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 font-bold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
+                                  >
+                                    <FileText className="w-3 h-3" />
+                                    <span>Acta</span>
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void handleDownloadSingleRecordPdf(rec)}
+                                    disabled={singlePdfRecordId === rec.id}
+                                    className="px-2.5 py-1 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 font-bold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
+                                  >
+                                    <Download className="w-3 h-3" />
+                                    <span>
+                                      {singlePdfRecordId === rec.id ? 'PDF...' : 'PDF'}
+                                    </span>
+                                  </button>
+                                </div>
+                              </div>
+                            </div>
+                          );
+                        })}
+                      </div>
+                    ) : (
+                      <div className="divide-y divide-slate-200 border border-slate-200 rounded-xl overflow-hidden">
+                        {filteredRecords.map((rec) => (
+                          <div
+                            key={rec.id}
+                            className="p-3.5 bg-white hover:bg-slate-50/80 flex flex-col lg:flex-row lg:items-center justify-between gap-3 transition"
+                          >
+                            <div className="flex items-start gap-3 min-w-0">
+                              {/* Clickable Thumbnails Strip */}
+                              <div className="flex items-center gap-1.5 shrink-0">
+                                {rec.photoUrl && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setLightboxState({ record: rec, slot: 'entry' })
+                                    }
+                                    className="relative w-12 h-12 rounded-lg overflow-hidden border border-slate-200 bg-slate-900 group cursor-pointer"
+                                    title="Ver foto de entrada con marca de agua GPS"
+                                  >
+                                    <img
+                                      src={rec.photoUrl}
+                                      alt={`Entrada ${rec.trainerName}`}
+                                      referrerPolicy="no-referrer"
+                                      className="w-full h-full object-cover"
+                                    />
+                                    <span className="absolute inset-x-0 bottom-0 bg-black/70 text-[9px] font-bold text-white text-center py-0.5">
+                                      Entrada
+                                    </span>
+                                  </button>
+                                )}
+
+                                {rec.exitPhotoUrl && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setLightboxState({ record: rec, slot: 'exit' })
+                                    }
+                                    className="relative w-12 h-12 rounded-lg overflow-hidden border border-slate-200 bg-slate-900 group cursor-pointer"
+                                    title="Ver foto de cierre/salida de sesión"
+                                  >
+                                    <img
+                                      src={rec.exitPhotoUrl}
+                                      alt={`Salida ${rec.trainerName}`}
+                                      referrerPolicy="no-referrer"
+                                      className="w-full h-full object-cover"
+                                    />
+                                    <span className="absolute inset-x-0 bottom-0 bg-emerald-950/80 text-[9px] font-bold text-emerald-100 text-center py-0.5">
+                                      Salida
+                                    </span>
+                                  </button>
+                                )}
+
+                                {rec.facialVerification?.facePhotoUrl && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setLightboxState({ record: rec, slot: 'facial' })
+                                    }
+                                    className="relative w-12 h-12 rounded-lg overflow-hidden border border-slate-200 bg-slate-900 group cursor-pointer"
+                                    title={`Ver validación biométrica facial (${rec.facialVerification.confidenceScore.toFixed(
+                                      1
+                                    )}%)`}
+                                  >
+                                    <img
+                                      src={rec.facialVerification.facePhotoUrl}
+                                      alt={`Biometría ${rec.trainerName}`}
+                                      referrerPolicy="no-referrer"
+                                      className="w-full h-full object-cover"
+                                    />
+                                    <span className="absolute inset-x-0 bottom-0 bg-blue-950/80 text-[9px] font-bold text-blue-100 text-center py-0.5">
+                                      Rostro
+                                    </span>
+                                  </button>
+                                )}
+                              </div>
+
+                              <div className="space-y-1 min-w-0">
+                                <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+                                  <span className="font-mono tabular-nums font-bold text-slate-800">
+                                    {rec.date} · {rec.checkInTime}
+                                    {rec.checkOutTime ? ` → ${rec.checkOutTime}` : ''}
+                                  </span>
+                                  <span aria-hidden="true" className="text-slate-300">
+                                    ·
+                                  </span>
+                                  <span className="font-bold text-slate-900">
+                                    {rec.activityName}
+                                  </span>
+                                  <span aria-hidden="true" className="text-slate-300">
+                                    ·
+                                  </span>
+                                  <span
+                                    className={`text-[11px] font-bold ${
+                                      rec.status === 'completado'
+                                        ? 'text-emerald-700'
+                                        : rec.status === 'incumplido'
+                                        ? 'text-rose-700'
+                                        : 'text-amber-700'
+                                    }`}
+                                  >
+                                    {rec.status === 'completado'
+                                      ? 'Completada'
+                                      : rec.status === 'incumplido'
+                                      ? 'Incumplida'
+                                      : 'En Curso'}
+                                  </span>
+                                  {rec.adminVerified && (
+                                    <>
+                                      <span aria-hidden="true" className="text-slate-300">
+                                        ·
+                                      </span>
+                                      <span className="text-[11px] font-semibold text-blue-700">
+                                        Auditada
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+
+                                <div className="text-[11px] text-slate-700">
+                                  <strong>{rec.companyName}</strong> — {rec.sedeName} (
+                                  {rec.locationArea}) · Entrenador:{' '}
+                                  <strong>{rec.trainerName}</strong>
+                                </div>
+
+                                <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-slate-500 font-mono tabular-nums">
+                                  <span>
+                                    GPS:{' '}
+                                    {rec.checkInGps.isWithinGeofence
+                                      ? 'En Geocerca'
+                                      : 'Fuera de Rango'}{' '}
+                                    ({formatDistance(rec.checkInGps.distanceToSedeMeters)})
+                                  </span>
+                                  <span aria-hidden="true">·</span>
+                                  <span>{rec.attendeesCount} asistentes</span>
+                                  {rec.facialVerification && (
+                                    <>
+                                      <span aria-hidden="true">·</span>
+                                      <span>
+                                        Biometría:{' '}
+                                        {rec.facialVerification.confidenceScore.toFixed(1)}%
+                                      </span>
+                                    </>
+                                  )}
+                                </div>
+                              </div>
+                            </div>
+
+                            <div className="flex flex-wrap items-center gap-1.5 self-end lg:self-center shrink-0">
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setLightboxState({ record: rec, slot: 'entry' })
+                                }
+                                className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
+                                title="Visualizar fotografías de evidencia en pantalla completa"
+                              >
+                                <Eye className="w-3.5 h-3.5 text-red-600" />
+                                <span>Ver Fotos</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => setSelectedRecordForAudit(rec)}
+                                className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
+                                title="Abrir acta oficial, imprimir o auditar en Firestore"
+                              >
+                                <FileText className="w-3.5 h-3.5 text-slate-600" />
+                                <span>Acta</span>
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => void handleDownloadSingleRecordPdf(rec)}
+                                disabled={singlePdfRecordId === rec.id}
+                                className="px-2.5 py-1.5 rounded-lg bg-red-50 hover:bg-red-100 text-red-700 border border-red-200 text-[11px] font-bold inline-flex items-center gap-1 cursor-pointer whitespace-nowrap shrink-0"
+                                title="Descargar acta individual en PDF"
+                              >
+                                <Download className="w-3.5 h-3.5" />
+                                <span>{singlePdfRecordId === rec.id ? '...' : 'PDF'}</span>
+                              </button>
+
+                              {confirmDeleteKey === `evidences:${rec.id}` ? (
+                                <div className="inline-flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => handleDeleteDocument('evidences', rec.id)}
+                                    className="px-2 py-1 rounded-lg bg-rose-600 text-white text-[10px] font-bold cursor-pointer whitespace-nowrap shrink-0"
+                                  >
+                                    Confirmar
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteKey(null)}
+                                    className="px-2 py-1 rounded-lg bg-slate-100 text-slate-700 text-[10px] font-semibold cursor-pointer whitespace-nowrap shrink-0"
+                                  >
+                                    No
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteKey(`evidences:${rec.id}`)}
+                                  className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-600 hover:text-rose-600 border border-slate-200 cursor-pointer"
+                                  title="Eliminar evidencia de /records"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </>
                 )}
 
                 {/* LIST: PERSONNEL */}
@@ -3922,6 +4631,36 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
           </div>
         </div>
       </div>
+
+      {/* Modales de Visualización de Evidencias, Acta Oficial e Impresión/PDF */}
+      <EvidencePhotoLightbox
+        record={lightboxState?.record || null}
+        initialSlot={lightboxState?.slot || 'entry'}
+        onClose={() => setLightboxState(null)}
+        onOpenFullCertificate={(rec) => {
+          setLightboxState(null);
+          setSelectedRecordForAudit(rec);
+        }}
+      />
+
+      <PdfEvidenceLogModal
+        isOpen={isEvidencePdfModalOpen}
+        onClose={() => setIsEvidencePdfModalOpen(false)}
+        records={filteredRecords}
+        filterSummaryLabel={evidenceSummaryLabel}
+        onInspectPhoto={(rec, slot) => {
+          setIsEvidencePdfModalOpen(false);
+          setLightboxState({ record: rec, slot });
+        }}
+      />
+
+      {selectedRecordForAudit && (
+        <RecordDetailModal
+          record={selectedRecordForAudit}
+          onClose={() => setSelectedRecordForAudit(null)}
+          onUpdateRecord={(updated) => void handleAuditRecordSave(updated)}
+        />
+      )}
     </div>
   );
 };

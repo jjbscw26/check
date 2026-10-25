@@ -2,6 +2,8 @@ import React, { useState, useMemo } from 'react';
 import { 
   BarChart3, 
   Calendar, 
+  Camera,
+  Database,
   Download, 
   Printer, 
   FileSpreadsheet, 
@@ -22,7 +24,11 @@ import {
   FileText,
   BellRing,
   Ban,
-  Lock
+  Lock,
+  LayoutGrid,
+  List,
+  RefreshCw,
+  ZoomIn,
 } from 'lucide-react';
 import { AttendanceRecord, Company, Sede, Trainer, ClassAssignment, ActivityCatalogItem } from '../types';
 import { formatDistance } from '../utils/geo';
@@ -32,6 +38,11 @@ import {
   doesAssignmentApplyToDate,
   getAssignmentOccurrenceStatus,
 } from '../utils/assignmentLock';
+import {
+  EvidencePhotoSlot,
+  exportEvidenceRecordsToExcel,
+  exportEvidenceRecordsToPdf,
+} from '../utils/evidenceExport';
 import { RecordDetailModal } from './RecordDetailModal';
 import { AdminTrainerModal } from './AdminTrainerModal';
 import { AdminCompanyModal } from './AdminCompanyModal';
@@ -41,6 +52,8 @@ import { AdminScheduleView } from './AdminScheduleView';
 import { AdminAssignmentTypesView } from './AdminAssignmentTypesView';
 import { PdfReportModal } from './PdfReportModal';
 import { PdfAssignmentsModal } from './PdfAssignmentsModal';
+import { PdfEvidenceLogModal } from './PdfEvidenceLogModal';
+import { EvidencePhotoLightbox } from './EvidencePhotoLightbox';
 import { PersonnelRegistryView } from './PersonnelRegistryView';
 import { FirestoreErrorBoundary } from './FirestoreErrorBoundary';
 
@@ -68,6 +81,7 @@ interface AdminDashboardProps {
   onUpdateCatalogItem: (item: ActivityCatalogItem, previousName?: string) => void;
   onDeleteCatalogItem: (id: string) => void;
   onResetData: () => void;
+  onSyncEvidenceDatabase?: () => Promise<{ syncedCount: number; totalCount: number }>;
   isDirectoryAuthenticated?: boolean;
 }
 
@@ -95,6 +109,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onUpdateCatalogItem,
   onDeleteCatalogItem,
   onResetData,
+  onSyncEvidenceDatabase,
   isDirectoryAuthenticated = false,
 }) => {
   const [activeTab, setActiveTab] = useState<'reports' | 'schedule' | 'activity_types' | 'log' | 'sedes' | 'trainers' | 'personnel'>('reports');
@@ -133,12 +148,23 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [confirmDeleteTrainerId, setConfirmDeleteTrainerId] = useState<string | null>(null);
   const [confirmResetDemo, setConfirmResetDemo] = useState(false);
 
-  // Table Log Filters
+  // Table & Evidence Gallery Filters
   const [searchTerm, setSearchTerm] = useState('');
   const [filterTrainerId, setFilterTrainerId] = useState<string>('all');
   const [filterCompanyId, setFilterCompanyId] = useState<string>('all');
   const [filterActivityType, setFilterActivityType] = useState<string>('all');
   const [filterPunctuality, setFilterPunctuality] = useState<string>('all');
+  const [logMonthFilter, setLogMonthFilter] = useState<string>('');
+  const [logDateFilter, setLogDateFilter] = useState<string>('');
+  const [logViewMode, setLogViewMode] = useState<'table' | 'gallery'>('table');
+  const [isEvidencePdfModalOpen, setIsEvidencePdfModalOpen] = useState<boolean>(false);
+  const [isExportingLogPdf, setIsExportingLogPdf] = useState<boolean>(false);
+  const [isSyncingLogDb, setIsSyncingLogDb] = useState<boolean>(false);
+  const [logSyncFeedback, setLogSyncFeedback] = useState<string | null>(null);
+  const [lightboxState, setLightboxState] = useState<{
+    record: AttendanceRecord;
+    slot: EvidencePhotoSlot;
+  } | null>(null);
 
   // Filter records based on report period
   const periodRecords = useMemo(() => {
@@ -291,17 +317,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     });
   }, [companies, periodRecords]);
 
-  // Filtered log table records
+  // Filtered log table & photo gallery records
   const filteredLogRecords = useMemo(() => {
     return records.filter((r) => {
       if (filterTrainerId !== 'all' && r.trainerId !== filterTrainerId) return false;
       if (filterCompanyId !== 'all' && r.companyId !== filterCompanyId) return false;
       if (filterActivityType !== 'all' && r.activityType !== filterActivityType) return false;
+      if (logDateFilter && r.date !== logDateFilter) return false;
+      if (!logDateFilter && logMonthFilter && !r.date.startsWith(logMonthFilter)) return false;
+
       if (filterPunctuality !== 'all') {
         if (filterPunctuality === 'incumplido') {
           if (r.status !== 'incumplido') return false;
         } else if (filterPunctuality === 'en_curso') {
           if (r.status !== 'en_curso') return false;
+        } else if (filterPunctuality === 'completado') {
+          if (r.status !== 'completado') return false;
         } else if (r.punctualityStatus !== filterPunctuality) {
           return false;
         }
@@ -314,97 +345,105 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           r.companyName.toLowerCase().includes(query) ||
           r.sedeName.toLowerCase().includes(query) ||
           r.activityName.toLowerCase().includes(query) ||
-          r.locationArea.toLowerCase().includes(query);
+          r.locationArea.toLowerCase().includes(query) ||
+          r.id.toLowerCase().includes(query);
         if (!match) return false;
       }
 
       return true;
     });
-  }, [records, filterTrainerId, filterCompanyId, filterActivityType, filterPunctuality, searchTerm]);
+  }, [
+    records,
+    filterTrainerId,
+    filterCompanyId,
+    filterActivityType,
+    filterPunctuality,
+    logDateFilter,
+    logMonthFilter,
+    searchTerm,
+  ]);
 
-  // Export to CSV / Excel
-  const exportToCsv = () => {
-    const headers = [
-      'ID Registro',
-      'Fecha',
-      'Entrenador',
-      'Empresa',
-      'Sede',
-      'Direccion',
-      'Hora Programada',
-      'Hora Entrada Real',
-      'Hora Salida Real',
-      'Estado Sesion',
-      'Duracion (Minutos)',
-      'Estado Puntualidad',
-      'Minutos Desviacion',
-      'Tipo Actividad',
-      'Nombre Actividad',
-      'Colaboradores Asistentes',
-      'Salon o Area',
-      'GPS Latitud',
-      'GPS Longitud',
-      'Distancia a Sede (m)',
-      'En Geocerca',
-      'Validacion Facial Biometria',
-      'Auditado Admin',
-      'Observaciones',
-    ];
+  const logFilterSummaryLabel = useMemo(() => {
+    const parts: string[] = [];
+    if (logDateFilter) parts.push(`Fecha ${logDateFilter}`);
+    else if (logMonthFilter) parts.push(`Mes ${logMonthFilter}`);
+    else parts.push('Histórico completo');
 
-    const rows = periodRecords.map((r) => [
-      `"${r.id}"`,
-      `"${r.date}"`,
-      `"${r.trainerName}"`,
-      `"${r.companyName}"`,
-      `"${r.sedeName}"`,
-      `"${r.sedeAddress}"`,
-      `"${r.scheduledTime}"`,
-      `"${r.checkInTime}"`,
-      `"${
-        r.checkOutTime
-          ? r.checkOutTime
-          : r.status === 'incumplido'
-          ? 'SIN CIERRE (+30m)'
-          : 'En curso'
-      }"`,
-      `"${
-        r.status === 'incumplido'
-          ? 'Incumplida (+30m sin cierre)'
-          : r.status === 'completado'
-          ? 'Completada y Cerrada'
-          : 'En curso'
-      }"`,
-      r.durationMinutes || '',
-      `"${r.punctualityStatus}"`,
-      r.punctualityDiffMinutes,
-      `"${r.activityType}"`,
-      `"${r.activityName}"`,
-      r.attendeesCount,
-      `"${r.locationArea}"`,
-      r.checkInGps.lat,
-      r.checkInGps.lng,
-      r.checkInGps.distanceToSedeMeters,
-      r.checkInGps.isWithinGeofence ? 'SI' : 'NO',
-      r.facialVerification ? `"${r.facialVerification.confidenceScore}% (Verificado)"` : '"N/A"',
-      r.adminVerified ? 'SI' : 'NO',
-      `"${(r.observations || '').replace(/"/g, '""')}"`,
-    ]);
+    if (filterCompanyId !== 'all') {
+      const c = companies.find((comp) => comp.id === filterCompanyId);
+      if (c) parts.push(c.name);
+    }
+    if (filterTrainerId !== 'all') {
+      const t = trainers.find((tr) => tr.id === filterTrainerId);
+      if (t) parts.push(t.name);
+    }
+    parts.push(`${filteredLogRecords.length} registro(s)`);
+    return parts.join(' · ');
+  }, [
+    logDateFilter,
+    logMonthFilter,
+    filterCompanyId,
+    filterTrainerId,
+    companies,
+    trainers,
+    filteredLogRecords.length,
+  ]);
 
-    const csvContent =
-      '\uFEFF' + [headers.join(','), ...rows.map((e) => e.join(','))].join('\n');
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
-    const url = URL.createObjectURL(blob);
-    const link = document.createElement('a');
-    link.setAttribute('href', url);
-    link.setAttribute(
-      'download',
-      `Reporte_BSCW_Puntualidad_${reportType}_${
+  // Export Reports Period to Real Excel (.xlsx)
+  const exportToExcelReport = () => {
+    const label =
+      reportType === 'daily'
+        ? `Reporte Diario ${selectedDate}`
+        : reportType === 'monthly'
+        ? `Reporte Mensual ${selectedMonth}`
+        : 'Histórico Completo';
+    exportEvidenceRecordsToExcel(periodRecords, {
+      filenamePrefix: `Reporte_BSCW_${reportType}_${
         reportType === 'daily' ? selectedDate : selectedMonth
-      }.csv`
-    );
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
+      }`,
+      periodLabel: label,
+    });
+  };
+
+  // Export Bitácora & Evidencias to Real Excel (.xlsx)
+  const handleExportLogExcel = () => {
+    exportEvidenceRecordsToExcel(filteredLogRecords, {
+      filenamePrefix: 'Bitacora_Evidencias_BSCW',
+      periodLabel: logFilterSummaryLabel,
+    });
+  };
+
+  // Export Bitácora & Evidencias directly to PDF (.pdf) with embedded photos
+  const handleExportLogPdfDirect = async () => {
+    setIsExportingLogPdf(true);
+    try {
+      await exportEvidenceRecordsToPdf(filteredLogRecords, {
+        title: 'Bitácora Oficial de Evidencias y Asistencia',
+        subtitle: logFilterSummaryLabel,
+        filenamePrefix: 'Bitacora_Evidencias_BSCW',
+        includePhotos: true,
+      });
+    } finally {
+      setIsExportingLogPdf(false);
+    }
+  };
+
+  const handleManualSyncLogDb = async () => {
+    if (!onSyncEvidenceDatabase) return;
+    setIsSyncingLogDb(true);
+    setLogSyncFeedback(null);
+    try {
+      const res = await onSyncEvidenceDatabase();
+      setLogSyncFeedback(
+        `Bitácora sincronizada en Cloud Firestore (/records): ${res.totalCount} registro(s) respaldado(s)${
+          res.syncedCount > 0 ? ` (${res.syncedCount} actualizado(s))` : ' al día'
+        }.`
+      );
+    } catch {
+      setLogSyncFeedback('No fue posible completar la sincronización manual con Firestore.');
+    } finally {
+      setIsSyncingLogDb(false);
+    }
   };
 
   return (
@@ -679,7 +718,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
               <button
                 type="button"
                 onClick={() => setIsPdfModalOpen(true)}
-                className="flex items-center text-xs font-bold px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white shadow-sm transition"
+                className="flex items-center text-xs font-bold px-3.5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white shadow-sm transition whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <FileText className="w-3.5 h-3.5 mr-1.5" />
                 Generar Reporte en PDF
@@ -687,11 +726,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
               <button
                 type="button"
-                onClick={exportToCsv}
-                className="flex items-center text-xs font-semibold px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 shadow-sm transition"
+                onClick={exportToExcelReport}
+                className="flex items-center text-xs font-semibold px-3.5 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 shadow-sm transition whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <FileSpreadsheet className="w-3.5 h-3.5 mr-1.5 text-emerald-700" />
-                Excel / CSV
+                Descargar Excel (.xlsx)
               </button>
             </div>
           </div>
@@ -942,24 +981,163 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
       {/* TAB 3: BITÁCORA Y EVIDENCIAS DE ASISTENCIA */}
       {activeTab === 'log' && (
         <div className="space-y-4">
-          <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm space-y-3">
-            <div className="flex flex-col md:flex-row gap-3">
-              <div className="relative flex-1">
-                <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
-                <input
-                  type="text"
-                  value={searchTerm}
-                  onChange={(e) => setSearchTerm(e.target.value)}
-                  placeholder="Buscar por entrenador, empresa, sede, salón o actividad..."
-                  className="w-full bg-white border border-slate-300 rounded-xl pl-9 pr-4 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-red-500 focus:ring-1 focus:ring-red-500 shadow-sm"
-                />
+          {/* Top Bar: Database Sync + View Mode + Print / PDF / Excel Exports */}
+          <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-sm space-y-4">
+            <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+              <div className="space-y-0.5">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Database className="w-4 h-4 text-red-600 shrink-0" />
+                  <h3 className="text-sm sm:text-base font-extrabold text-slate-900">
+                    Bitácora Oficial de Evidencias Fotográficas y Asistencia
+                  </h3>
+                  <span className="font-mono tabular-nums text-[11px] text-slate-500">
+                    · Cloud Firestore (`/records`) · {records.length} registros
+                  </span>
+                </div>
+                <p className="text-xs text-slate-500">
+                  Respaldo en tiempo real de fotografías con sello GPS (entrada/salida), validación biométrica facial y actas auditables.
+                </p>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {/* View Mode Toggle: Tabla vs Galería de Fotos */}
+                <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl border border-slate-200">
+                  <button
+                    type="button"
+                    onClick={() => setLogViewMode('table')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer ${
+                      logViewMode === 'table'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <List className="w-3.5 h-3.5 text-red-600" />
+                    <span>Tabla</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setLogViewMode('gallery')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer ${
+                      logViewMode === 'gallery'
+                        ? 'bg-white text-slate-900 shadow-xs'
+                        : 'text-slate-600 hover:text-slate-900'
+                    }`}
+                  >
+                    <LayoutGrid className="w-3.5 h-3.5 text-red-600" />
+                    <span>Galería de Fotos</span>
+                  </button>
+                </div>
+
+                {onSyncEvidenceDatabase && (
+                  <button
+                    type="button"
+                    onClick={() => void handleManualSyncLogDb()}
+                    disabled={isSyncingLogDb}
+                    className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
+                    title="Sincronizar y respaldar todos los registros de evidencia en Cloud Firestore (/records)"
+                  >
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 text-red-400 ${
+                        isSyncingLogDb ? 'animate-spin' : ''
+                      }`}
+                    />
+                    <span>{isSyncingLogDb ? 'Sincronizando...' : 'Sincronizar BD'}</span>
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleExportLogExcel}
+                  className="px-3 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
+                  title="Descargar registros filtrados en formato Excel (.xlsx)"
+                >
+                  <FileSpreadsheet className="w-3.5 h-3.5" />
+                  <span>Excel (.xlsx)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => void handleExportLogPdfDirect()}
+                  disabled={isExportingLogPdf}
+                  className="px-3 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
+                  title="Descargar Bitácora en PDF (.pdf) incluyendo fotografías de evidencia"
+                >
+                  {isExportingLogPdf ? (
+                    <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  ) : (
+                    <Download className="w-3.5 h-3.5" />
+                  )}
+                  <span>{isExportingLogPdf ? 'Generando PDF...' : 'Descargar PDF'}</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsEvidencePdfModalOpen(true)}
+                  className="px-3 py-2 rounded-xl bg-white hover:bg-slate-100 text-slate-800 border border-slate-300 text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
+                  title="Abrir vista previa oficial para imprimir la bitácora con fotografías"
+                >
+                  <Printer className="w-3.5 h-3.5 text-red-600" />
+                  <span>Imprimir</span>
+                </button>
+              </div>
+            </div>
+
+            {logSyncFeedback && (
+              <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-3.5 py-2.5 text-xs font-semibold text-emerald-900 flex items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-600 shrink-0" />
+                  <span>{logSyncFeedback}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setLogSyncFeedback(null)}
+                  className="text-emerald-700 hover:text-emerald-950 font-bold cursor-pointer"
+                >
+                  ✕
+                </button>
+              </div>
+            )}
+
+            {/* Search & Filters */}
+            <div className="flex flex-col gap-3">
+              <div className="flex flex-col lg:flex-row gap-2.5">
+                <div className="relative flex-1">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-2.5" />
+                  <input
+                    type="text"
+                    value={searchTerm}
+                    onChange={(e) => setSearchTerm(e.target.value)}
+                    placeholder="Buscar por ID, entrenador, empresa, sede, salón o actividad..."
+                    className="w-full bg-white border border-slate-300 rounded-xl pl-9 pr-4 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-red-500"
+                  />
+                </div>
+
+                <div className="flex flex-wrap items-center gap-2">
+                  <input
+                    type="month"
+                    value={logMonthFilter}
+                    onChange={(e) => {
+                      setLogMonthFilter(e.target.value);
+                      if (e.target.value) setLogDateFilter('');
+                    }}
+                    title="Filtrar por mes"
+                    className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-mono tabular-nums focus:outline-none focus:border-red-500"
+                  />
+                  <input
+                    type="date"
+                    value={logDateFilter}
+                    onChange={(e) => setLogDateFilter(e.target.value)}
+                    title="Filtrar por fecha exacta"
+                    className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 font-mono tabular-nums focus:outline-none focus:border-red-500"
+                  />
+                </div>
               </div>
 
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
                 <select
                   value={filterTrainerId}
                   onChange={(e) => setFilterTrainerId(e.target.value)}
-                  className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-red-500 cursor-pointer shadow-sm font-medium"
+                  className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-red-500 cursor-pointer font-medium"
                 >
                   <option value="all">Todos los Entrenadores</option>
                   {trainers.map((t) => (
@@ -972,7 +1150,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <select
                   value={filterCompanyId}
                   onChange={(e) => setFilterCompanyId(e.target.value)}
-                  className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-red-500 cursor-pointer shadow-sm font-medium"
+                  className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-red-500 cursor-pointer font-medium"
                 >
                   <option value="all">Todas las Empresas</option>
                   {companies.map((c) => (
@@ -985,7 +1163,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <select
                   value={filterActivityType}
                   onChange={(e) => setFilterActivityType(e.target.value)}
-                  className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-red-500 cursor-pointer shadow-sm font-medium"
+                  className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-red-500 cursor-pointer font-medium"
                 >
                   <option value="all">Todas las Actividades</option>
                   <option value="pausa_activa">Pausa Activa</option>
@@ -995,21 +1173,26 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <select
                   value={filterPunctuality}
                   onChange={(e) => setFilterPunctuality(e.target.value)}
-                  className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-red-500 cursor-pointer shadow-sm font-medium"
+                  className="bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-800 focus:outline-none focus:border-red-500 cursor-pointer font-medium"
                 >
                   <option value="all">Todos los Estados</option>
-                  <option value="a_tiempo">A tiempo</option>
+                  <option value="completado">Completadas y cerradas</option>
+                  <option value="a_tiempo">Puntuales (A tiempo)</option>
                   <option value="con_retraso">Con retraso</option>
-                  <option value="adelantado">Adelantado</option>
+                  <option value="adelantado">Adelantadas</option>
                   <option value="en_curso">En curso (sin salida)</option>
                   <option value="incumplido">Incumplida (+30m sin cierre)</option>
                 </select>
               </div>
             </div>
 
-            <div className="flex items-center justify-between text-xs text-slate-500 pt-1">
+            <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-500 pt-1">
               <span>
-                Mostrando <strong className="text-slate-900">{filteredLogRecords.length}</strong> de {records.length} registros totales
+                Mostrando{' '}
+                <strong className="text-slate-900 font-mono tabular-nums">
+                  {filteredLogRecords.length}
+                </strong>{' '}
+                de <span className="font-mono tabular-nums">{records.length}</span> registros en base de datos • Haz clic en cualquier miniatura para ampliar la fotografía de evidencia
               </span>
               <button
                 type="button"
@@ -1019,220 +1202,454 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                   setFilterCompanyId('all');
                   setFilterActivityType('all');
                   setFilterPunctuality('all');
+                  setLogMonthFilter('');
+                  setLogDateFilter('');
                 }}
-                className="text-red-600 font-semibold hover:underline"
+                className="text-red-600 font-semibold hover:underline cursor-pointer whitespace-nowrap"
               >
                 Limpiar Filtros
               </button>
             </div>
           </div>
 
-          {/* Master Table of Records */}
-          <div className="bg-white border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
-            <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs text-slate-700">
-                <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] font-bold tracking-wider border-b border-slate-200">
-                  <tr>
-                    <th className="py-3 px-3">Fecha & Horarios</th>
-                    <th className="py-3 px-3">Entrenador</th>
-                    <th className="py-3 px-3">Empresa y Sede</th>
-                    <th className="py-3 px-3">Actividad</th>
-                    <th className="py-3 px-2 text-center">Puntualidad</th>
-                    <th className="py-3 px-2 text-center">GPS</th>
-                    <th className="py-3 px-2 text-center">Evidencias</th>
-                    <th className="py-3 px-3 text-right">Acción</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {filteredLogRecords.map((rec) => {
-                    const isLate = rec.punctualityStatus === 'con_retraso';
-                    const isEarly = rec.punctualityStatus === 'adelantado';
-                    const isNonCompliantRecord = rec.status === 'incumplido';
+          {filteredLogRecords.length === 0 ? (
+            <div className="bg-white border border-slate-200/90 rounded-2xl p-10 text-center space-y-2">
+              <Camera className="w-7 h-7 text-slate-400 mx-auto" />
+              <p className="text-sm font-bold text-slate-800">
+                No se encontraron registros de evidencia con los filtros seleccionados
+              </p>
+              <p className="text-xs text-slate-500">
+                Ajusta los criterios de búsqueda o limpia los filtros para visualizar la bitácora completa.
+              </p>
+            </div>
+          ) : logViewMode === 'table' ? (
+            /* Master Table of Evidence Records */
+            <div className="bg-white border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
+              <div className="overflow-x-auto">
+                <table className="w-full text-left text-xs text-slate-700">
+                  <thead className="bg-slate-50 text-slate-500 uppercase text-[10px] font-bold tracking-wider border-b border-slate-200">
+                    <tr>
+                      <th className="py-3 px-3">Fecha & Horarios</th>
+                      <th className="py-3 px-3">Entrenador</th>
+                      <th className="py-3 px-3">Empresa y Sede</th>
+                      <th className="py-3 px-3">Actividad</th>
+                      <th className="py-3 px-2 text-center">Puntualidad</th>
+                      <th className="py-3 px-2 text-center">GPS</th>
+                      <th className="py-3 px-2 text-center">Fotos de Evidencia</th>
+                      <th className="py-3 px-3 text-right">Acciones</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-100">
+                    {filteredLogRecords.map((rec) => {
+                      const isLate = rec.punctualityStatus === 'con_retraso';
+                      const isEarly = rec.punctualityStatus === 'adelantado';
+                      const isNonCompliantRecord = rec.status === 'incumplido';
 
-                    return (
-                      <tr
-                        key={rec.id}
-                        className={`transition ${
-                          isNonCompliantRecord ? 'bg-rose-50/40 hover:bg-rose-50/80' : 'hover:bg-slate-50'
-                        }`}
-                      >
-                        {/* Timestamps */}
-                        <td className="py-3 px-3 whitespace-nowrap">
-                          <span className="font-mono font-bold text-slate-900 block">
-                            {rec.date}
-                          </span>
-                          <span className="text-[11px] text-slate-500">
-                            Prog: <span className="font-mono font-medium">{rec.scheduledTime}</span>
-                          </span>
-                          <div className="text-[10px] font-mono text-emerald-700 font-bold">
-                            Ent: {rec.checkInTime}
-                            {isNonCompliantRecord ? (
-                              <span className="ml-1.5 text-rose-700 font-sans font-extrabold inline-flex items-center gap-1">
-                                <Lock className="w-3 h-3 inline" />
-                                Incumplida (+30m sin cierre)
+                      return (
+                        <tr
+                          key={rec.id}
+                          className={`transition ${
+                            isNonCompliantRecord
+                              ? 'bg-rose-50/40 hover:bg-rose-50/80'
+                              : 'hover:bg-slate-50'
+                          }`}
+                        >
+                          {/* Timestamps */}
+                          <td className="py-3 px-3 whitespace-nowrap">
+                            <span className="font-mono tabular-nums font-bold text-slate-900 block">
+                              {rec.date}
+                            </span>
+                            <span className="text-[11px] text-slate-500">
+                              Prog:{' '}
+                              <span className="font-mono tabular-nums font-medium">
+                                {rec.scheduledTime}
                               </span>
-                            ) : rec.checkOutTime ? (
-                              <span className="text-slate-700 ml-1">| Sal: {rec.checkOutTime}</span>
-                            ) : (
-                              (() => {
-                                const st = getSessionAlarmStatus(rec, activityCatalog, adminNowMs);
-                                return st.isOverdue ? (
-                                  <span className="ml-1.5 text-amber-800 font-sans font-extrabold">
-                                    ⚠ Salida vencida (+{formatSecondsClock(st.overdueSeconds)} · bloqueo en {formatSecondsClock(st.remainingBeforeNonComplianceSeconds)})
-                                  </span>
-                                ) : (
-                                  <span className="ml-1 text-amber-700 font-sans font-bold">
-                                    • En curso
-                                  </span>
-                                );
-                              })()
-                            )}
-                          </div>
-                        </td>
+                            </span>
+                            <div className="text-[10px] font-mono tabular-nums text-emerald-700 font-bold">
+                              Ent: {rec.checkInTime}
+                              {isNonCompliantRecord ? (
+                                <span className="ml-1.5 text-rose-700 font-sans font-extrabold inline-flex items-center gap-1">
+                                  <Lock className="w-3 h-3 inline" />
+                                  Incumplida (+30m sin cierre)
+                                </span>
+                              ) : rec.checkOutTime ? (
+                                <span className="text-slate-700 ml-1">
+                                  | Sal: {rec.checkOutTime}
+                                </span>
+                              ) : (
+                                (() => {
+                                  const st = getSessionAlarmStatus(
+                                    rec,
+                                    activityCatalog,
+                                    adminNowMs
+                                  );
+                                  return st.isOverdue ? (
+                                    <span className="ml-1.5 text-amber-800 font-sans font-extrabold">
+                                      ⚠ Salida vencida (+{formatSecondsClock(st.overdueSeconds)} · bloqueo en{' '}
+                                      {formatSecondsClock(st.remainingBeforeNonComplianceSeconds)})
+                                    </span>
+                                  ) : (
+                                    <span className="ml-1 text-amber-700 font-sans font-bold">
+                                      • En curso
+                                    </span>
+                                  );
+                                })()
+                              )}
+                            </div>
+                          </td>
 
-                        {/* Trainer */}
-                        <td className="py-3 px-3 whitespace-nowrap">
-                          <span className="font-bold text-slate-900 block">{rec.trainerName}</span>
-                          <span className="text-[10px] text-slate-500">
-                            {rec.locationArea}
-                          </span>
-                        </td>
+                          {/* Trainer */}
+                          <td className="py-3 px-3 whitespace-nowrap">
+                            <span className="font-bold text-slate-900 block">
+                              {rec.trainerName}
+                            </span>
+                            <span className="text-[10px] text-slate-500">{rec.locationArea}</span>
+                          </td>
 
-                        {/* Company & Sede */}
-                        <td className="py-3 px-3">
-                          <span className="font-semibold text-slate-800 block truncate max-w-[180px]">
-                            {rec.companyName}
-                          </span>
-                          <span className="text-[11px] text-slate-500 block truncate max-w-[180px]">
-                            📍 {rec.sedeName}
-                          </span>
-                        </td>
+                          {/* Company & Sede */}
+                          <td className="py-3 px-3">
+                            <span className="font-semibold text-slate-800 block truncate max-w-[180px]">
+                              {rec.companyName}
+                            </span>
+                            <span className="text-[11px] text-slate-500 block truncate max-w-[180px]">
+                              {rec.sedeName}
+                            </span>
+                          </td>
 
-                        {/* Activity */}
-                        <td className="py-3 px-3">
-                          <span className="font-bold text-slate-900 block truncate max-w-[160px]">
-                            {rec.activityName}
-                          </span>
-                          <span className="text-[10px] text-slate-500">
-                            👥 {rec.attendeesCount} participantes
-                          </span>
-                        </td>
+                          {/* Activity */}
+                          <td className="py-3 px-3">
+                            <span className="font-bold text-slate-900 block truncate max-w-[160px]">
+                              {rec.activityName}
+                            </span>
+                            <span className="text-[10px] text-slate-500 font-mono tabular-nums">
+                              {rec.attendeesCount} participantes
+                            </span>
+                          </td>
 
-                        {/* Punctuality */}
-                        <td className="py-3 px-2 text-center whitespace-nowrap">
-                          <span
-                            className={`px-2 py-0.5 rounded-full text-[10px] font-bold inline-flex items-center ${
-                              isLate
-                                ? 'bg-rose-50 text-rose-800 border border-rose-200'
-                                : isEarly
-                                ? 'bg-blue-50 text-blue-800 border border-blue-200'
-                                : 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                            }`}
-                          >
-                            {isLate
-                              ? `Retraso (${Math.abs(rec.punctualityDiffMinutes)}m)`
-                              : isEarly
-                              ? `Anticipado`
-                              : 'A tiempo'}
-                          </span>
-                        </td>
-
-                        {/* GPS */}
-                        <td className="py-3 px-2 text-center whitespace-nowrap">
-                          <span
-                            className={`font-mono text-[10px] px-1.5 py-0.5 rounded font-bold ${
-                              rec.checkInGps.isWithinGeofence
-                                ? 'bg-emerald-50 text-emerald-800 border border-emerald-200'
-                                : 'bg-rose-50 text-rose-800 border border-rose-200'
-                            }`}
-                            title={`Distancia a sede: ${formatDistance(rec.checkInGps.distanceToSedeMeters)}`}
-                          >
-                            {formatDistance(rec.checkInGps.distanceToSedeMeters)}
-                          </span>
-                        </td>
-
-                        {/* Evidence thumbnails */}
-                        <td className="py-3 px-2 text-center whitespace-nowrap">
-                          <div className="flex items-center justify-center space-x-1.5">
-                            {rec.facialVerification && (
-                              <img
-                                src={rec.facialVerification.facePhotoUrl}
-                                alt="Rostro"
-                                className="w-7 h-7 rounded-md object-cover border-2 border-emerald-500 cursor-pointer hover:scale-125 transition shadow-xs"
-                                onClick={() => setSelectedRecordForDetail(rec)}
-                                title={`Rostro Verificado: ${rec.facialVerification.confidenceScore}%`}
-                              />
-                            )}
-                            <img
-                              src={rec.photoUrl}
-                              alt="Foto Entrada"
-                              className="w-7 h-7 rounded-md object-cover border border-slate-300 cursor-pointer hover:scale-125 transition shadow-xs"
-                              onClick={() => setSelectedRecordForDetail(rec)}
-                              title="Foto de entrada con sello"
-                            />
-                            {rec.exitPhotoUrl && (
-                              <img
-                                src={rec.exitPhotoUrl}
-                                alt="Foto Salida"
-                                className="w-7 h-7 rounded-md object-cover border-2 border-red-500 cursor-pointer hover:scale-125 transition shadow-xs"
-                                onClick={() => setSelectedRecordForDetail(rec)}
-                                title="Foto de salida con sello"
-                              />
-                            )}
-                          </div>
-                        </td>
-
-                        {/* Action buttons */}
-                        <td className="py-3 px-3 text-right whitespace-nowrap">
-                          <div className="flex items-center justify-end space-x-1">
-                            <button
-                              type="button"
-                              onClick={() => setSelectedRecordForDetail(rec)}
-                              className="p-1.5 rounded-lg bg-slate-100 hover:bg-red-50 text-slate-700 hover:text-red-600 border border-slate-200 transition"
-                              title="Ver Acta Completa de Asistencia"
+                          {/* Punctuality */}
+                          <td className="py-3 px-2 text-center whitespace-nowrap">
+                            <span
+                              className={`text-[11px] font-bold ${
+                                isLate
+                                  ? 'text-rose-700'
+                                  : isEarly
+                                  ? 'text-blue-700'
+                                  : 'text-emerald-700'
+                              }`}
                             >
-                              <Eye className="w-3.5 h-3.5" />
-                            </button>
+                              {isLate
+                                ? `Retraso (${Math.abs(rec.punctualityDiffMinutes)}m)`
+                                : isEarly
+                                ? 'Anticipado'
+                                : 'A tiempo'}
+                            </span>
+                          </td>
 
-                            {confirmDeleteRecordId === rec.id ? (
-                              <div className="inline-flex items-center gap-1">
+                          {/* GPS */}
+                          <td className="py-3 px-2 text-center whitespace-nowrap">
+                            <span
+                              className={`font-mono tabular-nums text-[11px] font-bold ${
+                                rec.checkInGps.isWithinGeofence
+                                  ? 'text-emerald-700'
+                                  : 'text-rose-700'
+                              }`}
+                              title={`Distancia a sede: ${formatDistance(
+                                rec.checkInGps.distanceToSedeMeters
+                              )}`}
+                            >
+                              {formatDistance(rec.checkInGps.distanceToSedeMeters)}
+                            </span>
+                          </td>
+
+                          {/* Evidence thumbnails (click opens Lightbox on exact photo) */}
+                          <td className="py-3 px-2 text-center whitespace-nowrap">
+                            <div className="flex items-center justify-center space-x-1.5">
+                              {rec.facialVerification && (
                                 <button
                                   type="button"
-                                  onClick={() => {
-                                    onDeleteRecord(rec.id);
-                                    setConfirmDeleteRecordId(null);
-                                  }}
-                                  className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-bold transition"
+                                  onClick={() =>
+                                    setLightboxState({ record: rec, slot: 'facial' })
+                                  }
+                                  className="relative group cursor-pointer"
+                                  title={`Ampliar Biometría Facial (${rec.facialVerification.confidenceScore}%)`}
                                 >
-                                  Eliminar
+                                  <img
+                                    src={rec.facialVerification.facePhotoUrl}
+                                    alt="Rostro"
+                                    referrerPolicy="no-referrer"
+                                    className="w-8 h-8 rounded-md object-cover border-2 border-emerald-500 group-hover:scale-110 transition"
+                                  />
                                 </button>
-                                <button
-                                  type="button"
-                                  onClick={() => setConfirmDeleteRecordId(null)}
-                                  className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold transition"
-                                >
-                                  Cancelar
-                                </button>
-                              </div>
-                            ) : (
+                              )}
                               <button
                                 type="button"
-                                onClick={() => setConfirmDeleteRecordId(rec.id)}
-                                className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-700 hover:text-rose-600 border border-slate-200 transition"
-                                title="Eliminar Registro"
+                                onClick={() => setLightboxState({ record: rec, slot: 'entry' })}
+                                className="relative group cursor-pointer"
+                                title="Ampliar Foto de Entrada con Sello"
                               >
-                                <Trash2 className="w-3.5 h-3.5" />
+                                <img
+                                  src={rec.photoUrl}
+                                  alt="Foto Entrada"
+                                  referrerPolicy="no-referrer"
+                                  className="w-8 h-8 rounded-md object-cover border border-slate-300 group-hover:scale-110 transition"
+                                />
                               </button>
-                            )}
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
+                              {rec.exitPhotoUrl && (
+                                <button
+                                  type="button"
+                                  onClick={() => setLightboxState({ record: rec, slot: 'exit' })}
+                                  className="relative group cursor-pointer"
+                                  title="Ampliar Foto de Salida con Sello"
+                                >
+                                  <img
+                                    src={rec.exitPhotoUrl}
+                                    alt="Foto Salida"
+                                    referrerPolicy="no-referrer"
+                                    className="w-8 h-8 rounded-md object-cover border-2 border-red-500 group-hover:scale-110 transition"
+                                  />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+
+                          {/* Action buttons */}
+                          <td className="py-3 px-3 text-right whitespace-nowrap">
+                            <div className="flex items-center justify-end space-x-1">
+                              <button
+                                type="button"
+                                onClick={() => setLightboxState({ record: rec, slot: 'entry' })}
+                                className="p-1.5 rounded-lg bg-slate-900 hover:bg-red-600 text-white transition cursor-pointer"
+                                title="Visualizar Fotografías de Evidencia"
+                              >
+                                <ZoomIn className="w-3.5 h-3.5" />
+                              </button>
+
+                              <button
+                                type="button"
+                                onClick={() => setSelectedRecordForDetail(rec)}
+                                className="p-1.5 rounded-lg bg-slate-100 hover:bg-red-50 text-slate-700 hover:text-red-600 border border-slate-200 transition cursor-pointer"
+                                title="Ver / Imprimir Acta Completa de Asistencia"
+                              >
+                                <Eye className="w-3.5 h-3.5" />
+                              </button>
+
+                              {confirmDeleteRecordId === rec.id ? (
+                                <div className="inline-flex items-center gap-1">
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      onDeleteRecord(rec.id);
+                                      setConfirmDeleteRecordId(null);
+                                    }}
+                                    className="px-2 py-1 rounded-lg bg-rose-600 hover:bg-rose-700 text-white text-[10px] font-bold transition cursor-pointer"
+                                  >
+                                    Eliminar
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => setConfirmDeleteRecordId(null)}
+                                    className="px-2 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-700 text-[10px] font-semibold transition cursor-pointer"
+                                  >
+                                    Cancelar
+                                  </button>
+                                </div>
+                              ) : (
+                                <button
+                                  type="button"
+                                  onClick={() => setConfirmDeleteRecordId(rec.id)}
+                                  className="p-1.5 rounded-lg bg-slate-100 hover:bg-rose-50 text-slate-700 hover:text-rose-600 border border-slate-200 transition cursor-pointer"
+                                  title="Eliminar Registro de Firestore"
+                                >
+                                  <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
             </div>
-          </div>
+          ) : (
+            /* Photo Evidence Gallery Mode */
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+              {filteredLogRecords.map((rec) => {
+                const isLate = rec.punctualityStatus === 'con_retraso';
+                const isNonCompliantRecord = rec.status === 'incumplido';
+
+                return (
+                  <div
+                    key={rec.id}
+                    className="bg-white border border-slate-200 rounded-2xl p-4 space-y-3"
+                  >
+                    <div className="flex items-start justify-between gap-2 pb-2.5 border-b border-slate-100">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+                          <span className="font-mono tabular-nums font-bold text-slate-900">
+                            {rec.date}
+                          </span>
+                          <span className="text-slate-300">·</span>
+                          <span className="font-bold text-slate-900 truncate">
+                            {rec.companyName}
+                          </span>
+                          <span className="text-slate-400">/</span>
+                          <span className="text-slate-600 font-medium truncate">
+                            {rec.sedeName}
+                          </span>
+                        </div>
+                        <p className="text-[11px] text-slate-500 mt-0.5">
+                          Entrenador: <strong className="text-slate-800">{rec.trainerName}</strong>{' '}
+                          · {rec.activityName} ({rec.locationArea})
+                        </p>
+                      </div>
+
+                      <div className="text-right shrink-0 text-[11px]">
+                        <span
+                          className={`font-bold block ${
+                            isNonCompliantRecord
+                              ? 'text-rose-700'
+                              : rec.status === 'completado'
+                              ? 'text-emerald-700'
+                              : 'text-amber-700'
+                          }`}
+                        >
+                          {isNonCompliantRecord
+                            ? 'Incumplida'
+                            : rec.status === 'completado'
+                            ? 'Completada'
+                            : 'En Curso'}
+                        </span>
+                        <span
+                          className={`font-mono tabular-nums text-[10px] ${
+                            isLate ? 'text-rose-600 font-semibold' : 'text-slate-500'
+                          }`}
+                        >
+                          Ent {rec.checkInTime}
+                          {rec.checkOutTime ? ` · Sal ${rec.checkOutTime}` : ''}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* 3 Evidence Photo Slots */}
+                    <div className="grid grid-cols-3 gap-2.5">
+                      {/* Slot 1: Entry */}
+                      <button
+                        type="button"
+                        onClick={() => setLightboxState({ record: rec, slot: 'entry' })}
+                        className="group text-left space-y-1 cursor-pointer"
+                      >
+                        <span className="text-[10px] font-semibold text-slate-600 block truncate">
+                          1. Entrada Sede
+                        </span>
+                        <div className="relative h-28 rounded-xl overflow-hidden bg-slate-900 border border-slate-200">
+                          <img
+                            src={rec.photoUrl}
+                            alt="Entrada"
+                            referrerPolicy="no-referrer"
+                            className="w-full h-full object-cover group-hover:scale-105 transition duration-150"
+                          />
+                          <span className="absolute bottom-1.5 right-1.5 p-1 rounded bg-slate-950/75 text-white opacity-90 group-hover:bg-red-600 transition">
+                            <ZoomIn className="w-3 h-3" />
+                          </span>
+                        </div>
+                      </button>
+
+                      {/* Slot 2: Exit */}
+                      {rec.exitPhotoUrl ? (
+                        <button
+                          type="button"
+                          onClick={() => setLightboxState({ record: rec, slot: 'exit' })}
+                          className="group text-left space-y-1 cursor-pointer"
+                        >
+                          <span className="text-[10px] font-semibold text-slate-600 block truncate">
+                            2. Salida Sede
+                          </span>
+                          <div className="relative h-28 rounded-xl overflow-hidden bg-slate-900 border border-slate-200">
+                            <img
+                              src={rec.exitPhotoUrl}
+                              alt="Salida"
+                              referrerPolicy="no-referrer"
+                              className="w-full h-full object-cover group-hover:scale-105 transition duration-150"
+                            />
+                            <span className="absolute bottom-1.5 right-1.5 p-1 rounded bg-slate-950/75 text-white opacity-90 group-hover:bg-red-600 transition">
+                              <ZoomIn className="w-3 h-3" />
+                            </span>
+                          </div>
+                        </button>
+                      ) : (
+                        <div className="space-y-1">
+                          <span className="text-[10px] font-semibold text-slate-400 block truncate">
+                            2. Salida Sede
+                          </span>
+                          <div className="h-28 rounded-xl border border-dashed border-slate-200 bg-slate-50 flex items-center justify-center p-2 text-center text-[10px] text-slate-400">
+                            {rec.status === 'en_curso' ? 'En curso' : 'Sin foto salida'}
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Slot 3: Facial Biometric */}
+                      {rec.facialVerification?.facePhotoUrl ? (
+                        <button
+                          type="button"
+                          onClick={() => setLightboxState({ record: rec, slot: 'facial' })}
+                          className="group text-left space-y-1 cursor-pointer"
+                        >
+                          <span className="text-[10px] font-semibold text-emerald-700 block truncate font-mono tabular-nums">
+                            3. Rostro ({rec.facialVerification.confidenceScore}%)
+                          </span>
+                          <div className="relative h-28 rounded-xl overflow-hidden bg-slate-900 border border-emerald-400">
+                            <img
+                              src={rec.facialVerification.facePhotoUrl}
+                              alt="Biometría Facial"
+                              referrerPolicy="no-referrer"
+                              className="w-full h-full object-cover group-hover:scale-105 transition duration-150"
+                            />
+                            <span className="absolute bottom-1.5 right-1.5 p-1 rounded bg-slate-950/75 text-white opacity-90 group-hover:bg-red-600 transition">
+                              <ZoomIn className="w-3 h-3" />
+                            </span>
+                          </div>
+                        </button>
+                      ) : (
+                        <div className="space-y-1">
+                          <span className="text-[10px] font-semibold text-slate-400 block truncate">
+                            3. Biometría
+                          </span>
+                          <div className="h-28 rounded-xl border border-dashed border-slate-200 bg-slate-50 flex items-center justify-center p-2 text-center text-[10px] text-slate-400">
+                            Sin captura
+                          </div>
+                        </div>
+                      )}
+                    </div>
+
+                    <div className="flex items-center justify-between gap-2 pt-1 text-[11px] text-slate-500">
+                      <span className="font-mono tabular-nums">
+                        GPS {formatDistance(rec.checkInGps.distanceToSedeMeters)} ·{' '}
+                        {rec.attendeesCount} asistentes
+                      </span>
+                      <div className="flex items-center gap-1.5">
+                        <button
+                          type="button"
+                          onClick={() => setLightboxState({ record: rec, slot: 'entry' })}
+                          className="px-2.5 py-1 rounded-lg bg-slate-900 hover:bg-red-600 text-white font-bold transition cursor-pointer whitespace-nowrap"
+                        >
+                          Ver Fotos
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setSelectedRecordForDetail(rec)}
+                          className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-200 font-bold transition cursor-pointer whitespace-nowrap"
+                        >
+                          Acta / Auditar
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
         </div>
       )}
 
@@ -1716,6 +2133,21 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         activityCatalog={activityCatalog}
         initialTrainerId={pdfAssignmentsTrainerTarget}
         initialMonth={selectedMonth}
+      />
+
+      <PdfEvidenceLogModal
+        isOpen={isEvidencePdfModalOpen}
+        onClose={() => setIsEvidencePdfModalOpen(false)}
+        records={filteredLogRecords}
+        filterSummaryLabel={logFilterSummaryLabel}
+        onInspectPhoto={(rec, slot) => setLightboxState({ record: rec, slot })}
+      />
+
+      <EvidencePhotoLightbox
+        record={lightboxState?.record || null}
+        initialSlot={lightboxState?.slot || 'entry'}
+        onClose={() => setLightboxState(null)}
+        onOpenFullCertificate={(rec) => setSelectedRecordForDetail(rec)}
       />
     </div>
   );
