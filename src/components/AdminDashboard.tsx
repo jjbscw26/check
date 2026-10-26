@@ -89,6 +89,7 @@ interface AdminDashboardProps {
   onUpdateTrainer: (trainer: Trainer) => void;
   onDeleteTrainer: (id: string) => void;
   onAddAssignment: (asg: ClassAssignment) => void;
+  onAddAssignmentsBatch?: (asgs: ClassAssignment[]) => void;
   onUpdateAssignment: (asg: ClassAssignment) => void;
   onDeleteAssignment: (id: string) => void;
   onAddCatalogItem: (item: ActivityCatalogItem) => void;
@@ -120,6 +121,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onUpdateTrainer,
   onDeleteTrainer,
   onAddAssignment,
+  onAddAssignmentsBatch,
   onUpdateAssignment,
   onDeleteAssignment,
   onAddCatalogItem,
@@ -1190,6 +1192,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             setAssignmentInitialPreset(preset || null);
             setIsAssignmentModalOpen(true);
           }}
+          onAddAssignmentsBatch={onAddAssignmentsBatch}
           onEditAssignment={(asg) => {
             setEditingAssignment(asg);
             setAssignmentInitialPreset(null);
@@ -2294,6 +2297,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         trainers={trainers}
         companies={companies}
         activityCatalog={activityCatalog}
+        existingAssignments={assignments}
         isOpen={isAssignmentModalOpen}
         initialPreset={assignmentInitialPreset}
         onAddCatalogItem={onAddCatalogItem}
@@ -2308,6 +2312,13 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             onUpdateAssignment(savedAsg);
           } else {
             onAddAssignment(savedAsg);
+          }
+        }}
+        onSaveBatch={(batchAsgs) => {
+          if (onAddAssignmentsBatch) {
+            onAddAssignmentsBatch(batchAsgs);
+          } else {
+            batchAsgs.forEach((item) => onAddAssignment(item));
           }
         }}
       />

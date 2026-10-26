@@ -9,7 +9,25 @@ import {
   normalizeActivityType,
   Trainer,
 } from '../types';
-import { Calendar, Clock, Activity, Building2, User, MapPin, Settings2, Timer, Minus, Plus, Lock, Unlock, Ban } from 'lucide-react';
+import {
+  Calendar,
+  CalendarDays,
+  ChevronLeft,
+  ChevronRight,
+  Check,
+  Clock,
+  Activity,
+  Building2,
+  User,
+  MapPin,
+  Settings2,
+  Timer,
+  Minus,
+  Plus,
+  Lock,
+  Unlock,
+  Ban,
+} from 'lucide-react';
 import {
   getDefaultDurationMinutes,
   getAssignmentDurationMinutes,
@@ -20,7 +38,16 @@ import {
   combineHoursAndMinutes,
   formatDurationHoursMinutes,
 } from '../utils/sessionAlarm';
-import { formatLocalYYYYMMDD } from '../utils/assignmentLock';
+import { doesAssignmentApplyToDate, formatLocalYYYYMMDD } from '../utils/assignmentLock';
+import {
+  WEEKDAY_MONDAY_SHORT_ES,
+  buildMonthGridCells,
+  buildMonthlyBatchAssignments,
+  getMonthDatesByPattern,
+  hasMatchingAssignmentOnDate,
+  shiftYearMonth,
+  toggleWeekdayDatesInMonth,
+} from '../utils/monthlyAssignmentHelper';
 import {
   buildCatalogItemFromSpecialty,
   cleanDisciplineLabel,
@@ -32,11 +59,17 @@ import {
 
 export interface AssignmentPreset {
   frequency?: 'semanal' | 'mensual' | 'fecha_unica';
+  multiMonthMode?: boolean;
+  targetMonth?: string; // YYYY-MM
+  initialDates?: string[];
   dayOfWeek?: number;
   dayOfMonth?: number;
   date?: string;
   trainerId?: string;
   companyId?: string;
+  sedeId?: string;
+  activityType?: ActivityType;
+  activityName?: string;
   time?: string;
   durationMinutes?: number;
 }
@@ -45,10 +78,12 @@ interface AdminAssignmentModalProps {
   assignment: ClassAssignment | null; // null if creating a new one
   trainers: Trainer[];
   companies: Company[];
+  existingAssignments?: ClassAssignment[];
   activityCatalog?: ActivityCatalogItem[];
   isOpen: boolean;
   onClose: () => void;
   onSave: (assignment: ClassAssignment) => void;
+  onSaveBatch?: (assignments: ClassAssignment[]) => void;
   onAddCatalogItem?: (item: ActivityCatalogItem) => void;
   onManageActivityTypes?: () => void;
   initialPreset?: AssignmentPreset | null;
@@ -120,10 +155,12 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
   assignment,
   trainers,
   companies,
+  existingAssignments = [],
   activityCatalog = [],
   isOpen,
   onClose,
   onSave,
+  onSaveBatch,
   onAddCatalogItem,
   onManageActivityTypes,
   initialPreset,
@@ -136,15 +173,23 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
   };
 
   const effectivePausaOptions = getEffectiveOptionsForType('pausa_activa');
+  const todayLocalStr = formatLocalYYYYMMDD(new Date());
 
   const [trainerId, setTrainerId] = useState(trainers[0]?.id || '');
   const [companyId, setCompanyId] = useState(companies[0]?.id || '');
   const [sedeId, setSedeId] = useState(companies[0]?.sedes[0]?.id || '');
 
-  const [frequency, setFrequency] = useState<'semanal' | 'mensual' | 'fecha_unica'>('semanal');
+  const [scheduleMode, setScheduleMode] = useState<
+    'semanal' | 'mensual' | 'fecha_unica' | 'dias_mes'
+  >('semanal');
   const [dayOfWeek, setDayOfWeek] = useState<number>(1);
   const [dayOfMonth, setDayOfMonth] = useState<number>(15);
   const [specificDate, setSpecificDate] = useState<string>(() => formatLocalYYYYMMDD(new Date()));
+  const [targetMonth, setTargetMonth] = useState<string>(() =>
+    formatLocalYYYYMMDD(new Date()).slice(0, 7)
+  );
+  const [selectedMonthDates, setSelectedMonthDates] = useState<string[]>([]);
+  const [multiDayError, setMultiDayError] = useState<string | null>(null);
   const [time, setTime] = useState<string>(() => getUpcomingDefaultTimeHHMM());
   const [durationInput, setDurationInput] = useState<string>('20');
 
@@ -170,10 +215,13 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
       setTrainerId(assignment.trainerId);
       setCompanyId(assignment.companyId);
       setSedeId(assignment.sedeId);
-      setFrequency(assignment.frequency || 'semanal');
+      setScheduleMode(assignment.frequency || 'semanal');
       setDayOfWeek(assignment.dayOfWeek || 1);
       setDayOfMonth(assignment.dayOfMonth || 15);
-      setSpecificDate(assignment.date || formatLocalYYYYMMDD(new Date()));
+      const asgDate = assignment.date || formatLocalYYYYMMDD(new Date());
+      setSpecificDate(asgDate);
+      setTargetMonth(asgDate.slice(0, 7));
+      setSelectedMonthDates([]);
       setTime((assignment.time || '09:00').slice(0, 5));
       const normType = normalizeActivityType(assignment.activityType);
       setActivityType(normType);
@@ -188,21 +236,47 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
       setClosed(Boolean(assignment.closed));
       setNonCompliant(Boolean(assignment.nonCompliant));
     } else {
-      const defaultActName = effectivePausaOptions[0];
+      const presetActType: ActivityType = initialPreset?.activityType
+        ? normalizeActivityType(initialPreset.activityType)
+        : 'pausa_activa';
+      const defaultActName =
+        initialPreset?.activityName || getEffectiveOptionsForType(presetActType)[0];
       const defaultDur =
         initialPreset?.durationMinutes ||
-        getDefaultDurationMinutes('pausa_activa', defaultActName, activityCatalog);
+        getDefaultDurationMinutes(presetActType, defaultActName, activityCatalog);
+      const presetDate = initialPreset?.date || formatLocalYYYYMMDD(new Date());
+      const presetMonth = initialPreset?.targetMonth || presetDate.slice(0, 7);
 
       setTrainerId(initialPreset?.trainerId || trainers[0]?.id || '');
-      const presetComp = (initialPreset?.companyId && companies.find(c => c.id === initialPreset.companyId)) || companies[0];
+      const presetComp =
+        (initialPreset?.companyId && companies.find((c) => c.id === initialPreset.companyId)) ||
+        companies[0];
+      const resolvedPresetSedeId =
+        (initialPreset?.sedeId &&
+          presetComp?.sedes.some((s) => s.id === initialPreset.sedeId) &&
+          initialPreset.sedeId) ||
+        presetComp?.sedes[0]?.id ||
+        '';
       setCompanyId(presetComp?.id || '');
-      setSedeId(presetComp?.sedes[0]?.id || '');
-      setFrequency(initialPreset?.frequency || 'semanal');
+      setSedeId(resolvedPresetSedeId);
+      setScheduleMode(
+        initialPreset?.multiMonthMode
+          ? 'dias_mes'
+          : initialPreset?.frequency || 'semanal'
+      );
       setDayOfWeek(initialPreset?.dayOfWeek ?? 1);
       setDayOfMonth(initialPreset?.dayOfMonth ?? 15);
-      setSpecificDate(initialPreset?.date || formatLocalYYYYMMDD(new Date()));
+      setSpecificDate(presetDate);
+      setTargetMonth(presetMonth);
+      setSelectedMonthDates(
+        initialPreset?.initialDates && initialPreset.initialDates.length > 0
+          ? initialPreset.initialDates
+          : initialPreset?.multiMonthMode && initialPreset?.date
+          ? [initialPreset.date]
+          : []
+      );
       setTime((initialPreset?.time || getUpcomingDefaultTimeHHMM()).slice(0, 5));
-      setActivityType('pausa_activa');
+      setActivityType(presetActType);
       setActivityName(defaultActName);
       setDurationInput(String(defaultDur));
       setLocationArea('Piso 4 - Sala SUM');
@@ -212,6 +286,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
       setClosed(false);
       setNonCompliant(false);
     }
+    setMultiDayError(null);
     setShowQuickCreateDiscipline(false);
     setNewDisciplineName('');
     setQuickCreatedNotice(null);
@@ -238,12 +313,77 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
     splitMinutesToHoursAndMinutes(resolvedDurationMinutes);
   const estimatedEndTime = calculateEndTimeHHMM(normalizedTime, resolvedDurationMinutes);
 
+  const monthGrid = buildMonthGridCells(targetMonth);
+  const selectedMonthDatesSet = new Set(selectedMonthDates);
+
+  const toggleDateInMonthSelection = (dateStr: string) => {
+    setMultiDayError(null);
+    setSelectedMonthDates((prev) => {
+      const next = new Set(prev);
+      if (next.has(dateStr)) {
+        next.delete(dateStr);
+      } else {
+        next.add(dateStr);
+      }
+      return Array.from(next).sort();
+    });
+  };
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
 
     const trainer = trainers.find((t) => t.id === trainerId) || trainers[0];
     const company = companies.find((c) => c.id === companyId) || companies[0];
     if (!trainer || !company) return;
+
+    if (onAddCatalogItem && !isDisciplineRepresentedInCatalog(activityName, activityCatalog)) {
+      const autoCatalogItem = buildCatalogItemFromSpecialty(activityName, {
+        activityType,
+        durationMinutes: resolvedDurationMinutes,
+      });
+      if (autoCatalogItem) {
+        onAddCatalogItem(autoCatalogItem);
+      }
+    }
+
+    // Batch mode: Marcar Días del Mes -> creates one ClassAssignment per marked day in the trainer's calendar
+    if (!assignment && scheduleMode === 'dias_mes') {
+      if (selectedMonthDates.length === 0) {
+        setMultiDayError(
+          'Marca al menos un día en el calendario mensual para cargar la actividad al entrenador.'
+        );
+        return;
+      }
+
+      const { created } = buildMonthlyBatchAssignments({
+        dates: selectedMonthDates,
+        existingAssignments,
+        trainer,
+        company,
+        sedeId,
+        time: normalizedTime,
+        durationMinutes: resolvedDurationMinutes,
+        activityType,
+        activityName,
+        locationArea,
+        expectedAttendees: Math.max(0, parseInt(expectedAttendeesInput, 10) || 0),
+        notes,
+        active,
+      });
+
+      if (created.length > 0) {
+        if (onSaveBatch) {
+          onSaveBatch(created);
+        } else {
+          created.forEach((item) => onSave(item));
+        }
+      }
+      onClose();
+      return;
+    }
+
+    const frequency: 'semanal' | 'mensual' | 'fecha_unica' =
+      scheduleMode === 'dias_mes' ? 'fecha_unica' : scheduleMode;
 
     const sede = company.sedes.find((s) => s.id === sedeId) || company.sedes[0];
     const fallbackCompanySlug = company.id.replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 80);
@@ -308,16 +448,6 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
       missedDates: Array.from(existingMissedDates),
       reopenedDates: Array.from(existingReopenedDates),
     };
-
-    if (onAddCatalogItem && !isDisciplineRepresentedInCatalog(activityName, activityCatalog)) {
-      const autoCatalogItem = buildCatalogItemFromSpecialty(activityName, {
-        activityType,
-        durationMinutes: resolvedDurationMinutes,
-      });
-      if (autoCatalogItem) {
-        onAddCatalogItem(autoCatalogItem);
-      }
-    }
 
     onSave(saved);
     onClose();
@@ -468,19 +598,22 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
             </div>
           </div>
 
-          {/* Frequency (Semanal / Mensual / Fecha Única) + Duration */}
+          {/* Frequency (Semanal / Mensual / Fecha Única / Marcar Días del Mes) + Duration */}
           <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
             <span className="font-bold text-slate-900 block">
-              Frecuencia, Horario y Duración de la Asignación
+              Frecuencia, Días del Mes, Horario y Duración
             </span>
 
-            <div className="grid grid-cols-3 gap-2">
+            <div className={`grid gap-2 ${assignment ? 'grid-cols-3' : 'grid-cols-2 sm:grid-cols-4'}`}>
               <button
                 type="button"
-                onClick={() => setFrequency('semanal')}
-                className={`py-2 px-2 text-xs font-bold rounded-xl border text-center transition ${
-                  frequency === 'semanal'
-                    ? 'bg-red-600 text-white shadow-xs'
+                onClick={() => {
+                  setScheduleMode('semanal');
+                  setMultiDayError(null);
+                }}
+                className={`py-2 px-2 text-xs font-bold rounded-xl border text-center transition whitespace-nowrap cursor-pointer ${
+                  scheduleMode === 'semanal'
+                    ? 'bg-red-600 border-red-600 text-white shadow-xs'
                     : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-100'
                 }`}
               >
@@ -489,10 +622,13 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
 
               <button
                 type="button"
-                onClick={() => setFrequency('mensual')}
-                className={`py-2 px-2 text-xs font-bold rounded-xl border text-center transition ${
-                  frequency === 'mensual'
-                    ? 'bg-red-600 text-white shadow-xs'
+                onClick={() => {
+                  setScheduleMode('mensual');
+                  setMultiDayError(null);
+                }}
+                className={`py-2 px-2 text-xs font-bold rounded-xl border text-center transition whitespace-nowrap cursor-pointer ${
+                  scheduleMode === 'mensual'
+                    ? 'bg-red-600 border-red-600 text-white shadow-xs'
                     : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-100'
                 }`}
               >
@@ -501,81 +637,365 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
 
               <button
                 type="button"
-                onClick={() => setFrequency('fecha_unica')}
-                className={`py-2 px-2 text-xs font-bold rounded-xl border text-center transition ${
-                  frequency === 'fecha_unica'
-                    ? 'bg-red-600 text-white shadow-xs'
+                onClick={() => {
+                  setScheduleMode('fecha_unica');
+                  setMultiDayError(null);
+                }}
+                className={`py-2 px-2 text-xs font-bold rounded-xl border text-center transition whitespace-nowrap cursor-pointer ${
+                  scheduleMode === 'fecha_unica'
+                    ? 'bg-red-600 border-red-600 text-white shadow-xs'
                     : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-100'
                 }`}
               >
                 Fecha Única
               </button>
+
+              {!assignment && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setScheduleMode('dias_mes');
+                    setMultiDayError(null);
+                  }}
+                  className={`py-2 px-2 text-xs font-bold rounded-xl border text-center transition flex items-center justify-center gap-1 whitespace-nowrap cursor-pointer ${
+                    scheduleMode === 'dias_mes'
+                      ? 'bg-slate-900 border-slate-900 text-white shadow-xs'
+                      : 'bg-white border-slate-300 text-slate-700 hover:bg-slate-100'
+                  }`}
+                >
+                  <CalendarDays className="w-3.5 h-3.5 shrink-0 text-red-500" />
+                  <span>Marcar Días del Mes</span>
+                </button>
+              )}
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
-              {frequency === 'semanal' && (
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                    Día de la Semana *
-                  </label>
-                  <select
-                    value={dayOfWeek}
-                    onChange={(e) => setDayOfWeek(parseInt(e.target.value) || 1)}
-                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 focus:outline-none focus:border-red-500"
-                  >
-                    {DAYS_OF_WEEK.map((d) => (
-                      <option key={d.value} value={d.value}>
-                        Cada {d.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-              )}
+            {scheduleMode === 'dias_mes' && !assignment ? (
+              <div className="space-y-3 pt-1">
+                {/* Month Picker + Start Time Row */}
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                      Mes a Programar *
+                    </label>
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTargetMonth((prev) => shiftYearMonth(prev, -1));
+                          setSelectedMonthDates([]);
+                        }}
+                        className="p-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 transition cursor-pointer"
+                        title="Mes anterior"
+                      >
+                        <ChevronLeft className="w-4 h-4" />
+                      </button>
+                      <input
+                        type="month"
+                        value={targetMonth}
+                        onChange={(e) => {
+                          if (!e.target.value) return;
+                          setTargetMonth(e.target.value);
+                          setSelectedMonthDates([]);
+                        }}
+                        className="flex-1 bg-white border border-slate-300 rounded-xl px-2.5 py-1.5 text-xs text-slate-900 font-mono tabular-nums font-bold focus:outline-none focus:border-red-500"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setTargetMonth((prev) => shiftYearMonth(prev, 1));
+                          setSelectedMonthDates([]);
+                        }}
+                        className="p-1.5 rounded-lg bg-white border border-slate-300 hover:bg-slate-100 text-slate-700 transition cursor-pointer"
+                        title="Mes siguiente"
+                      >
+                        <ChevronRight className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
 
-              {frequency === 'mensual' && (
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                    Día del Mes (1 al 31) *
-                  </label>
-                  <input
-                    type="number"
-                    min={1}
-                    max={31}
-                    value={dayOfMonth}
-                    onChange={(e) => setDayOfMonth(parseInt(e.target.value) || 1)}
-                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono focus:outline-none focus:border-red-500"
-                  />
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-1 flex items-center">
+                      <Clock className="w-3.5 h-3.5 mr-1 text-red-600" />
+                      Hora de Inicio Programada *
+                    </label>
+                    <input
+                      type="time"
+                      required
+                      value={time}
+                      onChange={(e) => setTime(e.target.value)}
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono tabular-nums font-bold focus:outline-none focus:border-red-500"
+                    />
+                  </div>
                 </div>
-              )}
 
-              {frequency === 'fecha_unica' && (
-                <div>
-                  <label className="block text-[11px] font-semibold text-slate-700 mb-1">
-                    Fecha Específica *
-                  </label>
-                  <input
-                    type="date"
-                    value={specificDate}
-                    onChange={(e) => setSpecificDate(e.target.value)}
-                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono focus:outline-none focus:border-red-500"
-                  />
+                {/* Quick Month Day Pattern Selectors */}
+                <div className="bg-white border border-slate-200 rounded-xl p-3 space-y-2.5">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <span className="text-[11px] font-bold text-slate-800">
+                      Marca los días de {monthGrid.monthName} {monthGrid.year} para {selectedTrainer?.name || 'el entrenador'}:
+                    </span>
+                    <span className="text-[11px] font-mono tabular-nums font-bold text-red-600">
+                      {selectedMonthDates.length} {selectedMonthDates.length === 1 ? 'día marcado' : 'días marcados'}
+                    </span>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMultiDayError(null);
+                        setSelectedMonthDates(getMonthDatesByPattern(targetMonth, 'weekdays', todayLocalStr));
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-red-50 hover:text-red-700 border border-slate-200 text-[11px] font-semibold text-slate-700 transition whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Lun a Vie (Todo el mes)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMultiDayError(null);
+                        setSelectedMonthDates(getMonthDatesByPattern(targetMonth, 'mwf', todayLocalStr));
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-red-50 hover:text-red-700 border border-slate-200 text-[11px] font-semibold text-slate-700 transition whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Lun · Mié · Vie
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMultiDayError(null);
+                        setSelectedMonthDates(getMonthDatesByPattern(targetMonth, 'tth', todayLocalStr));
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-red-50 hover:text-red-700 border border-slate-200 text-[11px] font-semibold text-slate-700 transition whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Mar · Jue
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMultiDayError(null);
+                        setSelectedMonthDates(getMonthDatesByPattern(targetMonth, 'saturdays', todayLocalStr));
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-red-50 hover:text-red-700 border border-slate-200 text-[11px] font-semibold text-slate-700 transition whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Sábados
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMultiDayError(null);
+                        setSelectedMonthDates(getMonthDatesByPattern(targetMonth, 'all', todayLocalStr));
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-red-50 hover:text-red-700 border border-slate-200 text-[11px] font-semibold text-slate-700 transition whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Todo el mes
+                    </button>
+                    {selectedMonthDates.length > 0 && (
+                      <button
+                        type="button"
+                        onClick={() => setSelectedMonthDates([])}
+                        className="px-2.5 py-1 rounded-lg bg-white hover:bg-rose-50 border border-rose-200 text-[11px] font-semibold text-rose-700 transition whitespace-nowrap shrink-0 cursor-pointer"
+                      >
+                        Limpiar
+                      </button>
+                    )}
+                  </div>
+
+                  {/* Interactive 7-Column Month Grid */}
+                  <div className="border border-slate-200 rounded-xl overflow-hidden">
+                    <div className="grid grid-cols-7 bg-slate-50 border-b border-slate-200">
+                      {WEEKDAY_MONDAY_SHORT_ES.map((shortLabel, idx) => {
+                        const dow = idx + 1;
+                        return (
+                          <button
+                            key={shortLabel}
+                            type="button"
+                            onClick={() => {
+                              setMultiDayError(null);
+                              setSelectedMonthDates((prev) =>
+                                toggleWeekdayDatesInMonth(targetMonth, prev, dow)
+                              );
+                            }}
+                            className="py-1.5 text-[10px] font-extrabold text-slate-600 hover:bg-red-50 hover:text-red-700 transition text-center cursor-pointer"
+                            title={`Marcar o desmarcar todos los ${shortLabel} del mes`}
+                          >
+                            {shortLabel}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <div className="grid grid-cols-7 divide-x divide-y divide-slate-100 bg-slate-100">
+                      {monthGrid.cells.map((cell, cIdx) => {
+                        const isMarked =
+                          cell.isCurrentMonth && selectedMonthDatesSet.has(cell.dateStr);
+                        const isTodayCell = cell.dateStr === todayLocalStr;
+                        const trainerExistingCount =
+                          cell.isCurrentMonth && selectedTrainer
+                            ? existingAssignments.filter(
+                                (a) =>
+                                  a.active !== false &&
+                                  a.trainerId === selectedTrainer.id &&
+                                  doesAssignmentApplyToDate(a, cell.dateStr)
+                              ).length
+                            : 0;
+                        const alreadySameSlot =
+                          cell.isCurrentMonth &&
+                          selectedTrainer &&
+                          selectedCompany &&
+                          hasMatchingAssignmentOnDate(existingAssignments, {
+                            trainerId: selectedTrainer.id,
+                            companyId: selectedCompany.id,
+                            sedeId,
+                            dateStr: cell.dateStr,
+                            time: normalizedTime,
+                            activityName,
+                          });
+
+                        if (!cell.isCurrentMonth) {
+                          return (
+                            <div
+                              key={`${cell.dateStr}_${cIdx}`}
+                              className="min-h-[44px] p-1 bg-slate-50/70 text-slate-300 text-[10px] font-mono tabular-nums"
+                            >
+                              {cell.dayNumber}
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <button
+                            key={`${cell.dateStr}_${cIdx}`}
+                            type="button"
+                            onClick={() => toggleDateInMonthSelection(cell.dateStr)}
+                            className={`min-h-[48px] p-1 flex flex-col items-center justify-between text-center transition cursor-pointer ${
+                              isMarked
+                                ? 'bg-red-600 text-white font-bold ring-1 ring-inset ring-red-700'
+                                : alreadySameSlot
+                                ? 'bg-emerald-50 text-emerald-900 hover:bg-emerald-100'
+                                : 'bg-white text-slate-800 hover:bg-red-50/60'
+                            }`}
+                            title={
+                              alreadySameSlot
+                                ? `${cell.dateStr}: Ya cuenta con esta misma actividad y horario asignado`
+                                : `${cell.dateStr}: Clic para ${isMarked ? 'desmarcar' : 'marcar con ' + activityName}`
+                            }
+                          >
+                            <div className="w-full flex items-center justify-between px-0.5">
+                              <span
+                                className={`text-[11px] font-mono tabular-nums font-bold ${
+                                  isMarked
+                                    ? 'text-white'
+                                    : isTodayCell
+                                    ? 'text-red-600 underline'
+                                    : 'text-slate-800'
+                                }`}
+                              >
+                                {cell.dayNumber}
+                              </span>
+                              {isMarked && <Check className="w-3 h-3 text-white shrink-0" />}
+                            </div>
+
+                            <span
+                              className={`text-[9px] leading-tight truncate w-full px-0.5 ${
+                                isMarked
+                                  ? 'text-red-100 font-semibold'
+                                  : alreadySameSlot
+                                  ? 'text-emerald-700 font-semibold'
+                                  : 'text-slate-400'
+                              }`}
+                            >
+                              {isMarked
+                                ? ACTIVITY_TYPE_LABELS[activityType].split(' ')[0]
+                                : alreadySameSlot
+                                ? 'Ya asig.'
+                                : trainerExistingCount > 0
+                                ? `${trainerExistingCount} asig.`
+                                : ''}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  <p className="text-[10px] text-slate-500">
+                    Haz clic sobre los días del calendario (o sobre el encabezado Lu–Do) para marcar todas las fechas del mes con <strong>{activityName}</strong> y cargarlas en el calendario de <strong>{selectedTrainer?.name || 'el entrenador'}</strong>.
+                  </p>
+
+                  {multiDayError && (
+                    <p className="text-[11px] font-bold text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2.5 py-1.5">
+                      {multiDayError}
+                    </p>
+                  )}
                 </div>
-              )}
-
-              <div>
-                <label className="block text-[11px] font-semibold text-slate-700 mb-1 flex items-center">
-                  <Clock className="w-3.5 h-3.5 mr-1 text-red-600" />
-                  Hora de Inicio Programada *
-                </label>
-                <input
-                  type="time"
-                  required
-                  value={time}
-                  onChange={(e) => setTime(e.target.value)}
-                  className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono focus:outline-none focus:border-red-500"
-                />
               </div>
-            </div>
+            ) : (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-1">
+                {scheduleMode === 'semanal' && (
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                      Día de la Semana *
+                    </label>
+                    <select
+                      value={dayOfWeek}
+                      onChange={(e) => setDayOfWeek(parseInt(e.target.value) || 1)}
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 focus:outline-none focus:border-red-500"
+                    >
+                      {DAYS_OF_WEEK.map((d) => (
+                        <option key={d.value} value={d.value}>
+                          Cada {d.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                {scheduleMode === 'mensual' && (
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                      Día del Mes (1 al 31) *
+                    </label>
+                    <input
+                      type="number"
+                      min={1}
+                      max={31}
+                      value={dayOfMonth}
+                      onChange={(e) => setDayOfMonth(parseInt(e.target.value) || 1)}
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono focus:outline-none focus:border-red-500"
+                    />
+                  </div>
+                )}
+
+                {scheduleMode === 'fecha_unica' && (
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                      Fecha Específica *
+                    </label>
+                    <input
+                      type="date"
+                      value={specificDate}
+                      onChange={(e) => setSpecificDate(e.target.value)}
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono focus:outline-none focus:border-red-500"
+                    />
+                  </div>
+                )}
+
+                <div>
+                  <label className="block text-[11px] font-semibold text-slate-700 mb-1 flex items-center">
+                    <Clock className="w-3.5 h-3.5 mr-1 text-red-600" />
+                    Hora de Inicio Programada *
+                  </label>
+                  <input
+                    type="time"
+                    required
+                    value={time}
+                    onChange={(e) => setTime(e.target.value)}
+                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono focus:outline-none focus:border-red-500"
+                  />
+                </div>
+              </div>
+            )}
 
             {/* Duration of Assignment Field in Hours & Minutes (up to 8 hours / 480 min) */}
             <div className="pt-2.5 border-t border-slate-200/90 space-y-3">
@@ -1138,15 +1558,21 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold"
+              className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold whitespace-nowrap cursor-pointer"
             >
               Cancelar
             </button>
             <button
               type="submit"
-              className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md shadow-red-500/20"
+              className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md shadow-red-500/20 whitespace-nowrap cursor-pointer"
             >
-              {assignment ? 'Guardar Cambios' : 'Confirmar Asignación'}
+              {assignment
+                ? 'Guardar Cambios'
+                : scheduleMode === 'dias_mes'
+                ? `Cargar ${selectedMonthDates.length} ${
+                    selectedMonthDates.length === 1 ? 'Día' : 'Días'
+                  } en Calendario`
+                : 'Confirmar Asignación'}
             </button>
           </div>
         </form>

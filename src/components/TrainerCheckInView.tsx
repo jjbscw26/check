@@ -77,6 +77,11 @@ import {
   doesAssignmentApplyToDate,
   formatLocalYYYYMMDD,
 } from '../utils/assignmentLock';
+import {
+  buildMonthGridCells,
+  shiftYearMonth,
+  WEEKDAY_MONDAY_SHORT_ES,
+} from '../utils/monthlyAssignmentHelper';
 import confetti from 'canvas-confetti';
 
 interface TrainerCheckInViewProps {
@@ -330,7 +335,12 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
   >('todas');
   const [assignmentViewMode, setAssignmentViewMode] = useState<'tarjetas' | 'calendario'>('tarjetas');
   const [assignmentSearch, setAssignmentSearch] = useState<string>('');
+  const [calendarScale, setCalendarScale] = useState<'mes' | 'semana'>('mes');
   const [calendarWeekOffset, setCalendarWeekOffset] = useState<number>(0);
+  const [calendarMonthOffset, setCalendarMonthOffset] = useState<number>(0);
+  const [selectedCalendarDateStr, setSelectedCalendarDateStr] = useState<string>(() =>
+    formatLocalYYYYMMDD(new Date())
+  );
 
   // Filter assignments for current trainer
   const trainerAssignments = assignments.filter((a) => a.trainerId === currentTrainer.id && a.active);
@@ -1214,9 +1224,39 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
             dayName: DAY_NAMES_ES[d.getDay()],
             monthName: MONTH_NAMES_ES[d.getMonth()],
             isToday,
+            dayAssignments: [...dayAssignments].sort((a, b) => a.time.localeCompare(b.time)),
+          };
+        });
+
+        // Full month grid calculation for Mes Completo mode
+        const baseYearMonth = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+        const activeYearMonth = shiftYearMonth(baseYearMonth, calendarMonthOffset);
+        const monthMeta = buildMonthGridCells(activeYearMonth);
+        const monthCellsWithClasses = monthMeta.cells.map((cell) => {
+          const dayAssignments = trainerAssignments
+            .filter((asg) => doesAssignmentApplyToDate(asg, cell.dateStr))
+            .sort((a, b) => a.time.localeCompare(b.time));
+          return {
+            ...cell,
+            isToday: cell.dateStr === todayYMD,
             dayAssignments,
           };
         });
+
+        const currentMonthCellsOnly = monthCellsWithClasses.filter((c) => c.isCurrentMonth);
+        const monthAssignedDaysCount = currentMonthCellsOnly.filter(
+          (c) => c.dayAssignments.length > 0
+        ).length;
+        const monthAssignedSessionsCount = currentMonthCellsOnly.reduce(
+          (sum, c) => sum + c.dayAssignments.length,
+          0
+        );
+
+        const inspectedMonthCell =
+          monthCellsWithClasses.find((c) => c.dateStr === selectedCalendarDateStr) ||
+          currentMonthCellsOnly.find((c) => c.isToday) ||
+          currentMonthCellsOnly.find((c) => c.dayAssignments.length > 0) ||
+          currentMonthCellsOnly[0];
 
         return (
           <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-6 shadow-sm space-y-4">
@@ -1620,193 +1660,347 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
               </div>
             )}
 
-            {/* View 2: Weekly Interactive Schedule Calendar */}
+            {/* View 2: Monthly & Weekly Interactive Schedule Calendar */}
             {assignmentViewMode === 'calendario' && (
-              <div className="space-y-3 pt-1">
-                {/* Week Navigation */}
-                <div className="flex items-center justify-between gap-2 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
-                  <button
-                    type="button"
-                    onClick={() => setCalendarWeekOffset((prev) => prev - 1)}
-                    className="min-h-[38px] px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shadow-2xs text-xs font-semibold flex items-center whitespace-nowrap shrink-0"
-                  >
-                    <ChevronLeft className="w-4 h-4 mr-0.5 shrink-0" />
-                    <span className="hidden sm:inline">Semana anterior</span>
-                    <span className="sm:hidden">Ant.</span>
-                  </button>
-
-                  <div className="text-center min-w-0 px-1">
-                    <span className="text-[11px] sm:text-xs font-bold text-slate-900 block tabular-nums leading-snug">
-                      {weekDays[0].dayNum} {weekDays[0].monthName.slice(0, 3)} – {weekDays[6].dayNum} {weekDays[6].monthName.slice(0, 3)}
-                    </span>
-                    {calendarWeekOffset !== 0 && (
-                      <button
-                        type="button"
-                        onClick={() => setCalendarWeekOffset(0)}
-                        className="text-[10px] text-red-600 font-bold hover:underline"
-                      >
-                        Semana actual
-                      </button>
-                    )}
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => setCalendarWeekOffset((prev) => prev + 1)}
-                    className="min-h-[38px] px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shadow-2xs text-xs font-semibold flex items-center whitespace-nowrap shrink-0"
-                  >
-                    <span className="hidden sm:inline">Semana siguiente</span>
-                    <span className="sm:hidden">Sig.</span>
-                    <ChevronRight className="w-4 h-4 ml-0.5 shrink-0" />
-                  </button>
-                </div>
-
-                {/* 7-Day Grid */}
-                <div className="grid grid-cols-1 sm:grid-cols-7 gap-2">
-                  {weekDays.map((day) => (
-                    <div
-                      key={day.dateStr}
-                      className={`rounded-xl border p-2.5 flex flex-col justify-between min-h-[140px] transition ${
-                        day.isToday
-                          ? 'bg-red-50/40 border-red-300 ring-1 ring-red-400'
-                          : 'bg-white border-slate-200'
+              <div className="space-y-3.5 pt-1">
+                {/* Sub-switcher: Mes Completo vs Semana */}
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 bg-slate-50 p-2.5 rounded-xl border border-slate-200">
+                  <div className="bg-white p-1 rounded-lg border border-slate-200 inline-flex items-center text-xs font-bold self-center sm:self-auto">
+                    <button
+                      type="button"
+                      onClick={() => setCalendarScale('mes')}
+                      className={`min-h-[34px] px-3 py-1 rounded-md transition whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+                        calendarScale === 'mes'
+                          ? 'bg-red-600 text-white shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
                       }`}
                     >
-                      <div>
-                        {/* Day Header */}
-                        <div className="flex items-center justify-between pb-1.5 border-b border-slate-100 mb-2">
-                          <span className="text-xs font-bold text-slate-800">
-                            {day.dayName}
-                          </span>
-                          <span
-                            className={`px-1.5 py-0.5 rounded text-[11px] font-mono tabular-nums font-bold ${
-                              day.isToday
-                                ? 'bg-red-600 text-white'
-                                : 'bg-slate-100 text-slate-700'
-                            }`}
+                      <Calendar className="w-3.5 h-3.5 shrink-0" />
+                      <span>Mes Completo</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCalendarScale('semana')}
+                      className={`min-h-[34px] px-3 py-1 rounded-md transition whitespace-nowrap shrink-0 flex items-center gap-1.5 ${
+                        calendarScale === 'semana'
+                          ? 'bg-red-600 text-white shadow-2xs'
+                          : 'text-slate-600 hover:text-slate-900'
+                      }`}
+                    >
+                      <CalendarDays className="w-3.5 h-3.5 shrink-0" />
+                      <span>Vista Semanal</span>
+                    </button>
+                  </div>
+
+                  {calendarScale === 'mes' ? (
+                    <div className="flex items-center justify-between sm:justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setCalendarMonthOffset((prev) => prev - 1)}
+                        className="min-h-[36px] px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shadow-2xs text-xs font-semibold flex items-center whitespace-nowrap shrink-0"
+                      >
+                        <ChevronLeft className="w-4 h-4 mr-0.5 shrink-0" />
+                        <span>Mes ant.</span>
+                      </button>
+
+                      <div className="text-center min-w-[140px] px-1">
+                        <span className="text-xs sm:text-sm font-extrabold text-slate-900 block tabular-nums">
+                          {monthMeta.monthName} {monthMeta.year}
+                        </span>
+                        <span className="text-[10px] text-slate-500 font-mono tabular-nums block">
+                          {monthAssignedSessionsCount}{' '}
+                          {monthAssignedSessionsCount === 1 ? 'sesión' : 'sesiones'} ·{' '}
+                          {monthAssignedDaysCount}{' '}
+                          {monthAssignedDaysCount === 1 ? 'día' : 'días'}
+                        </span>
+                        {calendarMonthOffset !== 0 && (
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setCalendarMonthOffset(0);
+                              setSelectedCalendarDateStr(todayYMD);
+                            }}
+                            className="text-[10px] text-red-600 font-bold hover:underline"
                           >
-                            {day.dayNum}
+                            Ir a mes actual
+                          </button>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setCalendarMonthOffset((prev) => prev + 1)}
+                        className="min-h-[36px] px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shadow-2xs text-xs font-semibold flex items-center whitespace-nowrap shrink-0"
+                      >
+                        <span>Mes sig.</span>
+                        <ChevronRight className="w-4 h-4 ml-0.5 shrink-0" />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center justify-between sm:justify-end gap-2">
+                      <button
+                        type="button"
+                        onClick={() => setCalendarWeekOffset((prev) => prev - 1)}
+                        className="min-h-[36px] px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shadow-2xs text-xs font-semibold flex items-center whitespace-nowrap shrink-0"
+                      >
+                        <ChevronLeft className="w-4 h-4 mr-0.5 shrink-0" />
+                        <span className="hidden sm:inline">Semana anterior</span>
+                        <span className="sm:hidden">Ant.</span>
+                      </button>
+
+                      <div className="text-center min-w-[130px] px-1">
+                        <span className="text-[11px] sm:text-xs font-bold text-slate-900 block tabular-nums leading-snug">
+                          {weekDays[0].dayNum} {weekDays[0].monthName.slice(0, 3)} –{' '}
+                          {weekDays[6].dayNum} {weekDays[6].monthName.slice(0, 3)}
+                        </span>
+                        {calendarWeekOffset !== 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setCalendarWeekOffset(0)}
+                            className="text-[10px] text-red-600 font-bold hover:underline"
+                          >
+                            Semana actual
+                          </button>
+                        )}
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => setCalendarWeekOffset((prev) => prev + 1)}
+                        className="min-h-[36px] px-2.5 py-1.5 rounded-lg bg-white hover:bg-slate-100 text-slate-700 border border-slate-200 shadow-2xs text-xs font-semibold flex items-center whitespace-nowrap shrink-0"
+                      >
+                        <span className="hidden sm:inline">Semana siguiente</span>
+                        <span className="sm:hidden">Sig.</span>
+                        <ChevronRight className="w-4 h-4 ml-0.5 shrink-0" />
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* ======================================================
+                    SUB-VISTA A: CALENDARIO MENSUAL COMPLETO DEL ENTRENADOR
+                   ====================================================== */}
+                {calendarScale === 'mes' && (
+                  <div className="space-y-3">
+                    <div className="rounded-2xl border border-slate-200 overflow-hidden bg-white">
+                      {/* Weekday Header */}
+                      <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50 text-center py-2 text-[11px] font-bold text-slate-600">
+                        {WEEKDAY_MONDAY_SHORT_ES.map((lbl) => (
+                          <div key={lbl} className="truncate px-1">
+                            {lbl}
+                          </div>
+                        ))}
+                      </div>
+
+                      {/* 7-Column Month Matrix */}
+                      <div className="grid grid-cols-7 divide-x divide-y divide-slate-100 bg-slate-100">
+                        {monthCellsWithClasses.map((cell, idx) => {
+                          const isSelected = inspectedMonthCell?.dateStr === cell.dateStr;
+                          const count = cell.dayAssignments.length;
+
+                          return (
+                            <button
+                              key={`${cell.dateStr}_${idx}`}
+                              type="button"
+                              onClick={() => {
+                                setSelectedCalendarDateStr(cell.dateStr);
+                                if (!cell.isCurrentMonth) {
+                                  const targetYm = cell.dateStr.slice(0, 7);
+                                  const [ty, tm] = targetYm.split('-').map(Number);
+                                  const diff =
+                                    (ty - now.getFullYear()) * 12 + (tm - (now.getMonth() + 1));
+                                  setCalendarMonthOffset(diff);
+                                }
+                              }}
+                              className={`min-h-[76px] sm:min-h-[104px] p-1.5 sm:p-2 text-left flex flex-col justify-between transition focus:outline-none ${
+                                cell.isCurrentMonth
+                                  ? count > 0
+                                    ? 'bg-emerald-50/35 hover:bg-emerald-50/70'
+                                    : 'bg-white hover:bg-slate-50'
+                                  : 'bg-slate-50/70 text-slate-400 hover:bg-slate-100'
+                              } ${
+                                isSelected
+                                  ? 'ring-2 ring-red-600 ring-inset z-10'
+                                  : cell.isToday
+                                  ? 'ring-1 ring-red-400 ring-inset'
+                                  : ''
+                              }`}
+                            >
+                              <div className="flex items-center justify-between w-full gap-1">
+                                <span
+                                  className={`w-6 h-6 rounded-full text-[11px] font-extrabold font-mono tabular-nums flex items-center justify-center shrink-0 ${
+                                    cell.isToday
+                                      ? 'bg-red-600 text-white'
+                                      : isSelected
+                                      ? 'bg-red-100 text-red-700'
+                                      : count > 0 && cell.isCurrentMonth
+                                      ? 'bg-emerald-600 text-white'
+                                      : cell.isCurrentMonth
+                                      ? 'text-slate-800'
+                                      : 'text-slate-400'
+                                  }`}
+                                >
+                                  {cell.dayNumber}
+                                </span>
+                                {count > 0 && (
+                                  <span className="text-[9px] font-mono tabular-nums font-bold text-slate-500 hidden sm:inline">
+                                    {count} {count === 1 ? 'sesión' : 'ses.'}
+                                  </span>
+                                )}
+                              </div>
+
+                              {/* Compact Activity Chips */}
+                              <div className="w-full space-y-1 mt-1 overflow-hidden">
+                                {cell.dayAssignments.slice(0, 2).map((asg) => {
+                                  const cellLock = getAssignmentOccurrenceStatus(
+                                    asg,
+                                    cell.dateStr,
+                                    trainerRecords,
+                                    activityCatalog,
+                                    nowMs
+                                  );
+                                  return (
+                                    <div
+                                      key={asg.id}
+                                      className={`px-1.5 py-0.5 rounded text-[9px] sm:text-[10px] font-bold truncate border ${
+                                        cellLock.isNonCompliant
+                                          ? 'bg-rose-100 text-rose-900 border-rose-300'
+                                          : cellLock.isCompletedAndClosed
+                                            ? 'bg-slate-200 text-slate-700 border-slate-300'
+                                            : cellLock.state === 'en_curso'
+                                              ? 'bg-amber-100 text-amber-900 border-amber-300'
+                                              : 'bg-white text-slate-900 border-emerald-300 shadow-2xs'
+                                      }`}
+                                    >
+                                      <span className="font-mono tabular-nums text-red-600 mr-1">
+                                        {asg.time}
+                                      </span>
+                                      <span className="hidden sm:inline">{asg.activityName}</span>
+                                    </div>
+                                  );
+                                })}
+                                {count > 2 && (
+                                  <div className="text-[9px] font-bold text-red-600 text-center tabular-nums">
+                                    +{count - 2} más
+                                  </div>
+                                )}
+                              </div>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Selected Day Detail Card under Month Grid */}
+                    {inspectedMonthCell && (
+                      <div className="rounded-xl border border-slate-200 bg-slate-50/80 p-3.5 space-y-2.5">
+                        <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 pb-2">
+                          <div className="text-xs font-extrabold text-slate-900">
+                            Detalle del día:{' '}
+                            <span className="text-red-600 font-mono tabular-nums">
+                              {inspectedMonthCell.dateStr}
+                            </span>
+                            {inspectedMonthCell.isToday && (
+                              <span className="ml-2 text-emerald-700 font-bold">· Hoy</span>
+                            )}
+                          </div>
+                          <span className="text-[11px] font-mono tabular-nums text-slate-600 font-semibold">
+                            {inspectedMonthCell.dayAssignments.length}{' '}
+                            {inspectedMonthCell.dayAssignments.length === 1
+                              ? 'actividad asignada'
+                              : 'actividades asignadas'}
                           </span>
                         </div>
 
-                        {/* List of assignments on this day */}
-                        {day.dayAssignments.length === 0 ? (
-                          <div className="text-[10px] text-slate-400 italic py-2 text-center">
-                            Sin clase
-                          </div>
+                        {inspectedMonthCell.dayAssignments.length === 0 ? (
+                          <p className="text-xs text-slate-500 py-2 text-center">
+                            No tienes actividades programadas en esta fecha.
+                          </p>
                         ) : (
-                          <div className="space-y-1.5">
-                            {day.dayAssignments.map((asg) => {
+                          <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                            {inspectedMonthCell.dayAssignments.map((asg) => {
                               const dayLock = getAssignmentOccurrenceStatus(
                                 asg,
-                                day.dateStr,
+                                inspectedMonthCell.dateStr,
                                 trainerRecords,
                                 activityCatalog,
                                 nowMs
                               );
+                              const durMins = getAssignmentDurationMinutes(asg, activityCatalog);
+                              const endHHMM = calculateEndTimeHHMM(asg.time, durMins);
                               const isDayLoaded =
                                 loadedAssignmentId === asg.id &&
-                                sessionDate === day.dateStr &&
+                                sessionDate === inspectedMonthCell.dateStr &&
                                 dayLock.canLoadNow &&
                                 !dayLock.isLocked;
 
                               return (
                                 <div
                                   key={asg.id}
-                                  className={`p-2 rounded-lg border text-left text-xs space-y-1 ${
-                                    dayLock.isNonCompliant
-                                      ? 'bg-rose-50 border-rose-300'
-                                      : dayLock.isCompletedAndClosed
-                                        ? 'bg-slate-100 border-slate-300'
-                                        : dayLock.state === 'en_curso'
-                                          ? 'bg-amber-50 border-amber-300'
-                                          : isDayLoaded
-                                            ? 'bg-emerald-50 border-emerald-300 ring-1 ring-emerald-400'
-                                            : 'bg-slate-50 border-slate-200 hover:border-red-300'
-                                  }`}
+                                  className="bg-white rounded-xl border border-slate-200 p-3 flex flex-col justify-between gap-2 text-xs shadow-2xs"
                                 >
-                                  <div className="flex items-center justify-between gap-1">
-                                    <span
-                                      className={`font-mono tabular-nums text-[10px] font-bold ${
-                                        dayLock.isCompletedAndClosed || dayLock.isNonCompliant
-                                          ? 'text-slate-500 line-through'
-                                          : 'text-red-600'
-                                      }`}
-                                    >
-                                      {asg.time} ({formatDurationHoursMinutes(getAssignmentDurationMinutes(asg, activityCatalog), true)})
-                                    </span>
-                                    {dayLock.isNonCompliant ? (
-                                      <span className="text-[9px] font-extrabold text-rose-800">
-                                        {dayLock.nonComplianceReason === 'sin_cierre_30m' ? 'No cerrada' : 'Cerrada'}
+                                  <div className="space-y-1">
+                                    <div className="flex items-center justify-between gap-2">
+                                      <span className="font-mono tabular-nums font-bold text-red-600">
+                                        {asg.time}
+                                        {endHHMM ? `–${endHHMM}` : ''} hrs ·{' '}
+                                        {formatDurationHoursMinutes(durMins, true)}
                                       </span>
-                                    ) : dayLock.isCompletedAndClosed ? (
-                                      <span className="text-[9px] font-extrabold text-emerald-800">
-                                        Cerrada
+                                      <span className="text-[10px] font-semibold text-slate-500">
+                                        {
+                                          ACTIVITY_TYPE_SHORT_LABELS[
+                                            normalizeActivityType(asg.activityType)
+                                          ]
+                                        }
                                       </span>
-                                    ) : dayLock.state === 'en_curso' ? (
-                                      <span className="text-[9px] font-extrabold text-amber-800">
-                                        En curso
-                                      </span>
-                                    ) : (
-                                      <span className="text-[9px] font-bold text-slate-500">
-                                        {ACTIVITY_TYPE_SHORT_LABELS[normalizeActivityType(asg.activityType)]}
-                                      </span>
-                                    )}
+                                    </div>
+                                    <div className="font-bold text-slate-900 text-sm">
+                                      {asg.activityName}
+                                    </div>
+                                    <div className="text-[11px] text-slate-600">
+                                      {asg.companyName} · {asg.sedeName} · {asg.locationArea}
+                                    </div>
                                   </div>
-                                  <div
-                                    className={`font-bold text-[11px] line-clamp-2 leading-tight ${
-                                      dayLock.isCompletedAndClosed
-                                        ? 'text-slate-600'
-                                        : dayLock.isNonCompliant
-                                          ? 'text-rose-950'
-                                          : 'text-slate-900'
-                                    }`}
-                                  >
-                                    {asg.activityName}
-                                  </div>
-                                  <div className="text-[10px] text-slate-500 truncate">
-                                    {asg.companyName}
-                                  </div>
+
                                   {dayLock.isLocked ? (
                                     <button
                                       type="button"
                                       disabled
-                                      className={`w-full mt-1 py-1 rounded text-[10px] font-bold border flex items-center justify-center space-x-1 cursor-not-allowed ${
-                                        dayLock.isNonCompliant
-                                          ? 'bg-rose-200/80 border-rose-300 text-rose-900'
-                                          : 'bg-slate-200 border-slate-300 text-slate-600'
-                                      }`}
+                                      className="w-full py-1.5 px-2.5 rounded-lg text-[11px] font-bold border bg-slate-100 border-slate-200 text-slate-500 flex items-center justify-center gap-1.5 cursor-not-allowed"
                                     >
-                                      <Lock className="w-2.5 h-2.5" />
-                                      <span>
-                                        {dayLock.isNonCompliant
-                                          ? dayLock.nonComplianceReason === 'sin_cierre_30m'
-                                            ? 'No cerrada'
-                                            : 'Cerrada (+10m)'
-                                          : dayLock.isCompletedAndClosed
-                                            ? 'Bloqueada'
-                                            : 'En curso'}
-                                      </span>
+                                      <Lock className="w-3 h-3 shrink-0" />
+                                      <span>{dayLock.shortLabel}</span>
                                     </button>
                                   ) : !dayLock.canLoadNow ? (
                                     <button
                                       type="button"
                                       disabled
-                                      className="w-full mt-1 py-1 rounded text-[10px] font-bold border bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed tabular-nums"
+                                      className="w-full py-1.5 px-2.5 rounded-lg text-[11px] font-bold border bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed tabular-nums"
                                     >
                                       {dayLock.loadWindowState === 'antes_de_30m'
-                                        ? `Abre ${dayLock.unlockTimeHHMM}`
+                                        ? `Habilita hoy a las ${dayLock.unlockTimeHHMM} hrs`
                                         : dayLock.loadWindowState === 'otro_dia'
-                                          ? 'Solo ese día'
-                                          : 'Cerrada'}
+                                          ? `Programada para el ${inspectedMonthCell.dateStr}`
+                                          : 'Ventana cerrada'}
                                     </button>
                                   ) : (
                                     <button
                                       type="button"
-                                      onClick={() => handleLoadAssignment(asg, day.dateStr)}
-                                      className="w-full mt-1 py-1 rounded text-[10px] font-bold bg-white border border-slate-200 text-red-700 hover:bg-red-50 hover:border-red-300 transition"
+                                      onClick={() =>
+                                        handleLoadAssignment(asg, inspectedMonthCell.dateStr)
+                                      }
+                                      className={`w-full py-2 px-3 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                                        isDayLoaded
+                                          ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                                          : 'bg-red-600 text-white hover:bg-red-700'
+                                      }`}
                                     >
-                                      {isDayLoaded ? '✓ Cargada' : 'Cargar'}
+                                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                                      <span>
+                                        {isDayLoaded
+                                          ? '✓ Sesión Cargada'
+                                          : `Cargar Sesión de Hoy (hasta ${dayLock.loadDeadlineHHMM} hrs)`}
+                                      </span>
                                     </button>
                                   )}
                                 </div>
@@ -1815,17 +2009,179 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                           </div>
                         )}
                       </div>
+                    )}
+                  </div>
+                )}
 
-                      {day.isToday && (
-                        <div className="mt-2 text-center">
-                          <span className="text-[10px] font-bold text-red-700">
-                            Hoy
-                          </span>
+                {/* ======================================================
+                    SUB-VISTA B: VISTA SEMANAL DE 7 DÍAS
+                   ====================================================== */}
+                {calendarScale === 'semana' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-7 gap-2">
+                    {weekDays.map((day) => (
+                      <div
+                        key={day.dateStr}
+                        className={`rounded-xl border p-2.5 flex flex-col justify-between min-h-[140px] transition ${
+                          day.isToday
+                            ? 'bg-red-50/40 border-red-300 ring-1 ring-red-400'
+                            : 'bg-white border-slate-200'
+                        }`}
+                      >
+                        <div>
+                          {/* Day Header */}
+                          <div className="flex items-center justify-between pb-1.5 border-b border-slate-100 mb-2">
+                            <span className="text-xs font-bold text-slate-800">
+                              {day.dayName}
+                            </span>
+                            <span
+                              className={`px-1.5 py-0.5 rounded text-[11px] font-mono tabular-nums font-bold ${
+                                day.isToday
+                                  ? 'bg-red-600 text-white'
+                                  : 'bg-slate-100 text-slate-700'
+                              }`}
+                            >
+                              {day.dayNum}
+                            </span>
+                          </div>
+
+                          {/* List of assignments on this day */}
+                          {day.dayAssignments.length === 0 ? (
+                            <div className="text-[10px] text-slate-400 italic py-2 text-center">
+                              Sin clase
+                            </div>
+                          ) : (
+                            <div className="space-y-1.5">
+                              {day.dayAssignments.map((asg) => {
+                                const dayLock = getAssignmentOccurrenceStatus(
+                                  asg,
+                                  day.dateStr,
+                                  trainerRecords,
+                                  activityCatalog,
+                                  nowMs
+                                );
+                                const isDayLoaded =
+                                  loadedAssignmentId === asg.id &&
+                                  sessionDate === day.dateStr &&
+                                  dayLock.canLoadNow &&
+                                  !dayLock.isLocked;
+
+                                return (
+                                  <div
+                                    key={asg.id}
+                                    className={`p-2 rounded-lg border text-left text-xs space-y-1 ${
+                                      dayLock.isNonCompliant
+                                        ? 'bg-rose-50 border-rose-300'
+                                        : dayLock.isCompletedAndClosed
+                                          ? 'bg-slate-100 border-slate-300'
+                                          : dayLock.state === 'en_curso'
+                                            ? 'bg-amber-50 border-amber-300'
+                                            : isDayLoaded
+                                              ? 'bg-emerald-50 border-emerald-300 ring-1 ring-emerald-400'
+                                              : 'bg-slate-50 border-slate-200 hover:border-red-300'
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-1">
+                                      <span
+                                        className={`font-mono tabular-nums text-[10px] font-bold ${
+                                          dayLock.isCompletedAndClosed || dayLock.isNonCompliant
+                                            ? 'text-slate-500 line-through'
+                                            : 'text-red-600'
+                                        }`}
+                                      >
+                                        {asg.time} ({formatDurationHoursMinutes(getAssignmentDurationMinutes(asg, activityCatalog), true)})
+                                      </span>
+                                      {dayLock.isNonCompliant ? (
+                                        <span className="text-[9px] font-extrabold text-rose-800">
+                                          {dayLock.nonComplianceReason === 'sin_cierre_30m' ? 'No cerrada' : 'Cerrada'}
+                                        </span>
+                                      ) : dayLock.isCompletedAndClosed ? (
+                                        <span className="text-[9px] font-extrabold text-emerald-800">
+                                          Cerrada
+                                        </span>
+                                      ) : dayLock.state === 'en_curso' ? (
+                                        <span className="text-[9px] font-extrabold text-amber-800">
+                                          En curso
+                                        </span>
+                                      ) : (
+                                        <span className="text-[9px] font-bold text-slate-500">
+                                          {ACTIVITY_TYPE_SHORT_LABELS[normalizeActivityType(asg.activityType)]}
+                                        </span>
+                                      )}
+                                    </div>
+                                    <div
+                                      className={`font-bold text-[11px] line-clamp-2 leading-tight ${
+                                        dayLock.isCompletedAndClosed
+                                          ? 'text-slate-600'
+                                          : dayLock.isNonCompliant
+                                            ? 'text-rose-950'
+                                            : 'text-slate-900'
+                                      }`}
+                                    >
+                                      {asg.activityName}
+                                    </div>
+                                    <div className="text-[10px] text-slate-500 truncate">
+                                      {asg.companyName}
+                                    </div>
+                                    {dayLock.isLocked ? (
+                                      <button
+                                        type="button"
+                                        disabled
+                                        className={`w-full mt-1 py-1 rounded text-[10px] font-bold border flex items-center justify-center space-x-1 cursor-not-allowed ${
+                                          dayLock.isNonCompliant
+                                            ? 'bg-rose-200/80 border-rose-300 text-rose-900'
+                                            : 'bg-slate-200 border-slate-300 text-slate-600'
+                                        }`}
+                                      >
+                                        <Lock className="w-2.5 h-2.5" />
+                                        <span>
+                                          {dayLock.isNonCompliant
+                                            ? dayLock.nonComplianceReason === 'sin_cierre_30m'
+                                              ? 'No cerrada'
+                                              : 'Cerrada (+10m)'
+                                            : dayLock.isCompletedAndClosed
+                                              ? 'Bloqueada'
+                                              : 'En curso'}
+                                        </span>
+                                      </button>
+                                    ) : !dayLock.canLoadNow ? (
+                                      <button
+                                        type="button"
+                                        disabled
+                                        className="w-full mt-1 py-1 rounded text-[10px] font-bold border bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed tabular-nums"
+                                      >
+                                        {dayLock.loadWindowState === 'antes_de_30m'
+                                          ? `Abre ${dayLock.unlockTimeHHMM}`
+                                          : dayLock.loadWindowState === 'otro_dia'
+                                            ? 'Solo ese día'
+                                            : 'Cerrada'}
+                                      </button>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() => handleLoadAssignment(asg, day.dateStr)}
+                                        className="w-full mt-1 py-1 rounded text-[10px] font-bold bg-white border border-slate-200 text-red-700 hover:bg-red-50 hover:border-red-300 transition"
+                                      >
+                                        {isDayLoaded ? '✓ Cargada' : 'Cargar'}
+                                      </button>
+                                    )}
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
                         </div>
-                      )}
-                    </div>
-                  ))}
-                </div>
+
+                        {day.isToday && (
+                          <div className="mt-2 text-center">
+                            <span className="text-[10px] font-bold text-red-700">
+                              Hoy
+                            </span>
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
           </div>

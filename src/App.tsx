@@ -1464,21 +1464,97 @@ export default function App() {
   };
 
   // Assignment CRUD handlers (optimistic + serialized sync with Firestore /assignments)
-  const handleAddAssignment = (newAssignment: ClassAssignment) => {
-    const normalized = persistAssignmentToFirestore(newAssignment);
-    const updated = [normalized, ...assignments.filter((a) => a.id !== normalized.id)];
-    setAssignments(updated);
-    saveStoredAssignments(updated);
-  };
+  const handleAddAssignment = useCallback(
+    (newAssignment: ClassAssignment) => {
+      const normalized = persistAssignmentToFirestore(newAssignment);
+      const updated = [
+        normalized,
+        ...assignmentsRef.current.filter((a) => a.id !== normalized.id),
+      ];
+      assignmentsRef.current = updated;
+      setAssignments(updated);
+      saveStoredAssignments(updated);
+    },
+    [persistAssignmentToFirestore]
+  );
 
-  const handleUpdateAssignment = (updatedAssignment: ClassAssignment) => {
-    const normalized = persistAssignmentToFirestore(updatedAssignment);
-    const updated = assignments.map((a) =>
-      a.id === updatedAssignment.id || a.id === normalized.id ? normalized : a
-    );
-    setAssignments(updated);
-    saveStoredAssignments(updated);
-  };
+  const handleAddAssignmentsBatch = useCallback(
+    (incomingBatch: ClassAssignment[]) => {
+      if (incomingBatch.length === 0) return;
+
+      const normalizedBatch: ClassAssignment[] = incomingBatch.map((raw) => {
+        const safeId = toSafeDocId(raw.id, 'asg');
+        const normalized: ClassAssignment = {
+          ...raw,
+          id: safeId,
+          time: normalizeHHMM(raw.time, '09:00'),
+        };
+        deletedAssignmentIdsRef.current.delete(safeId);
+        pendingAssignmentsByIdRef.current.set(safeId, normalized);
+        inFlightAssignmentWritesRef.current.set(
+          safeId,
+          (inFlightAssignmentWritesRef.current.get(safeId) || 0) + 1
+        );
+        return normalized;
+      });
+
+      const batchIds = new Set(normalizedBatch.map((a) => a.id));
+      const updated = [
+        ...normalizedBatch,
+        ...assignmentsRef.current.filter((a) => !batchIds.has(a.id)),
+      ];
+      assignmentsRef.current = updated;
+      setAssignments(updated);
+      saveStoredAssignments(updated);
+
+      // Persist sequentially in small chunks to prevent WebChannel burst contention while keeping 0ms UI update
+      void (async () => {
+        const CHUNK_SIZE = 4;
+        for (let i = 0; i < normalizedBatch.length; i += CHUNK_SIZE) {
+          const slice = normalizedBatch.slice(i, i + CHUNK_SIZE);
+          await Promise.all(
+            slice.map(async (item) => {
+              const safeId = item.id;
+              const { parentComp, parentSede } = resolveAssignmentParents(item);
+              try {
+                await saveAssignmentToFirestore(item, parentComp, parentSede);
+                unsyncedAssignmentsQueueRef.current.delete(safeId);
+              } catch (err) {
+                console.warn('Queued batch assignment for automatic Firestore retry:', safeId, err);
+                if (!deletedAssignmentIdsRef.current.has(safeId)) {
+                  unsyncedAssignmentsQueueRef.current.set(safeId, item);
+                }
+              } finally {
+                const remaining = (inFlightAssignmentWritesRef.current.get(safeId) || 1) - 1;
+                if (remaining <= 0) {
+                  inFlightAssignmentWritesRef.current.delete(safeId);
+                  if (!unsyncedAssignmentsQueueRef.current.has(safeId)) {
+                    pendingAssignmentsByIdRef.current.delete(safeId);
+                  }
+                } else {
+                  inFlightAssignmentWritesRef.current.set(safeId, remaining);
+                }
+              }
+            })
+          );
+        }
+      })();
+    },
+    [resolveAssignmentParents]
+  );
+
+  const handleUpdateAssignment = useCallback(
+    (updatedAssignment: ClassAssignment) => {
+      const normalized = persistAssignmentToFirestore(updatedAssignment);
+      const updated = assignmentsRef.current.map((a) =>
+        a.id === updatedAssignment.id || a.id === normalized.id ? normalized : a
+      );
+      assignmentsRef.current = updated;
+      setAssignments(updated);
+      saveStoredAssignments(updated);
+    },
+    [persistAssignmentToFirestore]
+  );
 
   const handleDeleteAssignment = (assignmentId: string) => {
     const safeId = toSafeDocId(assignmentId, 'asg');
@@ -1649,6 +1725,7 @@ export default function App() {
               onUpdateTrainer={handleUpdateTrainer}
               onDeleteTrainer={handleDeleteTrainer}
               onAddAssignment={handleAddAssignment}
+              onAddAssignmentsBatch={handleAddAssignmentsBatch}
               onUpdateAssignment={handleUpdateAssignment}
               onDeleteAssignment={handleDeleteAssignment}
               onAddCatalogItem={handleAddCatalogItem}

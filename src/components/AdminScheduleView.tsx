@@ -1,9 +1,11 @@
 import React, { useState, useMemo } from 'react';
 import {
+  ACTIVITY_TYPE_DEFAULT_MINUTES,
   ACTIVITY_TYPE_LABELS,
   ACTIVITY_TYPE_SHORT_LABELS,
   ActivityCatalogItem,
   ActivityType,
+  ALL_ACTIVITY_TYPES,
   AttendanceRecord,
   ClassAssignment,
   Company,
@@ -13,6 +15,7 @@ import {
 import {
   Calendar,
   CalendarDays,
+  CalendarCheck,
   Clock,
   Plus,
   Edit3,
@@ -30,8 +33,10 @@ import {
   Lock,
   Unlock,
   CheckCircle2,
+  Check,
   Ban,
   AlertTriangle,
+  X,
 } from 'lucide-react';
 import { AssignmentPreset } from './AdminAssignmentModal';
 import {
@@ -40,6 +45,19 @@ import {
   formatDurationHoursMinutes,
 } from '../utils/sessionAlarm';
 import { getAssignmentOccurrenceStatus, toggleAssignmentDateLock } from '../utils/assignmentLock';
+import {
+  buildMonthlyBatchAssignments,
+  getMonthDatesByPattern,
+  hasMatchingAssignmentOnDate,
+  MonthSelectionPattern,
+  toggleWeekdayDatesInMonth,
+} from '../utils/monthlyAssignmentHelper';
+import {
+  cleanDisciplineLabel,
+  getAssignmentDisciplineGroups,
+  inferActivityTypeFromDiscipline,
+  normalizeDisciplineKey,
+} from '../utils/specialtyDisciplines';
 
 interface AdminScheduleViewProps {
   assignments: ClassAssignment[];
@@ -48,6 +66,7 @@ interface AdminScheduleViewProps {
   trainers: Trainer[];
   activityCatalog?: ActivityCatalogItem[];
   onAddAssignment: (preset?: AssignmentPreset) => void;
+  onAddAssignmentsBatch?: (assignments: ClassAssignment[]) => void;
   onEditAssignment: (assignment: ClassAssignment) => void;
   onUpdateAssignment?: (assignment: ClassAssignment) => void;
   onDeleteAssignment: (assignmentId: string) => void;
@@ -109,6 +128,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
   trainers,
   activityCatalog = [],
   onAddAssignment,
+  onAddAssignmentsBatch,
   onEditAssignment,
   onUpdateAssignment,
   onDeleteAssignment,
@@ -133,12 +153,280 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
   const [searchTerm, setSearchTerm] = useState<string>('');
   const [scheduleNowMs, setScheduleNowMs] = useState<number>(() => Date.now());
 
+  // ========================================================
+  // MODO MARCAR DÍAS DEL MES (Asignación Mensual Masiva)
+  // ========================================================
+  const [isBulkMonthMode, setIsBulkMonthMode] = useState<boolean>(false);
+  const [bulkTrainerId, setBulkTrainerId] = useState<string>(() => trainers[0]?.id || '');
+  const [bulkCompanyId, setBulkCompanyId] = useState<string>(() => companies[0]?.id || '');
+  const [bulkSedeId, setBulkSedeId] = useState<string>(() => companies[0]?.sedes[0]?.id || '');
+  const [bulkActivityType, setBulkActivityType] = useState<ActivityType>('clase_fitness');
+  const [bulkActivityName, setBulkActivityName] = useState<string>('Entrenamiento Funcional');
+  const [bulkIsCustomActivity, setBulkIsCustomActivity] = useState<boolean>(false);
+  const [bulkCustomActivity, setBulkCustomActivity] = useState<string>('');
+  const [bulkLocationArea, setBulkLocationArea] = useState<string>('Área Principal');
+  const [bulkTime, setBulkTime] = useState<string>('09:00');
+  const [bulkDurationHours, setBulkDurationHours] = useState<number>(1);
+  const [bulkDurationMinutesPart, setBulkDurationMinutesPart] = useState<number>(0);
+  const [bulkExpectedAttendees, setBulkExpectedAttendees] = useState<number>(15);
+  const [bulkMarkedDates, setBulkMarkedDates] = useState<string[]>([]);
+  const [bulkFilterToSelectedTrainer, setBulkFilterToSelectedTrainer] = useState<boolean>(true);
+  const [bulkFeedback, setBulkFeedback] = useState<{
+    type: 'success' | 'error';
+    message: string;
+    trainerId?: string;
+  } | null>(null);
+
   React.useEffect(() => {
     const timer = setInterval(() => setScheduleNowMs(Date.now()), 5000);
     return () => clearInterval(timer);
   }, []);
 
+  // Keep default trainer/company valid when lists load from Firestore
+  React.useEffect(() => {
+    if ((!bulkTrainerId || !trainers.some((t) => t.id === bulkTrainerId)) && trainers.length > 0) {
+      setBulkTrainerId(trainers[0].id);
+    }
+  }, [trainers, bulkTrainerId]);
+
+  React.useEffect(() => {
+    if ((!bulkCompanyId || !companies.some((c) => c.id === bulkCompanyId)) && companies.length > 0) {
+      const firstComp = companies[0];
+      setBulkCompanyId(firstComp.id);
+      setBulkSedeId(firstComp.sedes[0]?.id || '');
+    } else {
+      const comp = companies.find((c) => c.id === bulkCompanyId);
+      if (comp && comp.sedes.length > 0 && !comp.sedes.some((s) => s.id === bulkSedeId)) {
+        setBulkSedeId(comp.sedes[0].id);
+      }
+    }
+  }, [companies, bulkCompanyId, bulkSedeId]);
+
   const todayStr = useMemo(() => formatYYYYMMDD(new Date(scheduleNowMs)), [scheduleNowMs]);
+
+  const currentYearMonth = useMemo(() => {
+    const y = currentDate.getFullYear();
+    const m = String(currentDate.getMonth() + 1).padStart(2, '0');
+    return `${y}-${m}`;
+  }, [currentDate]);
+
+  const selectedBulkTrainer = useMemo(
+    () => trainers.find((t) => t.id === bulkTrainerId) || null,
+    [trainers, bulkTrainerId]
+  );
+
+  const selectedBulkCompany = useMemo(
+    () => companies.find((c) => c.id === bulkCompanyId) || null,
+    [companies, bulkCompanyId]
+  );
+
+  const bulkDisciplineGroups = useMemo(
+    () =>
+      getAssignmentDisciplineGroups({
+        activityType: bulkActivityType,
+        selectedTrainer: selectedBulkTrainer,
+        trainers,
+        activityCatalog,
+      }),
+    [bulkActivityType, selectedBulkTrainer, trainers, activityCatalog]
+  );
+
+  const resolvedBulkActivityName = useMemo(() => {
+    const raw = bulkIsCustomActivity ? bulkCustomActivity : bulkActivityName;
+    return cleanDisciplineLabel(raw);
+  }, [bulkIsCustomActivity, bulkCustomActivity, bulkActivityName]);
+
+  const bulkTotalDurationMinutes = useMemo(() => {
+    const rawTotal = bulkDurationHours * 60 + bulkDurationMinutesPart;
+    return Math.min(480, Math.max(5, rawTotal));
+  }, [bulkDurationHours, bulkDurationMinutesPart]);
+
+  const bulkMarkedSet = useMemo(() => new Set(bulkMarkedDates), [bulkMarkedDates]);
+
+  const currentMonthMarkedCount = useMemo(
+    () => bulkMarkedDates.filter((d) => d.startsWith(`${currentYearMonth}-`)).length,
+    [bulkMarkedDates, currentYearMonth]
+  );
+
+  const applyBulkDurationTotal = (mins: number) => {
+    const clamped = Math.min(480, Math.max(5, Math.round(mins)));
+    const h = Math.floor(clamped / 60);
+    const m = h === 8 ? 0 : clamped % 60;
+    setBulkDurationHours(h);
+    setBulkDurationMinutesPart(m);
+  };
+
+  const handleBulkModalityChange = (nextType: ActivityType) => {
+    setBulkActivityType(nextType);
+    const matchingCat = activityCatalog.find(
+      (c) => normalizeActivityType(c.activityType) === nextType && c.active !== false
+    );
+    if (!bulkIsCustomActivity) {
+      if (matchingCat) {
+        setBulkActivityName(cleanDisciplineLabel(matchingCat.name));
+        applyBulkDurationTotal(matchingCat.durationMinutes || ACTIVITY_TYPE_DEFAULT_MINUTES[nextType]);
+      } else {
+        setBulkActivityName(ACTIVITY_TYPE_LABELS[nextType]);
+        applyBulkDurationTotal(ACTIVITY_TYPE_DEFAULT_MINUTES[nextType]);
+      }
+    } else {
+      applyBulkDurationTotal(ACTIVITY_TYPE_DEFAULT_MINUTES[nextType]);
+    }
+  };
+
+  const handleBulkDisciplineSelect = (val: string) => {
+    if (val === '__custom__') {
+      setBulkIsCustomActivity(true);
+      return;
+    }
+    setBulkIsCustomActivity(false);
+    setBulkActivityName(val);
+
+    const catMatch = activityCatalog.find(
+      (c) => c.active !== false && normalizeDisciplineKey(c.name) === normalizeDisciplineKey(val)
+    );
+    if (catMatch) {
+      const catType = normalizeActivityType(catMatch.activityType);
+      setBulkActivityType(catType);
+      if (catMatch.durationMinutes >= 5) {
+        applyBulkDurationTotal(catMatch.durationMinutes);
+      }
+    } else {
+      const inferred = inferActivityTypeFromDiscipline(val, bulkActivityType);
+      if (inferred !== bulkActivityType) {
+        setBulkActivityType(inferred);
+        applyBulkDurationTotal(ACTIVITY_TYPE_DEFAULT_MINUTES[inferred]);
+      }
+    }
+  };
+
+  const handleToggleBulkMode = () => {
+    setBulkFeedback(null);
+    if (!isBulkMonthMode) {
+      setViewMode('month');
+      if (filterTrainerId !== 'all') {
+        setBulkTrainerId(filterTrainerId);
+      } else if (trainers[0]?.id && bulkFilterToSelectedTrainer) {
+        setFilterTrainerId(bulkTrainerId || trainers[0].id);
+      }
+      if (filterCompanyId !== 'all') {
+        setBulkCompanyId(filterCompanyId);
+      }
+      setIsBulkMonthMode(true);
+    } else {
+      setIsBulkMonthMode(false);
+    }
+  };
+
+  const handleToggleDateInBulk = (dateStr: string) => {
+    setBulkFeedback(null);
+    setBulkMarkedDates((prev) =>
+      prev.includes(dateStr) ? prev.filter((d) => d !== dateStr) : [...prev, dateStr].sort()
+    );
+  };
+
+  const handleApplyMonthPattern = (pattern: MonthSelectionPattern) => {
+    setBulkFeedback(null);
+    const patternDates = getMonthDatesByPattern(currentYearMonth, pattern, todayStr);
+    setBulkMarkedDates((prev) => {
+      const otherMonths = prev.filter((d) => !d.startsWith(`${currentYearMonth}-`));
+      return Array.from(new Set([...otherMonths, ...patternDates])).sort();
+    });
+  };
+
+  const handleClearCurrentMonthDates = () => {
+    setBulkFeedback(null);
+    setBulkMarkedDates((prev) => prev.filter((d) => !d.startsWith(`${currentYearMonth}-`)));
+  };
+
+  const handleToggleWeekdayHeader = (mondayDow: number) => {
+    if (!isBulkMonthMode) return;
+    setBulkFeedback(null);
+    setBulkMarkedDates((prev) => toggleWeekdayDatesInMonth(currentYearMonth, prev, mondayDow));
+  };
+
+  const handleSaveBulkMonthToTrainer = () => {
+    if (!selectedBulkTrainer) {
+      setBulkFeedback({
+        type: 'error',
+        message: 'Selecciona primero el entrenador al que se cargarán los días marcados.',
+      });
+      return;
+    }
+    if (!selectedBulkCompany) {
+      setBulkFeedback({
+        type: 'error',
+        message: 'Selecciona la empresa y sede para las sesiones del mes.',
+      });
+      return;
+    }
+    if (!resolvedBulkActivityName || resolvedBulkActivityName.length < 2) {
+      setBulkFeedback({
+        type: 'error',
+        message: 'Indica el nombre de la actividad o disciplina que se marcará en el mes.',
+      });
+      return;
+    }
+    if (bulkMarkedDates.length === 0) {
+      setBulkFeedback({
+        type: 'error',
+        message: 'Marca al menos un día en el calendario mensual haciendo clic sobre las casillas o usando los botones rápidos.',
+      });
+      return;
+    }
+
+    const { created, skippedDuplicates } = buildMonthlyBatchAssignments({
+      dates: bulkMarkedDates,
+      existingAssignments: assignments,
+      trainer: selectedBulkTrainer,
+      company: selectedBulkCompany,
+      sedeId: bulkSedeId,
+      time: bulkTime,
+      durationMinutes: bulkTotalDurationMinutes,
+      activityType: bulkActivityType,
+      activityName: resolvedBulkActivityName,
+      locationArea: bulkLocationArea,
+      expectedAttendees: bulkExpectedAttendees,
+      active: true,
+    });
+
+    if (created.length === 0) {
+      setBulkFeedback({
+        type: 'error',
+        message: `Todos los días marcados (${skippedDuplicates}) ya tienen asignada exactamente la actividad "${resolvedBulkActivityName}" a las ${bulkTime} hrs para ${selectedBulkTrainer.name}.`,
+      });
+      return;
+    }
+
+    if (onAddAssignmentsBatch) {
+      onAddAssignmentsBatch(created);
+    } else {
+      onAddAssignment({
+        multiMonthMode: true,
+        targetMonth: currentYearMonth,
+        initialDates: bulkMarkedDates,
+        trainerId: selectedBulkTrainer.id,
+        companyId: selectedBulkCompany.id,
+        sedeId: bulkSedeId,
+        activityType: bulkActivityType,
+        activityName: resolvedBulkActivityName,
+        time: bulkTime,
+        durationMinutes: bulkTotalDurationMinutes,
+      });
+      return;
+    }
+
+    setBulkMarkedDates([]);
+    setFilterTrainerId(selectedBulkTrainer.id);
+    setBulkFeedback({
+      type: 'success',
+      trainerId: selectedBulkTrainer.id,
+      message:
+        skippedDuplicates > 0
+          ? `Se cargaron ${created.length} ${created.length === 1 ? 'día' : 'días'} de "${resolvedBulkActivityName}" (${bulkTime} hrs · ${formatDurationHoursMinutes(bulkTotalDurationMinutes)}) en el calendario de ${selectedBulkTrainer.name}. Se omitieron ${skippedDuplicates} por estar ya asignados.`
+          : `Se cargaron ${created.length} ${created.length === 1 ? 'día' : 'días'} de "${resolvedBulkActivityName}" (${bulkTime} hrs · ${formatDurationHoursMinutes(bulkTotalDurationMinutes)}) directamente en el calendario de ${selectedBulkTrainer.name}.`,
+    });
+  };
 
   // Filter assignments based on trainer, company, activity type, and search query
   const filteredAssignments = useMemo(() => {
@@ -451,11 +739,26 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
           <button
             type="button"
             onClick={() => onOpenPdfReport?.(filterTrainerId)}
-            className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold shadow-sm transition flex items-center cursor-pointer"
+            className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 text-white text-xs font-bold shadow-sm transition flex items-center cursor-pointer whitespace-nowrap shrink-0"
             title="Descargar Rol de Asignaciones Mensuales en PDF"
           >
-            <Printer className="w-4 h-4 mr-1.5 text-red-400" />
+            <Printer className="w-4 h-4 mr-1.5 text-red-400 shrink-0" />
             <span>Descargar Horarios PDF</span>
+          </button>
+
+          {/* Toggle Direct Monthly Multi-Day Marking Mode */}
+          <button
+            type="button"
+            onClick={handleToggleBulkMode}
+            className={`px-3.5 py-2 rounded-xl text-xs font-bold shadow-sm transition flex items-center cursor-pointer whitespace-nowrap shrink-0 border ${
+              isBulkMonthMode
+                ? 'bg-emerald-700 hover:bg-emerald-800 text-white border-emerald-800'
+                : 'bg-emerald-50 hover:bg-emerald-100 text-emerald-900 border-emerald-300'
+            }`}
+            title="Marcar múltiples días del mes con una actividad y cargarlos al calendario de un entrenador"
+          >
+            <CalendarCheck className="w-4 h-4 mr-1.5 shrink-0" />
+            <span>{isBulkMonthMode ? 'Cerrar Marcado Mensual' : 'Marcar Días del Mes'}</span>
           </button>
 
           {/* Quick Add Button */}
@@ -470,13 +773,430 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                 date: formatYYYYMMDD(selectedDate),
               });
             }}
-            className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm shadow-red-500/20 transition flex items-center cursor-pointer"
+            className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm shadow-red-500/20 transition flex items-center cursor-pointer whitespace-nowrap shrink-0"
           >
-            <Plus className="w-4 h-4 mr-1.5" />
-            Asignar Nueva Clase
+            <Plus className="w-4 h-4 mr-1.5 shrink-0" />
+            <span>Asignar Nueva Clase</span>
           </button>
         </div>
       </div>
+
+      {/* Feedback Banner after Batch Load */}
+      {bulkFeedback && (
+        <div
+          className={`rounded-2xl p-4 border flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs ${
+            bulkFeedback.type === 'success'
+              ? 'bg-emerald-50/90 border-emerald-300 text-emerald-950'
+              : 'bg-rose-50/90 border-rose-300 text-rose-950'
+          }`}
+        >
+          <div className="flex items-start gap-2.5">
+            {bulkFeedback.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+            ) : (
+              <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0 mt-0.5" />
+            )}
+            <p className="font-semibold leading-relaxed">{bulkFeedback.message}</p>
+          </div>
+          <div className="flex items-center gap-2 shrink-0">
+            {bulkFeedback.type === 'success' && bulkFeedback.trainerId && onOpenPdfReport && (
+              <button
+                type="button"
+                onClick={() => onOpenPdfReport(bulkFeedback.trainerId)}
+                className="px-3 py-1.5 rounded-xl bg-white hover:bg-emerald-100 text-emerald-900 border border-emerald-300 font-bold transition flex items-center whitespace-nowrap shrink-0"
+              >
+                <Printer className="w-3.5 h-3.5 mr-1.5 text-emerald-700" />
+                <span>PDF del Entrenador</span>
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setBulkFeedback(null)}
+              className="p-1.5 rounded-lg hover:bg-black/5 text-slate-600 transition"
+              title="Cerrar aviso"
+            >
+              <X className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* ========================================================
+          PANEL INTERACTIVO: MARCAR CON LA ACTIVIDAD LOS DÍAS DEL MES
+         ======================================================== */}
+      {isBulkMonthMode && (
+        <div className="bg-white border-2 border-emerald-600/80 rounded-2xl p-4 sm:p-5 shadow-sm space-y-4">
+          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3 pb-3 border-b border-slate-200">
+            <div className="space-y-0.5">
+              <div className="flex flex-wrap items-center gap-2">
+                <CalendarCheck className="w-4 h-4 text-emerald-700 shrink-0" />
+                <h4 className="font-extrabold text-slate-900 text-sm sm:text-base">
+                  Marcar Actividad en los Días del Mes · {MONTH_NAMES[currentDate.getMonth()]} {currentDate.getFullYear()}
+                </h4>
+                <span className="text-xs text-slate-500 font-mono tabular-nums">
+                  · {bulkMarkedDates.length} {bulkMarkedDates.length === 1 ? 'día marcado' : 'días marcados'}
+                </span>
+              </div>
+              <p className="text-xs text-slate-600">
+                1. Elige entrenador, actividad, sede y horario · 2. Haz clic en los días del calendario mensual (o usa selección rápida) · 3. Carga todo el mes al calendario del entrenador.
+              </p>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              <label className="inline-flex items-center gap-2 text-xs font-semibold text-slate-700 bg-slate-50 border border-slate-200 rounded-xl px-3 py-1.5 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={bulkFilterToSelectedTrainer}
+                  onChange={(e) => {
+                    const checked = e.target.checked;
+                    setBulkFilterToSelectedTrainer(checked);
+                    if (checked && bulkTrainerId) {
+                      setFilterTrainerId(bulkTrainerId);
+                    } else if (!checked) {
+                      setFilterTrainerId('all');
+                    }
+                  }}
+                  className="rounded border-slate-300 text-emerald-600 focus:ring-emerald-500"
+                />
+                <span>Ver solo calendario del entrenador elegido</span>
+              </label>
+
+              <button
+                type="button"
+                onClick={() => {
+                  onAddAssignment({
+                    multiMonthMode: true,
+                    targetMonth: currentYearMonth,
+                    initialDates: bulkMarkedDates,
+                    trainerId: bulkTrainerId,
+                    companyId: bulkCompanyId,
+                    sedeId: bulkSedeId,
+                    activityType: bulkActivityType,
+                    activityName: resolvedBulkActivityName || undefined,
+                    time: bulkTime,
+                    durationMinutes: bulkTotalDurationMinutes,
+                  });
+                }}
+                className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 text-xs font-bold transition whitespace-nowrap shrink-0"
+              >
+                Abrir en Ventana Completa
+              </button>
+            </div>
+          </div>
+
+          {/* Row 1: Entrenador + Empresa + Sede + Salón */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">
+                Entrenador a Cargar Calendario *
+              </label>
+              <select
+                value={bulkTrainerId}
+                onChange={(e) => {
+                  const nextId = e.target.value;
+                  setBulkTrainerId(nextId);
+                  if (bulkFilterToSelectedTrainer && nextId) {
+                    setFilterTrainerId(nextId);
+                  }
+                }}
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+              >
+                {trainers.length === 0 && <option value="">Sin entrenadores registrados</option>}
+                {trainers.map((tr) => (
+                  <option key={tr.id} value={tr.id}>
+                    {tr.name} ({tr.code})
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">Empresa Cliente *</label>
+              <select
+                value={bulkCompanyId}
+                onChange={(e) => {
+                  const nextCompId = e.target.value;
+                  setBulkCompanyId(nextCompId);
+                  const comp = companies.find((c) => c.id === nextCompId);
+                  setBulkSedeId(comp?.sedes[0]?.id || '');
+                }}
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+              >
+                {companies.map((c) => (
+                  <option key={c.id} value={c.id}>
+                    {c.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">Sede Corporativa *</label>
+              <select
+                value={bulkSedeId}
+                onChange={(e) => setBulkSedeId(e.target.value)}
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+              >
+                {(selectedBulkCompany?.sedes || []).map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div>
+              <label className="block font-bold text-slate-700 mb-1">Salón / Área / Piso</label>
+              <input
+                type="text"
+                value={bulkLocationArea}
+                onChange={(e) => setBulkLocationArea(e.target.value)}
+                placeholder="Ej. Gimnasio Piso 2, Sala A..."
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-emerald-600"
+              />
+            </div>
+          </div>
+
+          {/* Row 2: Modalidad + Actividad/Disciplina + Hora Inicio + Duración (Horas y Minutos hasta 8h) + Aforo */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3 text-xs items-end">
+            <div className="lg:col-span-3">
+              <label className="block font-bold text-slate-700 mb-1">Tipo de Asignación *</label>
+              <select
+                value={bulkActivityType}
+                onChange={(e) => handleBulkModalityChange(e.target.value as ActivityType)}
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+              >
+                {ALL_ACTIVITY_TYPES.map((typeKey) => (
+                  <option key={typeKey} value={typeKey}>
+                    {ACTIVITY_TYPE_LABELS[typeKey]}
+                  </option>
+                ))}
+              </select>
+            </div>
+
+            <div className="lg:col-span-4">
+              <label className="block font-bold text-slate-700 mb-1">
+                Actividad / Disciplina a Marcar *
+              </label>
+              {!bulkIsCustomActivity ? (
+                <select
+                  value={bulkActivityName}
+                  onChange={(e) => handleBulkDisciplineSelect(e.target.value)}
+                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+                >
+                  <optgroup label={`Catálogo · ${ACTIVITY_TYPE_LABELS[bulkActivityType]}`}>
+                    {bulkDisciplineGroups.modalityCatalogOptions.map((opt) => (
+                      <option key={`mod_${opt}`} value={opt}>
+                        {opt}
+                      </option>
+                    ))}
+                  </optgroup>
+                  {bulkDisciplineGroups.selectedTrainerSpecialties.length > 0 && (
+                    <optgroup
+                      label={`Especialidades de ${selectedBulkTrainer?.name || 'Entrenador'}`}
+                    >
+                      {bulkDisciplineGroups.selectedTrainerSpecialties.map((opt) => (
+                        <option key={`tr_${opt}`} value={opt}>
+                          {opt}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  {bulkDisciplineGroups.otherCatalogByType.map((grp) => (
+                    <optgroup key={`other_${grp.type}`} label={`Catálogo · ${grp.label}`}>
+                      {grp.items.map((opt) => (
+                        <option key={`cat_${grp.type}_${opt}`} value={opt}>
+                          {opt}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                  {bulkDisciplineGroups.otherTrainerSpecialties.length > 0 && (
+                    <optgroup label="Otras Especialidades Registradas en BD">
+                      {bulkDisciplineGroups.otherTrainerSpecialties.map((opt) => (
+                        <option key={`db_${opt}`} value={opt}>
+                          {opt}
+                        </option>
+                      ))}
+                    </optgroup>
+                  )}
+                  <option value="__custom__">+ Escribir otra actividad...</option>
+                </select>
+              ) : (
+                <div className="flex items-center gap-1.5">
+                  <input
+                    type="text"
+                    value={bulkCustomActivity}
+                    onChange={(e) => setBulkCustomActivity(e.target.value)}
+                    placeholder="Nombre de la actividad o disciplina..."
+                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setBulkIsCustomActivity(false)}
+                    className="px-2.5 py-2 rounded-xl border border-slate-300 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold whitespace-nowrap shrink-0"
+                  >
+                    Catálogo
+                  </button>
+                </div>
+              )}
+            </div>
+
+            <div className="lg:col-span-2">
+              <label className="block font-bold text-slate-700 mb-1">Hora de Inicio *</label>
+              <input
+                type="time"
+                value={bulkTime}
+                onChange={(e) => setBulkTime(e.target.value || '09:00')}
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono tabular-nums font-bold text-slate-900 focus:outline-none focus:border-emerald-600"
+              />
+            </div>
+
+            <div className="lg:col-span-2">
+              <label className="block font-bold text-slate-700 mb-1">
+                Duración ({formatDurationHoursMinutes(bulkTotalDurationMinutes, true)})
+              </label>
+              <div className="grid grid-cols-2 gap-1.5">
+                <select
+                  value={bulkDurationHours}
+                  onChange={(e) => {
+                    const nextH = Number(e.target.value);
+                    setBulkDurationHours(nextH);
+                    if (nextH === 8) setBulkDurationMinutesPart(0);
+                    else if (nextH === 0 && bulkDurationMinutesPart < 5) {
+                      setBulkDurationMinutesPart(15);
+                    }
+                  }}
+                  className="bg-slate-50 border border-slate-300 rounded-xl px-2 py-2 text-xs font-mono tabular-nums font-bold text-slate-900 focus:outline-none focus:border-emerald-600"
+                  title="Horas de duración (0 a 8 horas)"
+                >
+                  {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((h) => (
+                    <option key={h} value={h}>
+                      {h} h
+                    </option>
+                  ))}
+                </select>
+                <select
+                  value={bulkDurationHours === 8 ? 0 : bulkDurationMinutesPart}
+                  disabled={bulkDurationHours === 8}
+                  onChange={(e) => setBulkDurationMinutesPart(Number(e.target.value))}
+                  className="bg-slate-50 border border-slate-300 rounded-xl px-2 py-2 text-xs font-mono tabular-nums font-bold text-slate-900 focus:outline-none focus:border-emerald-600 disabled:opacity-50"
+                  title="Minutos adicionales"
+                >
+                  {[0, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55]
+                    .filter((m) => !(bulkDurationHours === 0 && m === 0))
+                    .map((m) => (
+                      <option key={m} value={m}>
+                        {String(m).padStart(2, '0')} min
+                      </option>
+                    ))}
+                </select>
+              </div>
+            </div>
+
+            <div className="lg:col-span-1">
+              <label className="block font-bold text-slate-700 mb-1">Aforo</label>
+              <input
+                type="number"
+                min={1}
+                max={500}
+                value={bulkExpectedAttendees}
+                onChange={(e) => setBulkExpectedAttendees(Math.max(1, Number(e.target.value) || 1))}
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-2.5 py-2 text-xs font-mono tabular-nums font-bold text-slate-900 focus:outline-none focus:border-emerald-600"
+              />
+            </div>
+          </div>
+
+          {/* Row 3: Quick Month Pattern Buttons + Primary Save Action */}
+          <div className="pt-3 border-t border-slate-200 flex flex-col xl:flex-row xl:items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-1.5 text-xs">
+              <span className="font-bold text-slate-700 mr-1">
+                Selección rápida ({MONTH_NAMES[currentDate.getMonth()]}):
+              </span>
+              <button
+                type="button"
+                onClick={() => handleApplyMonthPattern('weekdays')}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-emerald-50 hover:text-emerald-900 hover:border-emerald-300 border border-slate-200 font-semibold text-slate-700 transition whitespace-nowrap shrink-0"
+              >
+                Lun a Vie
+              </button>
+              <button
+                type="button"
+                onClick={() => handleApplyMonthPattern('mwf')}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-emerald-50 hover:text-emerald-900 hover:border-emerald-300 border border-slate-200 font-semibold text-slate-700 transition whitespace-nowrap shrink-0"
+              >
+                Lun · Mié · Vie
+              </button>
+              <button
+                type="button"
+                onClick={() => handleApplyMonthPattern('tth')}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-emerald-50 hover:text-emerald-900 hover:border-emerald-300 border border-slate-200 font-semibold text-slate-700 transition whitespace-nowrap shrink-0"
+              >
+                Mar · Jue
+              </button>
+              <button
+                type="button"
+                onClick={() => handleApplyMonthPattern('saturdays')}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-emerald-50 hover:text-emerald-900 hover:border-emerald-300 border border-slate-200 font-semibold text-slate-700 transition whitespace-nowrap shrink-0"
+              >
+                Sábados
+              </button>
+              <button
+                type="button"
+                onClick={() => handleApplyMonthPattern('from_today')}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-emerald-50 hover:text-emerald-900 hover:border-emerald-300 border border-slate-200 font-semibold text-slate-700 transition whitespace-nowrap shrink-0"
+              >
+                Desde hoy (L–V)
+              </button>
+              <button
+                type="button"
+                onClick={() => handleApplyMonthPattern('all')}
+                className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-emerald-50 hover:text-emerald-900 hover:border-emerald-300 border border-slate-200 font-semibold text-slate-700 transition whitespace-nowrap shrink-0"
+              >
+                Todo el mes
+              </button>
+              {currentMonthMarkedCount > 0 && (
+                <button
+                  type="button"
+                  onClick={handleClearCurrentMonthDates}
+                  className="px-2.5 py-1.5 rounded-lg bg-rose-50 hover:bg-rose-100 border border-rose-200 font-semibold text-rose-700 transition whitespace-nowrap shrink-0"
+                >
+                  Limpiar mes ({currentMonthMarkedCount})
+                </button>
+              )}
+              {bulkMarkedDates.length > currentMonthMarkedCount && (
+                <button
+                  type="button"
+                  onClick={() => setBulkMarkedDates([])}
+                  className="px-2.5 py-1.5 rounded-lg bg-slate-100 hover:bg-slate-200 border border-slate-300 font-semibold text-slate-700 transition whitespace-nowrap shrink-0"
+                >
+                  Limpiar todo ({bulkMarkedDates.length})
+                </button>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={handleSaveBulkMonthToTrainer}
+                disabled={bulkMarkedDates.length === 0}
+                className={`px-4 py-2.5 rounded-xl text-xs font-extrabold shadow-sm transition flex items-center whitespace-nowrap shrink-0 tabular-nums ${
+                  bulkMarkedDates.length > 0
+                    ? 'bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer'
+                    : 'bg-slate-200 text-slate-500 cursor-not-allowed'
+                }`}
+              >
+                <CalendarCheck className="w-4 h-4 mr-1.5 shrink-0" />
+                <span>
+                  {bulkMarkedDates.length > 0
+                    ? `Cargar ${bulkMarkedDates.length} ${bulkMarkedDates.length === 1 ? 'Día' : 'Días'} al Calendario de ${selectedBulkTrainer?.name.split(' ')[0] || 'Entrenador'}`
+                    : 'Haz clic en los días del mes para marcarlos'}
+                </span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Calendar Navigation Bar & Controls */}
       <div className="bg-white border border-slate-200/90 rounded-2xl p-4 shadow-sm flex flex-col md:flex-row items-center justify-between gap-3">
@@ -641,15 +1361,70 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
          ======================================================== */}
       {viewMode === 'month' && (
         <div className="space-y-4">
-          <div className="bg-white border border-slate-200/90 rounded-2xl overflow-hidden shadow-sm">
+          <div
+            className={`bg-white border rounded-2xl overflow-hidden shadow-sm ${
+              isBulkMonthMode ? 'border-emerald-500 ring-1 ring-emerald-500/30' : 'border-slate-200/90'
+            }`}
+          >
+            {/* Instruction Strip when Bulk Marking is Active */}
+            {isBulkMonthMode && (
+              <div className="bg-emerald-50/80 border-b border-emerald-200 px-4 py-2 flex flex-wrap items-center justify-between gap-2 text-xs text-emerald-950">
+                <span className="font-semibold">
+                  Modo Marcado Mensual activo: haz clic en cualquier día de{' '}
+                  <strong>{MONTH_NAMES[currentDate.getMonth()]}</strong> (o en el encabezado{' '}
+                  <strong>Lunes–Domingo</strong> para marcar toda la columna) con{' '}
+                  <strong>{resolvedBulkActivityName || 'la actividad elegida'}</strong> (
+                  <span className="font-mono tabular-nums">
+                    {bulkTime}–{calculateEndTimeHHMM(bulkTime, bulkTotalDurationMinutes) || ''} ·{' '}
+                    {formatDurationHoursMinutes(bulkTotalDurationMinutes, true)}
+                  </span>
+                  ).
+                </span>
+                <span className="font-mono tabular-nums font-bold text-emerald-800 whitespace-nowrap">
+                  {currentMonthMarkedCount} en este mes · {bulkMarkedDates.length} total
+                </span>
+              </div>
+            )}
+
             {/* Weekday Labels Header */}
-            <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50 text-slate-600 font-bold text-xs text-center py-2.5">
-              {DAY_NAMES.map((d, idx) => (
-                <div key={d} className="px-1 truncate">
-                  <span className="hidden sm:inline">{d}</span>
-                  <span className="sm:hidden">{DAY_SHORT_NAMES[idx]}</span>
-                </div>
-              ))}
+            <div className="grid grid-cols-7 border-b border-slate-200 bg-slate-50 text-slate-600 font-bold text-xs text-center">
+              {DAY_NAMES.map((d, idx) => {
+                const mondayDow = idx + 1;
+                const currentMonthDowDates = monthCalendarGrid
+                  .filter((c) => c.isCurrentMonth && c.dayOfWeek === mondayDow)
+                  .map((c) => c.dateStr);
+                const allColumnMarked =
+                  isBulkMonthMode &&
+                  currentMonthDowDates.length > 0 &&
+                  currentMonthDowDates.every((dt) => bulkMarkedSet.has(dt));
+
+                if (isBulkMonthMode) {
+                  return (
+                    <button
+                      key={d}
+                      type="button"
+                      onClick={() => handleToggleWeekdayHeader(mondayDow)}
+                      className={`px-1 py-2.5 truncate transition flex items-center justify-center gap-1 cursor-pointer ${
+                        allColumnMarked
+                          ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                          : 'hover:bg-emerald-50 hover:text-emerald-800 text-slate-700'
+                      }`}
+                      title={`Marcar o desmarcar todos los ${d} de ${MONTH_NAMES[currentDate.getMonth()]}`}
+                    >
+                      {allColumnMarked && <Check className="w-3 h-3 shrink-0" />}
+                      <span className="hidden sm:inline">{d}</span>
+                      <span className="sm:hidden">{DAY_SHORT_NAMES[idx]}</span>
+                    </button>
+                  );
+                }
+
+                return (
+                  <div key={d} className="px-1 py-2.5 truncate">
+                    <span className="hidden sm:inline">{d}</span>
+                    <span className="sm:hidden">{DAY_SHORT_NAMES[idx]}</span>
+                  </div>
+                );
+              })}
             </div>
 
             {/* Calendar Days Matrix */}
@@ -657,24 +1432,56 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
               {monthCalendarGrid.map((cell, idx) => {
                 const isSelectedCell = formatYYYYMMDD(selectedDate) === cell.dateStr;
                 const hasClasses = cell.classes.length > 0;
+                const isMarkedForBulk = isBulkMonthMode && bulkMarkedSet.has(cell.dateStr);
+                const alreadyAssignedSameSlot =
+                  isBulkMonthMode &&
+                  Boolean(bulkTrainerId) &&
+                  Boolean(bulkCompanyId) &&
+                  Boolean(resolvedBulkActivityName) &&
+                  hasMatchingAssignmentOnDate(assignments, {
+                    trainerId: bulkTrainerId,
+                    companyId: bulkCompanyId,
+                    sedeId: bulkSedeId,
+                    dateStr: cell.dateStr,
+                    time: bulkTime,
+                    activityName: resolvedBulkActivityName,
+                  });
 
                 return (
                   <div
                     key={`${cell.dateStr}_${idx}`}
-                    onClick={() => setSelectedDate(cell.date)}
-                    className={`min-h-[110px] sm:min-h-[125px] p-1.5 sm:p-2 transition flex flex-col justify-between group relative cursor-pointer ${
-                      cell.isCurrentMonth ? 'bg-white' : 'bg-slate-50/70 text-slate-400'
+                    onClick={() => {
+                      setSelectedDate(cell.date);
+                      if (isBulkMonthMode) {
+                        if (!cell.isCurrentMonth) {
+                          setCurrentDate(cell.date);
+                        }
+                        handleToggleDateInBulk(cell.dateStr);
+                      }
+                    }}
+                    className={`min-h-[110px] sm:min-h-[128px] p-1.5 sm:p-2 transition flex flex-col justify-between group relative cursor-pointer select-none ${
+                      isMarkedForBulk
+                        ? 'bg-emerald-50/90 ring-2 ring-emerald-600 ring-inset z-10'
+                        : cell.isCurrentMonth
+                        ? 'bg-white'
+                        : 'bg-slate-50/70 text-slate-400'
                     } ${
-                      isSelectedCell
+                      !isMarkedForBulk && isSelectedCell
                         ? 'ring-2 ring-red-600 ring-inset z-10 bg-red-50/20'
-                        : 'hover:bg-slate-50'
+                        : !isMarkedForBulk
+                        ? isBulkMonthMode
+                          ? 'hover:bg-emerald-50/40'
+                          : 'hover:bg-slate-50'
+                        : ''
                     }`}
                   >
                     {/* Cell Day Header */}
-                    <div className="flex items-center justify-between">
+                    <div className="flex items-center justify-between gap-1">
                       <span
-                        className={`text-xs font-extrabold w-6 h-6 flex items-center justify-center rounded-full ${
-                          cell.isToday
+                        className={`text-xs font-extrabold w-6 h-6 flex items-center justify-center rounded-full tabular-nums shrink-0 ${
+                          isMarkedForBulk
+                            ? 'bg-emerald-600 text-white shadow-xs'
+                            : cell.isToday
                             ? 'bg-red-600 text-white shadow-xs'
                             : isSelectedCell
                             ? 'bg-red-100 text-red-700'
@@ -686,29 +1493,68 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                         {cell.dayNumber}
                       </span>
 
-                      {/* Quick Add Button on Cell Hover */}
-                      <button
-                        type="button"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          setSelectedDate(cell.date);
-                          onAddAssignment({
-                            frequency: 'fecha_unica',
-                            date: cell.dateStr,
-                            dayOfWeek: cell.dayOfWeek,
-                            dayOfMonth: cell.dayNumber,
-                          });
-                        }}
-                        className="opacity-0 group-hover:opacity-100 p-1 rounded-md bg-red-50 hover:bg-red-600 text-red-600 hover:text-white transition shadow-xs"
-                        title={`Asignar clase el ${cell.dateStr}`}
-                      >
-                        <Plus className="w-3 h-3" />
-                      </button>
+                      {isBulkMonthMode ? (
+                        <span
+                          className={`w-5 h-5 rounded-md border flex items-center justify-center transition shrink-0 ${
+                            isMarkedForBulk
+                              ? 'bg-emerald-600 border-emerald-700 text-white'
+                              : 'border-slate-300 bg-white text-transparent group-hover:border-emerald-500'
+                          }`}
+                          title={
+                            isMarkedForBulk
+                              ? `Quitar marca del ${cell.dateStr}`
+                              : `Marcar actividad en ${cell.dateStr}`
+                          }
+                        >
+                          <Check className="w-3.5 h-3.5" />
+                        </span>
+                      ) : (
+                        /* Quick Add Button on Cell Hover */
+                        <button
+                          type="button"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            setSelectedDate(cell.date);
+                            onAddAssignment({
+                              frequency: 'fecha_unica',
+                              date: cell.dateStr,
+                              dayOfWeek: cell.dayOfWeek,
+                              dayOfMonth: cell.dayNumber,
+                            });
+                          }}
+                          className="opacity-0 group-hover:opacity-100 p-1 rounded-md bg-red-50 hover:bg-red-600 text-red-600 hover:text-white transition shadow-xs"
+                          title={`Asignar clase el ${cell.dateStr}`}
+                        >
+                          <Plus className="w-3 h-3" />
+                        </button>
+                      )}
                     </div>
 
-                    {/* Classes inside cell */}
+                    {/* Classes + Marked Preview inside cell */}
                     <div className="space-y-1 my-1 flex-1 overflow-hidden">
-                      {cell.classes.slice(0, 2).map((asg) => {
+                      {isMarkedForBulk && (
+                        <div
+                          className={`p-1 rounded-lg text-[10px] font-bold border truncate flex items-center justify-between gap-1 ${
+                            alreadyAssignedSameSlot
+                              ? 'bg-amber-100 text-amber-950 border-amber-300'
+                              : 'bg-emerald-600 text-white border-emerald-700 shadow-2xs'
+                          }`}
+                          title={
+                            alreadyAssignedSameSlot
+                              ? `Ya existe esta misma actividad a las ${bulkTime} hrs para ${selectedBulkTrainer?.name || ''}`
+                              : `Por cargar: ${bulkTime} (${formatDurationHoursMinutes(bulkTotalDurationMinutes, true)}) · ${resolvedBulkActivityName || 'Actividad'} · ${selectedBulkTrainer?.name || ''}`
+                          }
+                        >
+                          <span className="font-mono tabular-nums shrink-0">{bulkTime}</span>
+                          <span className="truncate">
+                            {alreadyAssignedSameSlot
+                              ? 'Ya asignada'
+                              : resolvedBulkActivityName || 'Nueva'}
+                          </span>
+                        </div>
+                      )}
+
+                      {cell.classes.slice(0, isMarkedForBulk ? 1 : 2).map((asg) => {
                         const normType = normalizeActivityType(asg.activityType);
                         const trainerInitial = asg.trainerName.split(' ')[0] || asg.trainerName;
                         const durMins = getAssignmentDurationMinutes(asg, activityCatalog);
@@ -724,6 +1570,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                           <div
                             key={asg.id}
                             onClick={(e) => {
+                              if (isBulkMonthMode) return;
                               e.stopPropagation();
                               setSelectedDate(cell.date);
                               onEditAssignment(asg);
@@ -761,19 +1608,28 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                         );
                       })}
 
-                      {cell.classes.length > 2 && (
-                        <div className="text-[10px] font-bold text-red-600 text-center bg-red-50 rounded py-0.5 border border-red-100">
-                          +{cell.classes.length - 2} más
+                      {cell.classes.length > (isMarkedForBulk ? 1 : 2) && (
+                        <div className="text-[10px] font-bold text-red-600 text-center bg-red-50 rounded py-0.5 border border-red-100 tabular-nums">
+                          +{cell.classes.length - (isMarkedForBulk ? 1 : 2)} más
                         </div>
                       )}
                     </div>
 
                     {/* Total badge at bottom */}
-                    {hasClasses && (
-                      <div className="text-right">
-                        <span className="text-[9px] font-bold text-slate-500">
-                          {cell.classes.length} {cell.classes.length === 1 ? 'clase' : 'clases'}
-                        </span>
+                    {(hasClasses || isMarkedForBulk) && (
+                      <div className="flex items-center justify-between text-[9px] font-bold">
+                        {isMarkedForBulk ? (
+                          <span className="text-emerald-800 truncate">
+                            {selectedBulkTrainer?.name.split(' ')[0] || 'Marcado'}
+                          </span>
+                        ) : (
+                          <span />
+                        )}
+                        {hasClasses && (
+                          <span className="text-slate-500 tabular-nums">
+                            {cell.classes.length} {cell.classes.length === 1 ? 'clase' : 'clases'}
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>
