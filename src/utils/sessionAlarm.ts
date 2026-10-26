@@ -656,3 +656,91 @@ export function triggerBrowserCheckoutNotification(record: AttendanceRecord): vo
     // Ignore notification constructor restrictions in restricted webviews
   }
 }
+
+/**
+ * Plays a pleasant ascending 3-note notification chime for the Administrator
+ * when a trainer starts an assignment in real time.
+ */
+export async function playAdminSessionStartChime(): Promise<boolean> {
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return false;
+    const stateStr = String(ctx.state);
+    if (stateStr === 'suspended' || stateStr === 'interrupted') {
+      await ctx.resume();
+    }
+    if (String(ctx.state) !== 'running') {
+      return false;
+    }
+
+    const now = ctx.currentTime + 0.01;
+    const chimeNotes = [
+      { freq: 587.33, offset: 0.0, duration: 0.14 },  // D5
+      { freq: 880.0, offset: 0.13, duration: 0.16 },  // A5
+      { freq: 1174.66, offset: 0.27, duration: 0.28 }, // D6
+    ];
+
+    chimeNotes.forEach(({ freq, offset, duration }) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.setValueAtTime(freq, now + offset);
+      gain.gain.setValueAtTime(0.0001, now + offset);
+      gain.gain.exponentialRampToValueAtTime(0.28, now + offset + 0.015);
+      gain.gain.exponentialRampToValueAtTime(0.0001, now + offset + duration);
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(now + offset);
+      osc.stop(now + offset + duration + 0.02);
+    });
+
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Triggers a desktop browser Notification for the Administrator when a trainer checks in.
+ */
+export function triggerAdminSessionStartNotification(record: AttendanceRecord): void {
+  if (typeof window === 'undefined' || !('Notification' in window)) return;
+  if (Notification.permission !== 'granted') return;
+
+  const title = `BSCW Check: ${record.trainerName} inició su asignación`;
+  const options: NotificationOptions & { renotify?: boolean } = {
+    body: `${record.activityName} en ${record.companyName} (${record.sedeName}) · Entrada ${record.checkInTime} hrs.`,
+    tag: `bscw-admin-start-${record.id}`,
+    renotify: true,
+  };
+
+  if ('serviceWorker' in navigator && navigator.serviceWorker) {
+    navigator.serviceWorker
+      .getRegistration()
+      .then((reg) => {
+        if (reg && typeof reg.showNotification === 'function') {
+          return reg.showNotification(title, options);
+        }
+        try {
+          new Notification(title, options);
+        } catch {
+          // Ignore constructor restrictions
+        }
+      })
+      .catch(() => {
+        try {
+          new Notification(title, options);
+        } catch {
+          // Ignore
+        }
+      });
+    return;
+  }
+
+  try {
+    new Notification(title, options);
+  } catch {
+    // Ignore notification restrictions
+  }
+}
+

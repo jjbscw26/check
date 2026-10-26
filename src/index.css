@@ -16,18 +16,37 @@ body,
   }
 
   html,
-  body {
+  body,
+  #root {
     background: #ffffff !important;
     color: #0f172a !important;
+    width: 100% !important;
     height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
     overflow: visible !important;
     -webkit-print-color-adjust: exact;
     print-color-adjust: exact;
   }
 
+  /* Ensure every ancestor of an open printable modal is visible and unclipped */
+  body:has([data-printable-modal="true"]) *:has([data-printable-modal="true"]) {
+    display: block !important;
+    visibility: visible !important;
+    height: auto !important;
+    min-height: 0 !important;
+    max-height: none !important;
+    overflow: visible !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  /* Hide all sibling UI outside the active printable modal so only the document prints */
   body:has([data-printable-modal="true"]) header,
   body:has([data-printable-modal="true"]) footer,
-  body:has([data-printable-modal="true"]) main > div > :not(:has([data-printable-modal="true"])) {
+  body:has([data-printable-modal="true"])
+    :not([data-printable-modal="true"]):not([data-printable-modal="true"] *):has([data-printable-modal="true"])
+    > :not(:has([data-printable-modal="true"])):not([data-printable-modal="true"]) {
     display: none !important;
   }
 
@@ -37,29 +56,35 @@ body,
     width: 100% !important;
     max-width: 100% !important;
     height: auto !important;
+    min-height: 0 !important;
     max-height: none !important;
     overflow: visible !important;
     background: #ffffff !important;
+    color: #0f172a !important;
     padding: 0 !important;
     margin: 0 !important;
     box-shadow: none !important;
     backdrop-filter: none !important;
     display: block !important;
+    visibility: visible !important;
   }
 
   [data-printable-modal="true"] > div {
     width: 100% !important;
     max-width: 100% !important;
     height: auto !important;
+    min-height: 0 !important;
     max-height: none !important;
     overflow: visible !important;
     box-shadow: none !important;
     border: none !important;
     border-radius: 0 !important;
+    background: #ffffff !important;
   }
 
   [data-printable-scroll="true"] {
     height: auto !important;
+    min-height: 0 !important;
     max-height: none !important;
     overflow: visible !important;
   }

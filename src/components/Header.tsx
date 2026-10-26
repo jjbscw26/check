@@ -22,6 +22,8 @@ interface HeaderProps {
   onLogoutTrainerSession?: () => void;
   activeSessionCount: number;
   overdueSessionCount?: number;
+  unreadAdminAlertCount?: number;
+  latestAdminAlertTrainer?: string | null;
   isMobileOrTablet?: boolean;
   isDirectoryAuthenticated?: boolean;
   directoryUserEmail?: string | null;
@@ -35,6 +37,8 @@ export const Header: React.FC<HeaderProps> = ({
   onLogoutTrainerSession,
   activeSessionCount,
   overdueSessionCount = 0,
+  unreadAdminAlertCount = 0,
+  latestAdminAlertTrainer = null,
   isMobileOrTablet = false,
   isDirectoryAuthenticated = false,
   directoryUserEmail = null,
@@ -203,8 +207,30 @@ export const Header: React.FC<HeaderProps> = ({
                 >
                   <BarChart3 className="w-3.5 h-3.5 sm:w-4 sm:h-4 mr-1.5 shrink-0" />
                   <span>Panel Admin</span>
+                  {unreadAdminAlertCount > 0 && (
+                    <span className="ml-1.5 px-1.5 py-0.5 bg-emerald-500 text-white text-[10px] rounded-md font-bold font-mono tabular-nums">
+                      {unreadAdminAlertCount}
+                    </span>
+                  )}
                 </button>
               </div>
+            )}
+
+            {/* Real-Time Trainer Start Alert Chip for Desktop Admin */}
+            {!isMobileOrTablet && unreadAdminAlertCount > 0 && currentView !== 'admin' && (
+              <button
+                type="button"
+                onClick={() => onViewChange('admin')}
+                className="hidden lg:inline-flex items-center px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-xl text-emerald-950 text-[11px] font-bold shadow-xs whitespace-nowrap shrink-0 tabular-nums transition"
+                title="Un entrenador acaba de dar inicio a su asignación — clic para abrir Panel Admin"
+              >
+                <BellRing className="w-3.5 h-3.5 text-emerald-600 mr-1.5 shrink-0" />
+                <span>
+                  {latestAdminAlertTrainer
+                    ? `Inicio: ${latestAdminAlertTrainer}`
+                    : `Inicios Nuevos (${unreadAdminAlertCount})`}
+                </span>
+              </button>
             )}
 
             {/* Overdue Session Alert Badge (Tablet/Desktop) */}

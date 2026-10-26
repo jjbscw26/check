@@ -27,12 +27,16 @@ import {
   Lock,
   LayoutGrid,
   List,
+  Play,
   RefreshCw,
+  Volume2,
+  X,
   ZoomIn,
 } from 'lucide-react';
 import {
   ACTIVITY_TYPE_LABELS,
   ActivityCatalogItem,
+  AdminSessionStartAlert,
   AttendanceRecord,
   ClassAssignment,
   Company,
@@ -92,6 +96,10 @@ interface AdminDashboardProps {
   onDeleteCatalogItem: (id: string) => void;
   onResetData: () => void;
   isDirectoryAuthenticated?: boolean;
+  adminStartAlerts?: AdminSessionStartAlert[];
+  onDismissAdminAlert?: (alertId: string) => void;
+  onClearAllAdminAlerts?: () => void;
+  onReplayAlertChime?: () => void;
 }
 
 export const AdminDashboard: React.FC<AdminDashboardProps> = ({
@@ -119,6 +127,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onDeleteCatalogItem,
   onResetData,
   isDirectoryAuthenticated = false,
+  adminStartAlerts = [],
+  onDismissAdminAlert,
+  onClearAllAdminAlerts,
+  onReplayAlertChime,
 }) => {
   const [activeTab, setActiveTab] = useState<'reports' | 'schedule' | 'activity_types' | 'log' | 'sedes' | 'trainers' | 'personnel'>('reports');
   const [selectedRecordForDetail, setSelectedRecordForDetail] = useState<AttendanceRecord | null>(null);
@@ -148,6 +160,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [selectedDate, setSelectedDate] = useState<string>(todayStr);
   const currentMonthStr = todayStr.substring(0, 7); // YYYY-MM
   const [selectedMonth, setSelectedMonth] = useState<string>(currentMonthStr);
+  const userTouchedMonthRef = React.useRef<boolean>(false);
+
+  // If current calendar month has 0 records but historical records exist, default to the most recent month with data
+  React.useEffect(() => {
+    if (userTouchedMonthRef.current || records.length === 0) return;
+    const hasCurrentMonth = records.some((r) => r.date && r.date.startsWith(currentMonthStr));
+    if (!hasCurrentMonth) {
+      const sortedDates = records
+        .map((r) => r.date)
+        .filter((d): d is string => Boolean(d && d.length >= 7))
+        .sort((a, b) => b.localeCompare(a));
+      if (sortedDates.length > 0) {
+        setSelectedMonth(sortedDates[0].substring(0, 7));
+      }
+    }
+  }, [records, currentMonthStr]);
 
   // Inline confirmation states (avoiding window.confirm)
   const [confirmDeleteRecordId, setConfirmDeleteRecordId] = useState<string | null>(null);
@@ -197,15 +225,19 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     return () => clearInterval(timer);
   }, []);
 
-  const overdueSessions = useMemo(() => {
+  const activeInProgressSessions = useMemo(() => {
     return records
       .filter((r) => r.status === 'en_curso')
       .map((record) => ({
         record,
         alarm: getSessionAlarmStatus(record, activityCatalog, adminNowMs),
       }))
-      .filter((item) => item.alarm.isOverdue && !item.alarm.hasExceededUnclosedGrace);
+      .filter((item) => !item.alarm.hasExceededUnclosedGrace);
   }, [records, activityCatalog, adminNowMs]);
+
+  const overdueSessions = useMemo(() => {
+    return activeInProgressSessions.filter((item) => item.alarm.isOverdue);
+  }, [activeInProgressSessions]);
 
   // Summary of blocked & non-compliant assignments and sessions
   const nonCompliantSummary = useMemo(() => {
@@ -580,6 +612,168 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         </div>
       </div>
 
+      {/* Real-Time Admin Notification Banner: Trainer Started Assignment */}
+      {adminStartAlerts.length > 0 && (
+        <div className="bg-emerald-950 text-white border border-emerald-700 rounded-2xl p-4 sm:p-5 shadow-md space-y-3.5 print:hidden">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 pb-2.5 border-b border-emerald-800/80">
+            <div className="flex items-center gap-2.5">
+              <div className="w-9 h-9 rounded-xl bg-emerald-500 text-slate-950 flex items-center justify-center shrink-0">
+                <BellRing className="w-5 h-5 stroke-[2.4]" />
+              </div>
+              <div>
+                <p className="text-[11px] font-extrabold uppercase tracking-wider text-emerald-300">
+                  Aviso en Tiempo Real · Inicio de Asignación ({adminStartAlerts.length})
+                </p>
+                <p className="text-xs text-emerald-100">
+                  Un entrenador acaba de registrar su entrada e iniciar su sesión asignada en sede.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2 shrink-0">
+              {onReplayAlertChime && (
+                <button
+                  type="button"
+                  onClick={onReplayAlertChime}
+                  className="min-h-[36px] px-3 py-1.5 rounded-xl bg-emerald-900/90 hover:bg-emerald-800 border border-emerald-700 text-emerald-100 text-xs font-semibold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition cursor-pointer"
+                  title="Probar sonido de alerta administrativa"
+                >
+                  <Volume2 className="w-3.5 h-3.5 text-emerald-300 shrink-0" />
+                  <span>Probar Aviso Sonoro</span>
+                </button>
+              )}
+              {adminStartAlerts.length > 1 && onClearAllAdminAlerts && (
+                <button
+                  type="button"
+                  onClick={onClearAllAdminAlerts}
+                  className="min-h-[36px] px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/20 text-white text-xs font-bold whitespace-nowrap shrink-0 transition cursor-pointer"
+                >
+                  Descartar Todos
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
+            {adminStartAlerts.map((alert) => {
+              const matchedRecord = records.find((r) => r.id === alert.recordId);
+              const isLate = alert.punctualityStatus === 'con_retraso';
+              const isEarly = alert.punctualityStatus === 'adelantado';
+
+              return (
+                <div
+                  key={alert.id}
+                  className="bg-emerald-900/60 border border-emerald-700/80 rounded-xl p-3.5 flex flex-col sm:flex-row sm:items-center justify-between gap-3"
+                >
+                  <div className="flex items-start gap-3 min-w-0">
+                    {alert.photoUrl ? (
+                      <img
+                        src={alert.photoUrl}
+                        alt={alert.trainerName}
+                        referrerPolicy="no-referrer"
+                        className="w-12 h-12 rounded-xl object-cover border-2 border-emerald-400 shrink-0 bg-slate-900"
+                      />
+                    ) : (
+                      <div className="w-12 h-12 rounded-xl bg-emerald-800 border border-emerald-600 flex items-center justify-center shrink-0 text-emerald-200">
+                        <Play className="w-5 h-5" />
+                      </div>
+                    )}
+                    <div className="min-w-0 space-y-0.5 text-xs">
+                      <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                        <span className="font-extrabold text-white text-sm truncate">
+                          {alert.trainerName}
+                        </span>
+                        <span
+                          className={`font-mono tabular-nums text-[11px] font-bold ${
+                            isLate
+                              ? 'text-amber-300'
+                              : isEarly
+                                ? 'text-sky-300'
+                                : 'text-emerald-300'
+                          }`}
+                        >
+                          · Entrada {alert.checkInTime} (Prog. {alert.scheduledTime})
+                        </span>
+                      </div>
+                      <p className="text-emerald-100 font-semibold truncate">
+                        {alert.activityName} ({ACTIVITY_TYPE_LABELS[normalizeActivityType(alert.activityType)]})
+                      </p>
+                      <p className="text-[11px] text-emerald-200/90 truncate">
+                        {alert.companyName} — {alert.sedeName} ({alert.locationArea}) · GPS{' '}
+                        <span className="font-mono tabular-nums">
+                          {formatDistance(alert.distanceToSedeMeters)}
+                        </span>
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="flex items-center justify-end gap-1.5 shrink-0">
+                    {matchedRecord && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSelectedRecordForDetail(matchedRecord);
+                          onDismissAdminAlert?.(alert.id);
+                        }}
+                        className="min-h-[36px] px-3 py-1.5 rounded-lg bg-emerald-400 hover:bg-emerald-300 text-slate-950 text-xs font-extrabold whitespace-nowrap shrink-0 transition cursor-pointer"
+                      >
+                        Ver Evidencia
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => onDismissAdminAlert?.(alert.id)}
+                      className="min-h-[36px] px-2.5 py-1.5 rounded-lg bg-emerald-950/70 hover:bg-emerald-950 text-emerald-200 hover:text-white border border-emerald-700 text-xs font-semibold inline-flex items-center gap-1 whitespace-nowrap shrink-0 transition cursor-pointer"
+                      title="Marcar aviso como enterado"
+                    >
+                      <span>Enterado</span>
+                      <X className="w-3.5 h-3.5 shrink-0" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Live Active Sessions Monitor Strip (Trainers Currently Conducting Assignments) */}
+      {activeInProgressSessions.length > 0 && (
+        <div className="bg-white border border-emerald-300 rounded-2xl p-4 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-3 print:hidden">
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 rounded-xl bg-emerald-50 border border-emerald-200 text-emerald-700 flex items-center justify-center shrink-0">
+              <Play className="w-4 h-4" />
+            </div>
+            <div className="space-y-0.5 text-xs">
+              <p className="text-[11px] font-extrabold uppercase tracking-wide text-emerald-800">
+                Asignaciones en Curso Ahora ({activeInProgressSessions.length})
+              </p>
+              <p className="font-semibold text-slate-900">
+                {activeInProgressSessions
+                  .map(
+                    ({ record, alarm }) =>
+                      `${record.trainerName} · ${record.activityName} en ${record.companyName} (${record.sedeName}) — Inició ${record.checkInTime} (Fin est. ${alarm.expectedEndTimeFormatted})`
+                  )
+                  .join('  •  ')}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => {
+                setFilterPunctuality('en_curso');
+                setActiveTab('log');
+              }}
+              className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold whitespace-nowrap shrink-0 transition cursor-pointer"
+            >
+              Monitorear en Bitácora
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Admin Overdue Checkout Alert Banner */}
       {overdueSessions.length > 0 && (
         <div className="bg-amber-50 border border-amber-300 rounded-2xl p-4 shadow-xs flex flex-col md:flex-row items-center md:justify-between gap-3 text-center md:text-left">
@@ -729,7 +923,10 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 <input
                   type="month"
                   value={selectedMonth}
-                  onChange={(e) => setSelectedMonth(e.target.value)}
+                  onChange={(e) => {
+                    userTouchedMonthRef.current = true;
+                    setSelectedMonth(e.target.value);
+                  }}
                   className="bg-white border border-slate-300 text-slate-900 text-xs rounded-lg px-3 py-1.5 focus:outline-none focus:border-red-500 font-mono shadow-sm"
                 />
               )}

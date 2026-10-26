@@ -368,7 +368,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
         setValidationError(
           lockInfo.nonComplianceReason === 'sin_cierre_30m'
             ? `La sesión "${asg.activityName}" (${targetDate} · ${asg.time} hrs) quedó con salida pendiente, se dio por TERMINADA a los 60 minutos después de la hora de término y fue calificada como NO CERRADA.`
-            : `La sesión "${asg.activityName}" (${targetDate} · ${asg.time} hrs) superó los 20 minutos desde su inicio sin haberse cargado, por lo que se dio por CERRADA y bloqueada.`
+            : `La sesión "${asg.activityName}" (${targetDate} · ${asg.time} hrs) superó los 10 minutos desde su inicio sin haberse cargado, por lo que se dio por CERRADA y bloqueada.`
         );
       } else if (lockInfo.isCompletedAndClosed) {
         setValidationError(
@@ -392,7 +392,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
         );
       } else if (lockInfo.loadWindowState === 'antes_de_30m') {
         setValidationError(
-          `Aún no inicia el horario permitido de carga para "${asg.activityName}". Solo podrás cargar sus datos hoy desde 30 minutos antes de iniciar (${lockInfo.unlockTimeHHMM} hrs) y hasta máximo 20 minutos después de iniciada (${lockInfo.loadDeadlineHHMM} hrs).`
+          `Aún no inicia el horario permitido de carga para "${asg.activityName}". Solo podrás cargar sus datos hoy desde 30 minutos antes de iniciar (${lockInfo.unlockTimeHHMM} hrs) y hasta máximo 10 minutos después de iniciada (${lockInfo.loadDeadlineHHMM} hrs).`
         );
       } else {
         setValidationError(
@@ -431,7 +431,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
     setIsTestAlarmModalOpen(false);
   }, [currentTrainer.id, clearCheckInFormFields]);
 
-  // If a loaded session crosses +20 minutes after start without being registered, auto-clear and close it
+  // If a loaded session crosses +10 minutes after start without being registered, auto-clear and close it
   React.useEffect(() => {
     if (!loadedAssignment) return;
     const targetDate = sessionDate || todayYMD;
@@ -448,7 +448,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
       clearCheckInFormFields();
       if (st.loadWindowState === 'cerrada_20m' || st.isNonCompliant) {
         setValidationError(
-          `Transcurrieron más de 20 minutos desde el inicio programado de "${expiredName}" (${expiredTime} hrs) sin registrar la entrada. La sesión se dio por cerrada y los campos volvieron a quedar en blanco.`
+          `Transcurrieron más de 10 minutos desde el inicio programado de "${expiredName}" (${expiredTime} hrs) sin registrar la entrada. La sesión se dio por cerrada y los campos volvieron a quedar en blanco.`
         );
       }
     }
@@ -498,7 +498,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
 
     if (!loadedAssignment || !selectedCompany || !selectedSede || !activityType || !sessionDate || !scheduledTime) {
       setValidationError(
-        'Debes cargar primero una sesión asignada del día de hoy (dentro de los 30 minutos previos al inicio y hasta 20 minutos después de iniciada) para llenar los datos de la sede.'
+        'Debes cargar primero una sesión asignada del día de hoy (dentro de los 30 minutos previos al inicio y hasta 10 minutos después de iniciada) para llenar los datos de la sede.'
       );
       return;
     }
@@ -524,8 +524,8 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
       clearCheckInFormFields();
       setValidationError(
         liveStatus.loadWindowState === 'cerrada_20m' || liveStatus.isNonCompliant
-          ? `La sesión "${loadedAssignment.activityName}" superó los 20 minutos posteriores a su inicio sin cargarse y fue dada por cerrada.`
-          : `La sesión "${loadedAssignment.activityName}" no está dentro del horario permitido de carga (-30 min a +20 min del inicio).`
+          ? `La sesión "${loadedAssignment.activityName}" superó los 10 minutos posteriores a su inicio sin cargarse y fue dada por cerrada.`
+          : `La sesión "${loadedAssignment.activityName}" no está dentro del horario permitido de carga (-30 min a +10 min del inicio).`
       );
       return;
     }
@@ -568,6 +568,22 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
       )
     );
 
+    const sessionFacialVerification =
+      trainerSession &&
+      trainerSession.facePhotoUrl &&
+      trainerSession.facePhotoUrl.length >= 5 &&
+      trainerSession.facePhotoUrl.length <= 250000
+        ? {
+            verified: true,
+            confidenceScore: trainerSession.confidenceScore,
+            facePhotoUrl: trainerSession.facePhotoUrl,
+            capturedAt: trainerSession.authenticatedAt,
+            biometricId: trainerSession.biometricId,
+            livenessPassed: true,
+            trainerName: trainerSession.trainerName || currentTrainer.name,
+          }
+        : undefined;
+
     const newRecord: AttendanceRecord = {
       id: `rec_${Date.now()}`,
       assignmentId: loadedAssignment.id,
@@ -593,6 +609,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
       observations,
       checkInGps: fallbackGps,
       photoUrl,
+      ...(sessionFacialVerification ? { facialVerification: sessionFacialVerification } : {}),
       plannedDurationMinutes: parsedDuration,
       alarmEnabled,
       alarmSnoozedUntilIso: null,
@@ -1198,7 +1215,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                     Clases y Horarios Asignados por Administración
                   </h3>
                   <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
-                    Carga habilitada el día exacto desde 30 min antes de iniciar hasta 20 min después de iniciada.
+                    Carga habilitada el día exacto desde 30 min antes de iniciar hasta 10 min después de iniciada.
                   </p>
                 </div>
               </div>
@@ -1360,7 +1377,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                                   <Ban className="w-3.5 h-3.5 mr-1 text-rose-600 shrink-0" />
                                   {lockInfo.nonComplianceReason === 'sin_cierre_30m'
                                     ? 'Terminada (+60m) · No Cerrada'
-                                    : 'Cerrada · No Cargada (+20m)'}
+                                    : 'Cerrada · No Cargada (+10m)'}
                                 </span>
                               ) : isClosed ? (
                                 <span className="inline-flex items-center font-bold text-emerald-800">
@@ -1465,7 +1482,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                                 <span className="font-extrabold block text-rose-900">
                                   {lockInfo.nonComplianceReason === 'sin_cierre_30m'
                                     ? 'Terminada a los 60 min del término — Calificada como No Cerrada'
-                                    : 'Sesión Cerrada — No se cargó pasados 20 minutos de iniciada'}
+                                    : 'Sesión Cerrada — No se cargó pasados 10 minutos de iniciada'}
                                 </span>
                                 {lockInfo.detailText && (
                                   <span className="text-rose-800 font-mono tabular-nums text-[10px] block mt-0.5">
@@ -1516,7 +1533,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                           )}
                         </div>
 
-                        {/* Action Button — Enforces Exact Day & [-30 min, +20 min] Load Window */}
+                        {/* Action Button — Enforces Exact Day & [-30 min, +10 min] Load Window */}
                         {lockInfo.isLocked ? (
                           <button
                             type="button"
@@ -1534,7 +1551,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                               {isNonCompliant
                                 ? lockInfo.nonComplianceReason === 'sin_cierre_30m'
                                   ? 'Terminada (+60 min) — No Cerrada'
-                                  : 'Sesión Cerrada — No cargada (+20 min)'
+                                  : 'Sesión Cerrada — No cargada (+10 min)'
                                 : isClosed
                                   ? 'Bloqueada — Completada y Cerrada'
                                   : 'Bloqueada — Sesión en Curso'}
@@ -1749,7 +1766,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                                         {dayLock.isNonCompliant
                                           ? dayLock.nonComplianceReason === 'sin_cierre_30m'
                                             ? 'No cerrada'
-                                            : 'Cerrada (+20m)'
+                                            : 'Cerrada (+10m)'
                                           : dayLock.isCompletedAndClosed
                                             ? 'Bloqueada'
                                             : 'En curso'}
@@ -1807,7 +1824,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
             <span>Nuevo Registro de Entrada en Sede</span>
           </h3>
           <p className="text-xs sm:text-sm text-slate-500 mt-1 leading-relaxed">
-            Los campos permanecen en blanco y se llenan automáticamente al cargar tu sesión asignada del día (habilitada desde 30 min antes del inicio y hasta 20 min después de iniciada).
+            Los campos permanecen en blanco y se llenan automáticamente al cargar tu sesión asignada del día (habilitada desde 30 min antes del inicio y hasta 10 min después de iniciada).
           </p>
         </div>
 
@@ -1820,7 +1837,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                 Campos en blanco hasta cargar sesión asignada
               </p>
               <p className="mt-0.5 text-slate-600 leading-relaxed">
-                Selecciona <strong>«Cargar Sesión de Hoy»</strong> en la sección superior para rellenar los datos de la sede y actividad. Solo se permite cargar el día exacto de la asignación, entre <strong>30 minutos antes</strong> de iniciar y máximo <strong>20 minutos después</strong> de iniciada.
+                Selecciona <strong>«Cargar Sesión de Hoy»</strong> en la sección superior para rellenar los datos de la sede y actividad. Solo se permite cargar el día exacto de la asignación, entre <strong>30 minutos antes</strong> de iniciar y máximo <strong>10 minutos después</strong> de iniciada.
               </p>
             </div>
           </div>
@@ -1887,7 +1904,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                 {activeFormLockCheck.lockInfo.isNonCompliant
                   ? activeFormLockCheck.lockInfo.nonComplianceReason === 'sin_cierre_30m'
                     ? 'Sesión Terminada (+60 min) y Calificada como No Cerrada'
-                    : 'Sesión Cerrada y Bloqueada (No se cargó pasados 20 min del inicio)'
+                    : 'Sesión Cerrada y Bloqueada (No se cargó pasados 10 min del inicio)'
                   : activeFormLockCheck.lockInfo.isCompletedAndClosed
                     ? 'Sesión Completada y Cerrada (Bloqueada)'
                     : 'Sesión Actualmente en Curso (Bloqueada)'}
@@ -1899,7 +1916,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                 {activeFormLockCheck.lockInfo.isNonCompliant
                   ? activeFormLockCheck.lockInfo.nonComplianceReason === 'sin_cierre_30m'
                     ? 'quedó con salida pendiente, se dio por terminada a los 60 minutos de la hora de término y fue calificada como No Cerrada.'
-                    : 'superó los 20 minutos posteriores al inicio sin cargarse y fue dada por cerrada.'
+                    : 'superó los 10 minutos posteriores al inicio sin cargarse y fue dada por cerrada.'
                   : activeFormLockCheck.lockInfo.isCompletedAndClosed
                     ? 'ya fue completada y cerrada, por lo que no puede repetirse en esta fecha.'
                     : 'ya tiene una sesión en curso. Registra primero la salida de sede.'}

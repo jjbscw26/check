@@ -11,7 +11,7 @@ import {
 } from './sessionAlarm';
 
 export const LOAD_WINDOW_MINUTES_BEFORE_START = 30;
-export const LOAD_WINDOW_MINUTES_AFTER_START = 20;
+export const LOAD_WINDOW_MINUTES_AFTER_START = 10;
 
 export type AssignmentLoadWindowState =
   | 'en_ventana'
@@ -203,9 +203,9 @@ export function findMatchingAssignmentForRecord(
 /**
  * Evaluates whether an assignment on a target date (YYYY-MM-DD) is:
  * - 'completada_cerrada' (locked, completed & closed)
- * - 'incumplida' (locked: either pending exit auto-terminated 60 min after session end as No Cerrada, OR not loaded within +20 min of start)
+ * - 'incumplida' (locked: either pending exit auto-terminated 60 min after session end as No Cerrada, OR not loaded within +10 min of start)
  * - 'en_curso' (locked, currently active and within the 60-min post-end grace window)
- * - 'disponible' (unlocked, can only be loaded on exact date between -30 min before start and +20 min after start)
+ * - 'disponible' (unlocked, can only be loaded on exact date between -30 min before start and +10 min after start)
  */
 export function getAssignmentOccurrenceStatus(
   assignment: ClassAssignment,
@@ -262,8 +262,8 @@ export function getAssignmentOccurrenceStatus(
       statusLabel:
         reason === 'sin_cierre_30m'
           ? 'Terminada (+60 min) · No Cerrada'
-          : 'Cerrada por No Cargar (+20 min) · Bloqueada',
-      shortLabel: reason === 'sin_cierre_30m' ? 'No Cerrada (+60m)' : 'Cerrada (+20m)',
+          : 'Cerrada por No Cargar (+10 min) · Bloqueada',
+      shortLabel: reason === 'sin_cierre_30m' ? 'No Cerrada (+60m)' : 'Cerrada (+10m)',
       detailText:
         reason === 'sin_cierre_30m'
           ? `Entrada ${matchedRecord.checkInTime} · Salida pendiente dada por terminada a los 60 min de la hora de término y calificada como No Cerrada${
@@ -332,7 +332,7 @@ export function getAssignmentOccurrenceStatus(
     };
   }
 
-  // 5. Check +20 min post-start auto-close & past-date lock (unless Admin explicitly reopened this date)
+  // 5. Check +10 min post-start auto-close & past-date lock (unless Admin explicitly reopened this date)
   const isReopenedForDate = Boolean(
     dateStr && assignment.reopenedDates && assignment.reopenedDates.includes(dateStr)
   );
@@ -346,7 +346,7 @@ export function getAssignmentOccurrenceStatus(
 
     if (globallyNonCompliant || inMissedDates) {
       const reason: NonComplianceReason = assignment.nonCompliantReason || 'fuera_de_horario';
-      const limitLabel = win?.loadCloseHHMM ? `${win.loadCloseHHMM} hrs` : '+20 min';
+      const limitLabel = win?.loadCloseHHMM ? `${win.loadCloseHHMM} hrs` : '+10 min';
       return {
         state: 'incumplida',
         isLocked: true,
@@ -361,12 +361,12 @@ export function getAssignmentOccurrenceStatus(
         statusLabel:
           reason === 'sin_cierre_30m'
             ? 'Terminada (+60 min) · No Cerrada'
-            : 'Sesión Cerrada · No Cargada (+20 min) · Bloqueada',
-        shortLabel: reason === 'sin_cierre_30m' ? 'No Cerrada (+60m)' : 'Cerrada (+20m sin carga)',
+            : 'Sesión Cerrada · No Cargada (+10 min) · Bloqueada',
+        shortLabel: reason === 'sin_cierre_30m' ? 'No Cerrada (+60m)' : 'Cerrada (+10m sin carga)',
         detailText:
           reason === 'sin_cierre_30m'
             ? 'Salida pendiente dada por terminada a los 60 minutos de la hora de término y calificada como No Cerrada'
-            : `No se cargó dentro de los 20 min posteriores al inicio (límite ${limitLabel}) · Dada por cerrada`,
+            : `No se cargó dentro de los 10 min posteriores al inicio (límite ${limitLabel}) · Dada por cerrada`,
       };
     }
 
@@ -389,7 +389,7 @@ export function getAssignmentOccurrenceStatus(
       };
     }
 
-    // Exact day or scheduled occurrence where > 20 minutes after start have elapsed without loading/check-in
+    // Exact day or scheduled occurrence where > 10 minutes after start have elapsed without loading/check-in
     if (win && appliesToTargetDate && nowMs > win.loadCloseMs) {
       return {
         state: 'incumplida',
@@ -402,9 +402,9 @@ export function getAssignmentOccurrenceStatus(
         loadWindowState: 'cerrada_20m',
         unlockTimeHHMM: win.loadOpenHHMM,
         loadDeadlineHHMM: win.loadCloseHHMM,
-        statusLabel: 'Sesión Cerrada · No Cargada (+20 min) · Bloqueada',
-        shortLabel: 'Cerrada (+20m sin carga)',
-        detailText: `Pasaron más de 20 min desde el inicio (${assignment.time} hrs, límite ${win.loadCloseHHMM} hrs) sin cargarse · Dada por cerrada`,
+        statusLabel: 'Sesión Cerrada · No Cargada (+10 min) · Bloqueada',
+        shortLabel: 'Cerrada (+10m sin carga)',
+        detailText: `Pasaron más de 10 min desde el inicio (${assignment.time} hrs, límite ${win.loadCloseHHMM} hrs) sin cargarse · Dada por cerrada`,
       };
     }
   }
@@ -429,7 +429,7 @@ export function getAssignmentOccurrenceStatus(
     };
   }
 
-  // 7. Exact day of assignment (today): check [-30 min, +20 min] load window
+  // 7. Exact day of assignment (today): check [-30 min, +10 min] load window
   if (win && !isReopenedForDate && nowMs < win.loadOpenMs) {
     const secondsUntilLoadOpen = Math.max(0, Math.ceil((win.loadOpenMs - nowMs) / 1000));
     return {

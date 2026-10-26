@@ -194,6 +194,29 @@ export interface AttendanceRecord {
   adminNotes?: string;
 }
 
+export interface AdminSessionStartAlert {
+  id: string;
+  recordId: string;
+  assignmentId?: string;
+  trainerId: string;
+  trainerName: string;
+  companyName: string;
+  sedeName: string;
+  locationArea: string;
+  activityType: ActivityType;
+  activityName: string;
+  date: string;
+  scheduledTime: string;
+  checkInTime: string;
+  punctualityStatus: PunctualityStatus;
+  punctualityDiffMinutes: number;
+  isWithinGeofence: boolean;
+  distanceToSedeMeters: number;
+  photoUrl?: string;
+  createdAtMs: number;
+  read: boolean;
+}
+
 export interface PersonnelAddress {
   street: string;
   number: string;

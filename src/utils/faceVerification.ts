@@ -699,3 +699,134 @@ export async function identifyTrainerByLiveFace<T extends TrainerCandidateForFac
   };
 }
 
+export type OvalAlignmentState =
+  | 'no_face'
+  | 'too_dark'
+  | 'too_far'
+  | 'too_close'
+  | 'off_center'
+  | 'aligned';
+
+export interface OvalFaceCheckResult {
+  aligned: boolean;
+  state: OvalAlignmentState;
+  hint: string;
+}
+
+/**
+ * Lightweight real-time check on the square-cropped live video feed to detect when
+ * a trainer positions their face centered inside the oval guide for automatic verification.
+ */
+export async function detectLiveFaceInOval(
+  videoEl: HTMLVideoElement
+): Promise<OvalFaceCheckResult> {
+  if (!videoEl || videoEl.videoWidth === 0 || videoEl.videoHeight === 0 || videoEl.readyState < 2) {
+    return {
+      aligned: false,
+      state: 'no_face',
+      hint: 'Preparando señal de video...',
+    };
+  }
+
+  const size = 288;
+  const vw = videoEl.videoWidth;
+  const vh = videoEl.videoHeight;
+  const minSide = Math.min(vw, vh);
+  const sx = (vw - minSide) / 2;
+  const sy = (vh - minSide) / 2;
+
+  const canvas = document.createElement('canvas');
+  canvas.width = size;
+  canvas.height = size;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) {
+    return {
+      aligned: false,
+      state: 'no_face',
+      hint: 'Coloca tu rostro dentro del óvalo para verificación automática',
+    };
+  }
+
+  ctx.drawImage(videoEl, sx, sy, minSide, minSide, 0, 0, size, size);
+
+  // Luminance check on central 64x64 region
+  const patch = 64;
+  const px = Math.floor((size - patch) / 2);
+  const py = Math.floor((size - patch) / 2);
+  const imgData = ctx.getImageData(px, py, patch, patch).data;
+  let lumSum = 0;
+  const count = imgData.length / 4;
+  for (let i = 0; i < imgData.length; i += 4) {
+    lumSum += 0.299 * imgData[i] + 0.587 * imgData[i + 1] + 0.114 * imgData[i + 2];
+  }
+  const meanLum = count > 0 ? lumSum / count : 0;
+  if (meanLum < 14) {
+    return {
+      aligned: false,
+      state: 'too_dark',
+      hint: 'Iluminación insuficiente — ubícate frente a una fuente de luz',
+    };
+  }
+
+  const faceapi = await ensureBiometricModelsLoaded();
+  let det = await faceapi.detectSingleFace(
+    canvas,
+    new faceapi.TinyFaceDetectorOptions({ inputSize: 256, scoreThreshold: 0.3 })
+  );
+
+  if (!det) {
+    det = await faceapi.detectSingleFace(
+      canvas,
+      new faceapi.SsdMobilenetv1Options({ minConfidence: 0.44 })
+    );
+  }
+
+  if (!det) {
+    return {
+      aligned: false,
+      state: 'no_face',
+      hint: 'Coloca tu rostro dentro del óvalo para verificación automática',
+    };
+  }
+
+  const { x, y, width, height } = det.box;
+  const cx = (x + width / 2) / size;
+  const cy = (y + height / 2) / size;
+  const relSize = Math.max(width, height) / size;
+
+  if (relSize < 0.21) {
+    return {
+      aligned: false,
+      state: 'too_far',
+      hint: 'Acércate un poco más a la cámara para encuadrar el óvalo',
+    };
+  }
+
+  if (relSize > 0.86) {
+    return {
+      aligned: false,
+      state: 'too_close',
+      hint: 'Aléjate ligeramente para encuadrar tu rostro completo en el óvalo',
+    };
+  }
+
+  const dx = Math.abs(cx - 0.5);
+  const dy = Math.abs(cy - 0.49);
+  const normalizedEllipseDist = (dx / 0.21) ** 2 + (dy / 0.25) ** 2;
+
+  if (normalizedEllipseDist > 1.0) {
+    return {
+      aligned: false,
+      state: 'off_center',
+      hint: 'Centra tu rostro dentro del óvalo para iniciar automáticamente',
+    };
+  }
+
+  return {
+    aligned: true,
+    state: 'aligned',
+    hint: 'Rostro centrado en el óvalo — verificando automáticamente...',
+  };
+}
+
+

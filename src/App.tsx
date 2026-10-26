@@ -17,6 +17,7 @@ import {
 import {
   ActivityCatalogItem,
   ActivityType,
+  AdminSessionStartAlert,
   AttendanceRecord,
   ClassAssignment,
   Company,
@@ -33,8 +34,10 @@ import { PersonnelRegistryView } from './components/PersonnelRegistryView';
 import { FirestoreErrorBoundary } from './components/FirestoreErrorBoundary';
 import {
   getSessionAlarmStatus,
+  playAdminSessionStartChime,
   releaseSessionWakeLock,
   stopAlarmAudioImmediately,
+  triggerAdminSessionStartNotification,
   unlockMobileAlarmAudio,
 } from './utils/sessionAlarm';
 import {
@@ -78,6 +81,56 @@ import { collectMissingCatalogItemsFromTrainers } from './utils/specialtyDiscipl
 import { ShieldCheck, CheckCheck } from 'lucide-react';
 
 const TRAINER_SESSION_STORAGE_KEY = 'bscw_trainer_biometric_session_v1';
+const DISMISSED_ADMIN_ALERTS_KEY = 'bscw_dismissed_admin_start_alerts_v1';
+
+function readDismissedAdminAlertIds(): Set<string> {
+  if (typeof window === 'undefined') return new Set();
+  try {
+    const raw = window.sessionStorage.getItem(DISMISSED_ADMIN_ALERTS_KEY);
+    if (!raw) return new Set();
+    const parsed = JSON.parse(raw);
+    if (Array.isArray(parsed)) {
+      return new Set(parsed.map(String));
+    }
+    return new Set();
+  } catch {
+    return new Set();
+  }
+}
+
+function saveDismissedAdminAlertIds(ids: Set<string>): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.sessionStorage.setItem(DISMISSED_ADMIN_ALERTS_KEY, JSON.stringify(Array.from(ids)));
+  } catch {
+    // Ignore storage quota issues
+  }
+}
+
+function buildAdminStartAlert(rec: AttendanceRecord): AdminSessionStartAlert {
+  return {
+    id: `adm_start_${rec.id}`,
+    recordId: rec.id,
+    assignmentId: rec.assignmentId,
+    trainerId: rec.trainerId,
+    trainerName: rec.trainerName,
+    companyName: rec.companyName,
+    sedeName: rec.sedeName,
+    locationArea: rec.locationArea,
+    activityType: rec.activityType,
+    activityName: rec.activityName,
+    date: rec.date,
+    scheduledTime: rec.scheduledTime,
+    checkInTime: rec.checkInTime,
+    punctualityStatus: rec.punctualityStatus,
+    punctualityDiffMinutes: rec.punctualityDiffMinutes,
+    isWithinGeofence: Boolean(rec.checkInGps?.isWithinGeofence),
+    distanceToSedeMeters: rec.checkInGps?.distanceToSedeMeters ?? 0,
+    photoUrl: rec.photoUrl,
+    createdAtMs: Date.now(),
+    read: false,
+  };
+}
 
 function readStoredTrainerSession(): TrainerBiometricSession | null {
   if (typeof window === 'undefined') return null;
@@ -140,6 +193,7 @@ export default function App() {
   );
   const [nowTick, setNowTick] = useState<number>(() => Date.now());
   const [initialCalendarReady, setInitialCalendarReady] = useState<boolean>(false);
+  const [adminStartAlerts, setAdminStartAlerts] = useState<AdminSessionStartAlert[]>([]);
 
   const { isAuthenticated: isDirectoryAuthenticated, user: directoryUser } = useDirectoryAuth();
 
@@ -158,11 +212,52 @@ export default function App() {
   const seededNewModalitiesRef = useRef<boolean>(false);
   const deletedCatalogIdsRef = useRef<Set<string>>(new Set());
   const autoSyncedSpecialtyIdsRef = useRef<Set<string>>(new Set());
+  const knownServerRecordIdsRef = useRef<Set<string>>(new Set());
+  const recordsAlertBaselineReadyRef = useRef<boolean>(false);
+  const dismissedAdminAlertIdsRef = useRef<Set<string>>(readDismissedAdminAlertIds());
+  const isPrintingRef = useRef<boolean>(false);
   const trainersRef = useRef<Trainer[]>([]);
   const companiesRef = useRef<Company[]>([]);
   const assignmentsRef = useRef<ClassAssignment[]>([]);
   const activityCatalogRef = useRef<ActivityCatalogItem[]>([]);
   const recordsRef = useRef<AttendanceRecord[]>([]);
+
+  const enqueueAdminStartAlert = useCallback(
+    (rec: AttendanceRecord, notifyWithSound: boolean) => {
+      if (rec.status !== 'en_curso') return;
+      if (dismissedAdminAlertIdsRef.current.has(rec.id)) return;
+
+      setAdminStartAlerts((prev) => {
+        if (prev.some((a) => a.recordId === rec.id)) return prev;
+        return [buildAdminStartAlert(rec), ...prev].slice(0, 12);
+      });
+
+      if (notifyWithSound && !checkIsMobileOrTablet()) {
+        void playAdminSessionStartChime();
+        triggerAdminSessionStartNotification(rec);
+      }
+    },
+    []
+  );
+
+  const handleDismissAdminAlert = useCallback((alertId: string) => {
+    setAdminStartAlerts((prev) => {
+      const target = prev.find((a) => a.id === alertId);
+      if (target) {
+        dismissedAdminAlertIdsRef.current.add(target.recordId);
+        saveDismissedAdminAlertIds(dismissedAdminAlertIdsRef.current);
+      }
+      return prev.filter((a) => a.id !== alertId);
+    });
+  }, []);
+
+  const handleClearAllAdminAlerts = useCallback(() => {
+    setAdminStartAlerts((prev) => {
+      prev.forEach((a) => dismissedAdminAlertIdsRef.current.add(a.recordId));
+      saveDismissedAdminAlertIds(dismissedAdminAlertIdsRef.current);
+      return [];
+    });
+  }, []);
 
   useEffect(() => {
     trainersRef.current = trainers;
@@ -857,6 +952,27 @@ export default function App() {
           return keyB.localeCompare(keyA) || b.id.localeCompare(a.id);
         });
 
+        // Detect newly started trainer sessions in real time to alert the Administrator
+        const todayLocal = formatLocalYYYYMMDD(new Date());
+        if (!recordsAlertBaselineReadyRef.current) {
+          if (isServerSnapshot) {
+            recordsAlertBaselineReadyRef.current = true;
+            mergedRecords.forEach((r) => knownServerRecordIdsRef.current.add(r.id));
+            mergedRecords
+              .filter((r) => r.status === 'en_curso' && r.date === todayLocal)
+              .forEach((r) => enqueueAdminStartAlert(r, false));
+          }
+        } else {
+          for (const rec of mergedRecords) {
+            if (!knownServerRecordIdsRef.current.has(rec.id)) {
+              knownServerRecordIdsRef.current.add(rec.id);
+              if (rec.status === 'en_curso') {
+                enqueueAdminStartAlert(rec, true);
+              }
+            }
+          }
+        }
+
         updateStateIfChanged(setRecords, mergedRecords, saveStoredRecords);
       },
       (err) => {
@@ -936,7 +1052,7 @@ export default function App() {
       unsubRecords();
       unsubCatalog();
     };
-  }, [persistAssignmentToFirestore, persistRecordToFirestore]);
+  }, [persistAssignmentToFirestore, persistRecordToFirestore, enqueueAdminStartAlert]);
 
   // Automatic compliance sweep (persisted in real time to both /records and /assignments)
   useEffect(() => {
@@ -1021,7 +1137,7 @@ export default function App() {
         if (matchedRec) continue;
 
         const win = getAssignmentScheduledWindowMs(currentAsg, checkDate, activityCatalog);
-        // Close & lock session if 20 minutes have elapsed since start time without loading/check-in (or past date)
+        // Close & lock session if 10 minutes have elapsed since start time without loading/check-in (or past date)
         if ((win && nowTick > win.loadCloseMs) || checkDate < todayStr) {
           currentAsg = markAssignmentDateNonCompliant(currentAsg, checkDate, 'fuera_de_horario');
           assignmentsChanged = true;
@@ -1060,9 +1176,20 @@ export default function App() {
   ]);
 
   // Enforce that Directorio and Panel Admin are hidden and inactive on phones & tablets
+  // (Crucially ignore print layout resize events so printing A4 ~794px never unmounts AdminDashboard/PDF modals!)
   useEffect(() => {
     const pointerMedia = window.matchMedia('(hover: none) and (pointer: coarse)');
+    const printMedia = window.matchMedia('print');
+
+    const onBeforePrint = () => {
+      isPrintingRef.current = true;
+    };
+    const onAfterPrint = () => {
+      isPrintingRef.current = false;
+    };
+
     const syncDeviceView = () => {
+      if (isPrintingRef.current || printMedia.matches) return;
       const restricted = checkIsMobileOrTablet();
       setIsMobileOrTablet(restricted);
       if (restricted) {
@@ -1071,10 +1198,14 @@ export default function App() {
     };
 
     syncDeviceView();
+    window.addEventListener('beforeprint', onBeforePrint);
+    window.addEventListener('afterprint', onAfterPrint);
     window.addEventListener('resize', syncDeviceView);
     window.addEventListener('orientationchange', syncDeviceView);
     pointerMedia.addEventListener('change', syncDeviceView);
     return () => {
+      window.removeEventListener('beforeprint', onBeforePrint);
+      window.removeEventListener('afterprint', onAfterPrint);
       window.removeEventListener('resize', syncDeviceView);
       window.removeEventListener('orientationchange', syncDeviceView);
       pointerMedia.removeEventListener('change', syncDeviceView);
@@ -1134,13 +1265,17 @@ export default function App() {
           : newRecord;
 
       const normalized = persistRecordToFirestore(recordWithAsg);
+      knownServerRecordIdsRef.current.add(normalized.id);
       const updated = [normalized, ...currentRecords.filter((r) => r.id !== normalized.id)];
       recordsRef.current = updated;
       setRecords(updated);
       saveStoredRecords(updated);
       syncAssignmentLockFromRecord(normalized);
+      if (normalized.status === 'en_curso') {
+        enqueueAdminStartAlert(normalized, true);
+      }
     },
-    [persistRecordToFirestore, syncAssignmentLockFromRecord]
+    [persistRecordToFirestore, syncAssignmentLockFromRecord, enqueueAdminStartAlert]
   );
 
   const handleUpdateRecord = useCallback(
@@ -1170,6 +1305,7 @@ export default function App() {
     deletedRecordIdsRef.current.add(safeId);
     pendingRecordsByIdRef.current.delete(safeId);
     unsyncedRecordsQueueRef.current.delete(safeId);
+    setAdminStartAlerts((prev) => prev.filter((a) => a.recordId !== recordId && a.recordId !== safeId));
 
     const updated = records.filter((r) => r.id !== recordId && r.id !== safeId);
     setRecords(updated);
@@ -1446,18 +1582,22 @@ export default function App() {
 
   return (
     <div className="min-h-screen w-full max-w-full overflow-x-hidden bg-slate-50 text-slate-800 flex flex-col selection:bg-red-600 selection:text-white font-sans">
-      <Header
-        currentView={isTrainerPortalActive ? 'trainer' : currentView}
-        onViewChange={handleViewChange}
-        authenticatedTrainer={authenticatedTrainer}
-        trainerSession={trainerSession}
-        onLogoutTrainerSession={handleLogoutTrainerSession}
-        activeSessionCount={activeSessionCount}
-        overdueSessionCount={overdueSessionCount}
-        isMobileOrTablet={isMobileOrTablet}
-        isDirectoryAuthenticated={isDirectoryAuthenticated}
-        directoryUserEmail={directoryUser?.email}
-      />
+      <div className="print:hidden">
+        <Header
+          currentView={isTrainerPortalActive ? 'trainer' : currentView}
+          onViewChange={handleViewChange}
+          authenticatedTrainer={authenticatedTrainer}
+          trainerSession={trainerSession}
+          onLogoutTrainerSession={handleLogoutTrainerSession}
+          activeSessionCount={activeSessionCount}
+          overdueSessionCount={overdueSessionCount}
+          unreadAdminAlertCount={adminStartAlerts.length}
+          latestAdminAlertTrainer={adminStartAlerts[0]?.trainerName ?? null}
+          isMobileOrTablet={isMobileOrTablet}
+          isDirectoryAuthenticated={isDirectoryAuthenticated}
+          directoryUserEmail={directoryUser?.email}
+        />
+      </div>
 
       <main className="flex-1 w-full pb-12 sm:pb-16">
         {isTrainerPortalActive && (
@@ -1482,7 +1622,7 @@ export default function App() {
         )}
 
         {!isMobileOrTablet && currentView === 'personnel' && (
-          <div className="hidden lg:block">
+          <div className="hidden lg:block print:block">
             <FirestoreErrorBoundary>
               <PersonnelRegistryView onNavigateView={handleViewChange} />
             </FirestoreErrorBoundary>
@@ -1490,7 +1630,7 @@ export default function App() {
         )}
 
         {!isMobileOrTablet && currentView === 'admin' && (
-          <div className="hidden lg:block">
+          <div className="hidden lg:block print:block">
             <AdminDashboard
               records={records}
               companies={companies}
@@ -1516,6 +1656,12 @@ export default function App() {
               onDeleteCatalogItem={handleDeleteCatalogItem}
               onResetData={handleResetData}
               isDirectoryAuthenticated={isDirectoryAuthenticated}
+              adminStartAlerts={adminStartAlerts}
+              onDismissAdminAlert={handleDismissAdminAlert}
+              onClearAllAdminAlerts={handleClearAllAdminAlerts}
+              onReplayAlertChime={() => {
+                void playAdminSessionStartChime();
+              }}
             />
           </div>
         )}

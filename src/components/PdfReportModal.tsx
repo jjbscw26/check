@@ -17,7 +17,7 @@ import {
 import { formatDistance } from '../utils/geo';
 import {
   exportEvidenceRecordsToExcel,
-  exportEvidenceRecordsToPdf,
+  exportExecutiveReportToPdf,
 } from '../utils/evidenceExport';
 
 interface PdfReportModalProps {
@@ -68,11 +68,14 @@ export const PdfReportModal: React.FC<PdfReportModalProps> = ({
   const handleDownloadPdf = async () => {
     setIsDownloadingPdf(true);
     try {
-      await exportEvidenceRecordsToPdf(records, {
-        title: `Reporte Oficial de Puntualidad y Evidencias`,
-        subtitle: periodLabel,
+      await exportExecutiveReportToPdf(records, companies, trainers, {
+        periodLabel,
         filenamePrefix: `Reporte_BSCW_${reportType}_${
-          reportType === 'daily' ? selectedDate : selectedMonth
+          reportType === 'daily'
+            ? selectedDate
+            : reportType === 'monthly'
+            ? selectedMonth
+            : 'Consolidado'
         }`,
         includePhotos: true,
       });
@@ -320,53 +323,61 @@ export const PdfReportModal: React.FC<PdfReportModalProps> = ({
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100 text-[10px]">
-                {records.slice(0, 15).map((r) => (
-                  <tr key={r.id}>
-                    <td className="p-2 font-mono whitespace-nowrap">
-                      <div>{r.date}</div>
-                      <div className="text-[9px] text-slate-500">
-                        {r.checkInTime}{' '}
-                        {r.checkOutTime
-                          ? `→ ${r.checkOutTime}`
-                          : r.status === 'incumplido'
-                            ? '→ Terminada +60m (No cerrada)'
-                            : '→ En curso'}
-                      </div>
-                    </td>
-                    <td className="p-2 font-semibold text-slate-900">{r.trainerName}</td>
-                    <td className="p-2">
-                      <div className="font-semibold text-slate-800">{r.companyName}</div>
-                      <div className="text-[9px] text-slate-500">{r.sedeName}</div>
-                    </td>
-                    <td className="p-2">
-                      <div className="font-medium text-slate-800">{r.activityName}</div>
-                      <div className="text-[9px] text-slate-500">{r.attendeesCount} participantes</div>
-                    </td>
-                    <td className="p-2 text-center">
-                      {r.status === 'incumplido' ? (
-                        <span className="font-bold text-rose-700">No Cerrada (+60m)</span>
-                      ) : (
-                        <span className={`font-bold ${
-                          r.punctualityStatus === 'con_retraso' ? 'text-red-600' : 'text-emerald-700'
-                        }`}>
-                          {r.punctualityStatus === 'con_retraso'
-                            ? `Retraso (${Math.abs(r.punctualityDiffMinutes)}m)`
-                            : 'A tiempo'}
-                        </span>
-                      )}
-                    </td>
-                    <td className="p-2 text-center font-mono text-[9px]">
-                      {formatDistance(r.checkInGps.distanceToSedeMeters)}
-                    </td>
-                    <td className="p-2 text-right">
-                      {r.facialVerification ? (
-                        <span className="font-bold text-emerald-700">✓ {r.facialVerification.confidenceScore}%</span>
-                      ) : (
-                        <span className="text-slate-400">Verificado</span>
-                      )}
+                {records.length === 0 ? (
+                  <tr>
+                    <td colSpan={7} className="p-4 text-center text-slate-400 italic">
+                      Sin registros de visitas para el periodo seleccionado ({periodLabel}).
                     </td>
                   </tr>
-                ))}
+                ) : (
+                  records.slice(0, 100).map((r) => (
+                    <tr key={r.id}>
+                      <td className="p-2 font-mono whitespace-nowrap">
+                        <div>{r.date}</div>
+                        <div className="text-[9px] text-slate-500">
+                          {r.checkInTime}{' '}
+                          {r.checkOutTime
+                            ? `→ ${r.checkOutTime}`
+                            : r.status === 'incumplido'
+                              ? '→ Terminada +60m (No cerrada)'
+                              : '→ En curso'}
+                        </div>
+                      </td>
+                      <td className="p-2 font-semibold text-slate-900">{r.trainerName}</td>
+                      <td className="p-2">
+                        <div className="font-semibold text-slate-800">{r.companyName}</div>
+                        <div className="text-[9px] text-slate-500">{r.sedeName}</div>
+                      </td>
+                      <td className="p-2">
+                        <div className="font-medium text-slate-800">{r.activityName}</div>
+                        <div className="text-[9px] text-slate-500">{r.attendeesCount} participantes</div>
+                      </td>
+                      <td className="p-2 text-center">
+                        {r.status === 'incumplido' ? (
+                          <span className="font-bold text-rose-700">No Cerrada (+60m)</span>
+                        ) : (
+                          <span className={`font-bold ${
+                            r.punctualityStatus === 'con_retraso' ? 'text-red-600' : 'text-emerald-700'
+                          }`}>
+                            {r.punctualityStatus === 'con_retraso'
+                              ? `Retraso (${Math.abs(r.punctualityDiffMinutes)}m)`
+                              : 'A tiempo'}
+                          </span>
+                        )}
+                      </td>
+                      <td className="p-2 text-center font-mono text-[9px]">
+                        {formatDistance(r.checkInGps.distanceToSedeMeters)}
+                      </td>
+                      <td className="p-2 text-right">
+                        {r.facialVerification ? (
+                          <span className="font-bold text-emerald-700">✓ {r.facialVerification.confidenceScore}%</span>
+                        ) : (
+                          <span className="text-slate-400">Verificado</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))
+                )}
               </tbody>
             </table>
           </div>

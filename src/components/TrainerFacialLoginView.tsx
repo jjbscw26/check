@@ -21,9 +21,11 @@ import {
   VideoDeviceOption,
 } from '../utils/cameraStream';
 import {
+  detectLiveFaceInOval,
   ensureBiometricModelsLoaded,
   identifyTrainerByLiveFace,
   isPlaceholderOrMissingAvatar,
+  OvalAlignmentState,
 } from '../utils/faceVerification';
 
 interface TrainerFacialLoginViewProps {
@@ -57,9 +59,16 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
   const [preferredTrainerId, setPreferredTrainerId] = useState<string>('');
   const [isScanning, setIsScanning] = useState(false);
   const [scanningProgress, setScanningProgress] = useState(0);
+  const [ovalState, setOvalState] = useState<OvalAlignmentState>('no_face');
+  const [ovalHoldProgress, setOvalHoldProgress] = useState<number>(0);
   const [scanStepText, setScanStepText] = useState(
-    'Centra tu rostro de frente dentro del óvalo para iniciar tu sesión individual'
+    'Coloca tu rostro dentro del óvalo para iniciar sesión automáticamente'
   );
+
+  const alignedStreakRef = useRef<number>(0);
+  const autoCooldownUntilRef = useRef<number>(0);
+  const autoOpenAttemptedRef = useRef<boolean>(false);
+  const authenticateFnRef = useRef<() => Promise<void>>(async () => {});
 
   const activeTrainers = trainers.filter((t) => t.active !== false);
   const trainersWithFacePhoto = activeTrainers.filter(
@@ -107,47 +116,68 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
     }
   }, [cameraActive]);
 
-  const startCamera = async (
-    mode: 'user' | 'environment' = 'user',
-    deviceIdOverride?: string
-  ) => {
-    setCameraError(null);
-    setLoginFailure(null);
-    setIsStartingCamera(true);
-    setIsVideoReady(false);
-    setCameraActive(true);
-    setScanStepText('Centra tu rostro de frente dentro del óvalo');
+  const startCamera = useCallback(
+    async (
+      mode: 'user' | 'environment' = 'user',
+      deviceIdOverride?: string,
+      silentOnError: boolean = false
+    ) => {
+      setCameraError(null);
+      setLoginFailure(null);
+      setIsStartingCamera(true);
+      setIsVideoReady(false);
+      setCameraActive(true);
+      alignedStreakRef.current = 0;
+      setOvalState('no_face');
+      setOvalHoldProgress(0);
+      setScanStepText('Coloca tu rostro dentro del óvalo — verificación automática activa');
 
-    try {
-      const opened = await openCameraStreamWithFallback({
-        ownerId: LOGIN_CAMERA_OWNER_ID,
-        facingMode: mode,
-        preferredDeviceId: deviceIdOverride,
-        idealWidth: 640,
-        idealHeight: 640,
-        onPreempted: () => {
-          streamRef.current = null;
-          setCameraActive(false);
-          setIsVideoReady(false);
-        },
-      });
+      try {
+        const opened = await openCameraStreamWithFallback({
+          ownerId: LOGIN_CAMERA_OWNER_ID,
+          facingMode: mode,
+          preferredDeviceId: deviceIdOverride,
+          idealWidth: 640,
+          idealHeight: 640,
+          onPreempted: () => {
+            streamRef.current = null;
+            setCameraActive(false);
+            setIsVideoReady(false);
+          },
+        });
 
-      streamRef.current = opened.stream;
-      setVideoDevices(opened.videoDevices);
-      setActiveDeviceId(opened.activeDeviceId);
-      setIsMirrored(mode === 'user' && opened.isMirroredSuggested);
+        streamRef.current = opened.stream;
+        setVideoDevices(opened.videoDevices);
+        setActiveDeviceId(opened.activeDeviceId);
+        setIsMirrored(mode === 'user' && opened.isMirroredSuggested);
 
-      if (videoRef.current) {
-        const ready = await attachStreamToVideoElement(videoRef.current, opened.stream);
-        if (ready) setIsVideoReady(true);
+        if (videoRef.current) {
+          const ready = await attachStreamToVideoElement(videoRef.current, opened.stream);
+          if (ready) setIsVideoReady(true);
+        }
+      } catch (err: unknown) {
+        stopCamera();
+        if (!silentOnError) {
+          setCameraError(formatCameraErrorMessage(err));
+        }
+      } finally {
+        setIsStartingCamera(false);
       }
-    } catch (err: unknown) {
-      stopCamera();
-      setCameraError(formatCameraErrorMessage(err));
-    } finally {
-      setIsStartingCamera(false);
+    },
+    [stopCamera]
+  );
+
+  useEffect(() => {
+    if (
+      !autoOpenAttemptedRef.current &&
+      trainersWithFacePhoto.length > 0 &&
+      !cameraActive &&
+      !isStartingCamera
+    ) {
+      autoOpenAttemptedRef.current = true;
+      void startCamera('user', undefined, true);
     }
-  };
+  }, [trainersWithFacePhoto.length, cameraActive, isStartingCamera, startCamera]);
 
   const switchCameraDevice = () => {
     const nextMode: 'user' | 'environment' = facingMode === 'user' ? 'environment' : 'user';
@@ -228,9 +258,13 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
       );
 
       if (!outcome.verified || !outcome.matchedTrainer) {
+        autoCooldownUntilRef.current = Date.now() + 3500;
+        alignedStreakRef.current = 0;
+        setOvalHoldProgress(0);
+        setOvalState('no_face');
         setIsScanning(false);
         setScanningProgress(0);
-        setScanStepText('Acceso no aprobado — centra tu rostro e intenta nuevamente');
+        setScanStepText('Acceso no aprobado — centra tu rostro en el óvalo para reintentar');
         setLoginFailure({
           message: outcome.message,
           measuredScore: outcome.confidenceScore > 0 ? outcome.confidenceScore : undefined,
@@ -260,15 +294,81 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
       onSessionAuthenticated(session);
     } catch (err) {
       console.error('Facial session login error:', err);
+      autoCooldownUntilRef.current = Date.now() + 3500;
+      alignedStreakRef.current = 0;
+      setOvalHoldProgress(0);
+      setOvalState('no_face');
       setIsScanning(false);
       setScanningProgress(0);
-      setScanStepText('Centra tu rostro de frente dentro del óvalo');
+      setScanStepText('Coloca tu rostro dentro del óvalo para reintentar');
       setLoginFailure({
         message:
           'No fue posible completar la lectura biométrica. Verifica la iluminación frontal e inténtalo de nuevo.',
       });
     }
   };
+
+  authenticateFnRef.current = handleAuthenticateByFace;
+
+  // Automatic verification loop when trainer places their face inside the oval guide
+  useEffect(() => {
+    if (
+      !cameraActive ||
+      !isVideoReady ||
+      isScanning ||
+      isStartingCamera ||
+      trainersWithFacePhoto.length === 0
+    ) {
+      alignedStreakRef.current = 0;
+      setOvalHoldProgress(0);
+      return;
+    }
+
+    let cancelled = false;
+    let checking = false;
+
+    const timer = window.setInterval(async () => {
+      if (cancelled || checking || !videoRef.current) return;
+      if (Date.now() < autoCooldownUntilRef.current) {
+        alignedStreakRef.current = 0;
+        setOvalHoldProgress(0);
+        return;
+      }
+
+      checking = true;
+      try {
+        const check = await detectLiveFaceInOval(videoRef.current);
+        if (cancelled) return;
+
+        setOvalState(check.state);
+
+        if (check.aligned) {
+          alignedStreakRef.current += 1;
+          if (alignedStreakRef.current === 1) {
+            setOvalHoldProgress(55);
+            setScanStepText('Rostro en el óvalo — mantén tu mirada al frente un instante...');
+          } else if (alignedStreakRef.current >= 2) {
+            alignedStreakRef.current = 0;
+            setOvalHoldProgress(100);
+            void authenticateFnRef.current();
+          }
+        } else {
+          alignedStreakRef.current = 0;
+          setOvalHoldProgress(0);
+          setScanStepText(check.hint);
+        }
+      } catch {
+        // Ignore transient detector frame errors
+      } finally {
+        checking = false;
+      }
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [cameraActive, isVideoReady, isScanning, isStartingCamera, trainersWithFacePhoto.length]);
 
   return (
     <div className="w-full max-w-4xl mx-auto px-3.5 sm:px-6 py-5 sm:py-12">
@@ -393,10 +493,15 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
                   {/* Oval Guide Overlay */}
                   <div className="absolute inset-0 pointer-events-none flex flex-col items-center justify-center p-5 sm:p-6">
                     <div
-                      className={`w-44 h-60 sm:w-56 sm:h-72 rounded-full border-2 transition-colors ${
-                        isScanning
-                          ? 'border-emerald-400 shadow-[0_0_0_9999px_rgba(15,23,42,0.55)]'
-                          : 'border-white/85 shadow-[0_0_0_9999px_rgba(15,23,42,0.48)]'
+                      className={`w-44 h-60 sm:w-56 sm:h-72 rounded-full transition-all duration-200 ${
+                        isScanning || ovalState === 'aligned'
+                          ? 'border-[3px] border-emerald-400 shadow-[0_0_0_9999px_rgba(15,23,42,0.56)]'
+                          : ovalState === 'off_center' ||
+                              ovalState === 'too_far' ||
+                              ovalState === 'too_close' ||
+                              ovalState === 'too_dark'
+                            ? 'border-2 border-amber-400 shadow-[0_0_0_9999px_rgba(15,23,42,0.50)]'
+                            : 'border-2 border-white/85 shadow-[0_0_0_9999px_rgba(15,23,42,0.48)]'
                       }`}
                     />
                   </div>
@@ -406,9 +511,11 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
                     <span className="px-2.5 py-1 rounded-lg bg-slate-900/80 text-white text-[11px] font-semibold">
                       {isStartingCamera
                         ? 'Abriendo cámara...'
-                        : isVideoReady
-                          ? 'Cámara activa en vivo'
-                          : 'Preparando video...'}
+                        : isScanning
+                          ? 'Verificando identidad...'
+                          : isVideoReady
+                            ? 'Auto-verificación en óvalo'
+                            : 'Preparando video...'}
                     </span>
 
                     <div className="flex items-center gap-1.5">
@@ -436,11 +543,13 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
                   {/* Bottom Step Status + Progress */}
                   <div className="absolute bottom-2.5 inset-x-2.5 bg-slate-900/85 border border-white/15 rounded-xl p-2.5 text-center space-y-1.5">
                     <p className="text-[11px] font-medium text-white leading-snug">{scanStepText}</p>
-                    {isScanning && (
+                    {(isScanning || ovalHoldProgress > 0) && (
                       <div className="w-full h-1.5 bg-slate-700 rounded-full overflow-hidden">
                         <div
                           className="h-full bg-emerald-400 transition-all duration-300"
-                          style={{ width: `${scanningProgress}%` }}
+                          style={{
+                            width: `${isScanning ? scanningProgress : ovalHoldProgress}%`,
+                          }}
                         />
                       </div>
                     )}
@@ -449,15 +558,18 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
 
                 <button
                   type="button"
-                  onClick={() => void handleAuthenticateByFace()}
+                  onClick={() => {
+                    autoCooldownUntilRef.current = 0;
+                    void handleAuthenticateByFace();
+                  }}
                   disabled={!isVideoReady || isScanning || isStartingCamera}
-                  className="w-full max-w-sm mx-auto min-h-[48px] py-3.5 px-4 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-sm shadow-md transition flex items-center justify-center gap-2 text-center leading-snug disabled:opacity-50 disabled:cursor-not-allowed"
+                  className="w-full max-w-sm mx-auto min-h-[44px] py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs shadow-sm transition flex items-center justify-center gap-2 whitespace-nowrap shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
                 >
-                  <ScanFace className="w-5 h-5 shrink-0" />
+                  <ScanFace className="w-4 h-4 shrink-0" />
                   <span>
                     {isScanning
                       ? 'Verificando identidad facial...'
-                      : 'Identificar Mi Rostro e Ingresar'}
+                      : 'Capturar Manualmente (Auto-detección activa)'}
                   </span>
                 </button>
               </div>

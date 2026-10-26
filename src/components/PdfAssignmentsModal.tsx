@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   ACTIVITY_TYPE_LABELS,
   ActivityCatalogItem,
@@ -12,8 +12,11 @@ import {
   Printer,
   CheckCheck,
   FileText,
+  Download,
+  RefreshCw,
 } from 'lucide-react';
 import { getAssignmentDurationMinutes, calculateEndTimeHHMM } from '../utils/sessionAlarm';
+import { exportAssignmentsRoleToPdf } from '../utils/evidenceExport';
 
 interface PdfAssignmentsModalProps {
   isOpen: boolean;
@@ -54,13 +57,23 @@ export const PdfAssignmentsModal: React.FC<PdfAssignmentsModalProps> = ({
 }) => {
   const [selectedTrainerId, setSelectedTrainerId] = useState<string>(initialTrainerId);
   const [selectedMonth, setSelectedMonth] = useState<string>(initialMonth);
+  const [isDownloadingPdf, setIsDownloadingPdf] = useState<boolean>(false);
+
+  useEffect(() => {
+    if (isOpen) {
+      setSelectedTrainerId(initialTrainerId || 'all');
+      if (initialMonth) {
+        setSelectedMonth(initialMonth);
+      }
+    }
+  }, [isOpen, initialTrainerId, initialMonth]);
 
   if (!isOpen) return null;
 
   const [yearStr, monthNumStr] = selectedMonth.split('-');
   const year = parseInt(yearStr) || new Date().getFullYear();
   const monthIndex = (parseInt(monthNumStr) || 1) - 1;
-  const monthName = MONTH_NAMES[monthIndex];
+  const monthName = MONTH_NAMES[monthIndex] || MONTH_NAMES[0];
   const daysInMonth = new Date(year, monthIndex + 1, 0).getDate();
 
   // Filter trainers to display
@@ -72,8 +85,28 @@ export const PdfAssignmentsModal: React.FC<PdfAssignmentsModalProps> = ({
     window.print();
   };
 
+  const handleDownloadPdf = async () => {
+    setIsDownloadingPdf(true);
+    try {
+      const trainerSlug =
+        selectedTrainerId === 'all'
+          ? 'Todos'
+          : trainers.find((t) => t.id === selectedTrainerId)?.name || selectedTrainerId;
+      await exportAssignmentsRoleToPdf(assignments, companies, trainers, activityCatalog, {
+        selectedMonth,
+        selectedTrainerId,
+        filenamePrefix: `Rol_Asignaciones_${selectedMonth}_${trainerSlug}`,
+      });
+    } finally {
+      setIsDownloadingPdf(false);
+    }
+  };
+
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/75 backdrop-blur-sm overflow-y-auto print:p-0 print:bg-white print:static">
+    <div
+      data-printable-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center p-2 sm:p-4 bg-slate-900/75 backdrop-blur-sm overflow-y-auto print:p-0 print:bg-white print:static"
+    >
       <div className="bg-white border border-slate-200 rounded-2xl sm:rounded-3xl w-full max-w-5xl max-h-[94vh] flex flex-col overflow-hidden shadow-2xl my-auto print:max-h-none print:border-none print:shadow-none print:m-0 print:max-w-full">
         {/* Top Control Bar (Hidden in Print) */}
         <div className="bg-slate-900 text-white p-3.5 sm:p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 print:hidden shrink-0">
@@ -116,17 +149,31 @@ export const PdfAssignmentsModal: React.FC<PdfAssignmentsModalProps> = ({
 
             <button
               type="button"
-              onClick={handlePrint}
-              className="px-4 py-2 bg-red-600 hover:bg-red-700 text-white font-bold rounded-xl text-xs flex items-center shadow-md transition cursor-pointer"
+              onClick={() => void handleDownloadPdf()}
+              disabled={isDownloadingPdf}
+              className="px-3.5 py-2 bg-red-600 hover:bg-red-700 disabled:opacity-60 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-md transition whitespace-nowrap shrink-0 cursor-pointer"
             >
-              <Printer className="w-4 h-4 mr-1.5 shrink-0" />
-              <span>Imprimir / Descargar PDF</span>
+              {isDownloadingPdf ? (
+                <RefreshCw className="w-4 h-4 animate-spin shrink-0" />
+              ) : (
+                <Download className="w-4 h-4 shrink-0" />
+              )}
+              <span>{isDownloadingPdf ? 'Generando PDF...' : 'Descargar PDF (.pdf)'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={handlePrint}
+              className="px-3.5 py-2 bg-white hover:bg-slate-100 text-slate-900 font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-md transition whitespace-nowrap shrink-0 cursor-pointer"
+            >
+              <Printer className="w-4 h-4 text-red-600 shrink-0" />
+              <span>Imprimir</span>
             </button>
 
             <button
               type="button"
               onClick={onClose}
-              className="p-2 text-slate-400 hover:text-white rounded-lg text-sm"
+              className="p-2 text-slate-400 hover:text-white rounded-lg text-sm cursor-pointer"
               title="Cerrar vista previa"
             >
               ✕
@@ -135,7 +182,10 @@ export const PdfAssignmentsModal: React.FC<PdfAssignmentsModalProps> = ({
         </div>
 
         {/* Printable Document Body */}
-        <div className="p-4 sm:p-8 md:p-10 space-y-8 text-slate-900 bg-white flex-1 overflow-y-auto print:p-6 print:space-y-6">
+        <div
+          data-printable-scroll="true"
+          className="p-4 sm:p-8 md:p-10 space-y-8 text-slate-900 bg-white flex-1 overflow-y-auto print:p-6 print:space-y-6"
+        >
           {/* Main Cover Header */}
           <div className="flex items-start justify-between border-b-2 border-red-600 pb-5">
             <div className="flex items-center space-x-3.5">
@@ -394,7 +444,7 @@ export const PdfAssignmentsModal: React.FC<PdfAssignmentsModalProps> = ({
                   {/* Compliance notice & Signatures */}
                   <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3">
                     <p className="text-[10px] text-slate-500 leading-relaxed italic">
-                      <strong className="text-slate-700">Normativa de Operación BSCW Check:</strong> El entrenador debe presentarse al menos 10 minutos antes del horario pactado. Es obligatorio registrar el Check-In biométrico facial y verificación satelital GPS al ingresar a la sede oficial, así como la fotografía obligatoria de salida al concluir. Toda asignación fuera de horario sin reporte o cuya salida no sea cerrada dentro de los 30 minutos posteriores a su término quedará bloqueada automáticamente y marcada como incumplida.
+                      <strong className="text-slate-700">Normativa de Operación BSCW Check:</strong> La carga de cada asignación para registro de entrada se habilita desde 30 minutos antes y hasta 10 minutos después del horario de inicio pactado. Es obligatorio realizar la validación biométrica facial automática y verificación satelital GPS al ingresar a la sede oficial, así como capturar la fotografía obligatoria de salida al concluir. Toda sesión cuya salida no sea cerrada dentro de los 60 minutos posteriores a su término quedará registrada automáticamente como No Cerrada.
                     </p>
 
                     <div className="grid grid-cols-2 gap-8 pt-6 border-t border-slate-200 print:pt-8">

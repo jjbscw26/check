@@ -19,8 +19,10 @@ import {
   VideoDeviceOption,
 } from '../utils/cameraStream';
 import {
+  detectLiveFaceInOval,
   ensureBiometricModelsLoaded,
   isPlaceholderOrMissingAvatar,
+  OvalAlignmentState,
   verifyLiveFaceAgainstRegisteredPhoto,
 } from '../utils/faceVerification';
 import confetti from 'canvas-confetti';
@@ -65,7 +67,16 @@ export const FaceBiometricScanner: React.FC<FaceBiometricScannerProps> = ({
 
   const [scanningProgress, setScanningProgress] = useState(0);
   const [isScanning, setIsScanning] = useState(false);
-  const [scanStepText, setScanStepText] = useState('Centra tu rostro dentro del óvalo');
+  const [ovalState, setOvalState] = useState<OvalAlignmentState>('no_face');
+  const [ovalHoldProgress, setOvalHoldProgress] = useState<number>(0);
+  const [scanStepText, setScanStepText] = useState(
+    'Coloca tu rostro dentro del óvalo — verificación automática activa'
+  );
+
+  const alignedStreakRef = useRef<number>(0);
+  const autoCooldownUntilRef = useRef<number>(0);
+  const autoOpenedTrainerIdRef = useRef<string | null>(null);
+  const executeScanRef = useRef<() => Promise<void>>(async () => {});
 
   const missingRealRegistrationPhoto = isPlaceholderOrMissingAvatar(trainer.avatar);
 
@@ -120,57 +131,89 @@ export const FaceBiometricScanner: React.FC<FaceBiometricScannerProps> = ({
     }
   }, [cameraActive]);
 
-  const startCamera = async (
-    mode: 'user' | 'environment' = 'user',
-    preferredDeviceId?: string
-  ) => {
-    if (missingRealRegistrationPhoto) {
-      setVerificationFailure({
-        message: `${trainer.name} aún no tiene una fotografía real de registro (solo iniciales). Captura o sube primero su fotografía oficial en el Directorio o Perfil del Entrenador.`,
-      });
-      return;
-    }
-
-    setCameraError(null);
-    setVerificationFailure(null);
-    setIsStartingCamera(true);
-    setIsVideoReady(false);
-    setCameraActive(true);
-    setScanStepText('Centra tu rostro de frente dentro del óvalo');
-
-    try {
-      const opened = await openCameraStreamWithFallback({
-        ownerId: OWNER_ID,
-        facingMode: mode,
-        preferredDeviceId,
-        idealWidth: 640,
-        idealHeight: 640,
-        onPreempted: () => {
-          streamRef.current = null;
-          setCameraActive(false);
-          setIsVideoReady(false);
-        },
-      });
-
-      streamRef.current = opened.stream;
-      setVideoDevices(opened.videoDevices);
-      setActiveDeviceId(opened.activeDeviceId);
-      setIsMirrored(mode === 'user' && opened.isMirroredSuggested);
-
-      if (videoRef.current) {
-        const ready = await attachStreamToVideoElement(videoRef.current, opened.stream);
-        if (ready) {
-          setIsVideoReady(true);
+  const startCamera = useCallback(
+    async (
+      mode: 'user' | 'environment' = 'user',
+      preferredDeviceId?: string,
+      silentOnError: boolean = false
+    ) => {
+      if (missingRealRegistrationPhoto) {
+        if (!silentOnError) {
+          setVerificationFailure({
+            message: `${trainer.name} aún no tiene una fotografía real de registro (solo iniciales). Captura o sube primero su fotografía oficial en el Directorio o Perfil del Entrenador.`,
+          });
         }
+        return;
       }
-    } catch (err: unknown) {
-      console.warn('Face camera access error:', err);
-      stopCamera();
-      setCameraError(formatCameraErrorMessage(err));
-    } finally {
-      setIsStartingCamera(false);
+
+      setCameraError(null);
+      setVerificationFailure(null);
+      setIsStartingCamera(true);
+      setIsVideoReady(false);
+      setCameraActive(true);
+      alignedStreakRef.current = 0;
+      setOvalState('no_face');
+      setOvalHoldProgress(0);
+      setScanStepText('Coloca tu rostro dentro del óvalo — verificación automática activa');
+
+      try {
+        const opened = await openCameraStreamWithFallback({
+          ownerId: OWNER_ID,
+          facingMode: mode,
+          preferredDeviceId,
+          idealWidth: 640,
+          idealHeight: 640,
+          onPreempted: () => {
+            streamRef.current = null;
+            setCameraActive(false);
+            setIsVideoReady(false);
+          },
+        });
+
+        streamRef.current = opened.stream;
+        setVideoDevices(opened.videoDevices);
+        setActiveDeviceId(opened.activeDeviceId);
+        setIsMirrored(mode === 'user' && opened.isMirroredSuggested);
+
+        if (videoRef.current) {
+          const ready = await attachStreamToVideoElement(videoRef.current, opened.stream);
+          if (ready) {
+            setIsVideoReady(true);
+          }
+        }
+      } catch (err: unknown) {
+        console.warn('Face camera access error:', err);
+        stopCamera();
+        if (!silentOnError) {
+          setCameraError(formatCameraErrorMessage(err));
+        }
+      } finally {
+        setIsStartingCamera(false);
+      }
+    },
+    [missingRealRegistrationPhoto, stopCamera, trainer.name]
+  );
+
+  // Automatically open front camera when ready for verification
+  useEffect(() => {
+    if (
+      !verificationData?.verified &&
+      !missingRealRegistrationPhoto &&
+      autoOpenedTrainerIdRef.current !== trainer.id &&
+      !cameraActive &&
+      !isStartingCamera
+    ) {
+      autoOpenedTrainerIdRef.current = trainer.id;
+      void startCamera('user', undefined, true);
     }
-  };
+  }, [
+    trainer.id,
+    verificationData?.verified,
+    missingRealRegistrationPhoto,
+    cameraActive,
+    isStartingCamera,
+    startCamera,
+  ]);
 
   const switchCameraDevice = () => {
     const nextMode: 'user' | 'environment' = facingMode === 'user' ? 'environment' : 'user';
@@ -289,9 +332,13 @@ export const FaceBiometricScanner: React.FC<FaceBiometricScannerProps> = ({
       );
 
       if (!outcome.verified) {
+        autoCooldownUntilRef.current = Date.now() + 3500;
+        alignedStreakRef.current = 0;
+        setOvalHoldProgress(0);
+        setOvalState('no_face');
         setIsScanning(false);
         setScanningProgress(0);
-        setScanStepText('Verificación rechazada — ajusta tu posición e intenta de nuevo');
+        setScanStepText('Verificación rechazada — centra tu rostro en el óvalo para reintentar');
         setVerificationFailure({
           message: outcome.message,
           measuredScore: outcome.confidenceScore > 0 ? outcome.confidenceScore : undefined,
@@ -326,15 +373,89 @@ export const FaceBiometricScanner: React.FC<FaceBiometricScannerProps> = ({
       }
     } catch (err: unknown) {
       console.error('Biometric scan error:', err);
+      autoCooldownUntilRef.current = Date.now() + 3500;
+      alignedStreakRef.current = 0;
+      setOvalHoldProgress(0);
+      setOvalState('no_face');
       setIsScanning(false);
       setScanningProgress(0);
-      setScanStepText('Centra tu rostro dentro del óvalo');
+      setScanStepText('Coloca tu rostro dentro del óvalo para reintentar');
       setVerificationFailure({
         message:
           'Ocurrió un error al comparar los rasgos faciales con la foto de registro. Verifica la iluminación e intenta nuevamente.',
       });
     }
   };
+
+  executeScanRef.current = executeScan;
+
+  // Automatic verification loop when trainer centers their face inside the oval guide
+  useEffect(() => {
+    if (
+      !cameraActive ||
+      !isVideoReady ||
+      isScanning ||
+      isStartingCamera ||
+      Boolean(verificationData?.verified) ||
+      missingRealRegistrationPhoto
+    ) {
+      alignedStreakRef.current = 0;
+      setOvalHoldProgress(0);
+      return;
+    }
+
+    let cancelled = false;
+    let checking = false;
+
+    const timer = window.setInterval(async () => {
+      if (cancelled || checking || !videoRef.current) return;
+      if (Date.now() < autoCooldownUntilRef.current) {
+        alignedStreakRef.current = 0;
+        setOvalHoldProgress(0);
+        return;
+      }
+
+      checking = true;
+      try {
+        const check = await detectLiveFaceInOval(videoRef.current);
+        if (cancelled) return;
+
+        setOvalState(check.state);
+
+        if (check.aligned) {
+          alignedStreakRef.current += 1;
+          if (alignedStreakRef.current === 1) {
+            setOvalHoldProgress(55);
+            setScanStepText('Rostro detectado en el óvalo — mantén la posición un instante...');
+          } else if (alignedStreakRef.current >= 2) {
+            alignedStreakRef.current = 0;
+            setOvalHoldProgress(100);
+            void executeScanRef.current();
+          }
+        } else {
+          alignedStreakRef.current = 0;
+          setOvalHoldProgress(0);
+          setScanStepText(check.hint);
+        }
+      } catch {
+        // Ignore transient detector frame errors
+      } finally {
+        checking = false;
+      }
+    }, 350);
+
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+    };
+  }, [
+    cameraActive,
+    isVideoReady,
+    isScanning,
+    isStartingCamera,
+    verificationData?.verified,
+    missingRealRegistrationPhoto,
+  ]);
 
   // Completed state
   if (verificationData && verificationData.verified) {
@@ -508,12 +629,19 @@ export const FaceBiometricScanner: React.FC<FaceBiometricScannerProps> = ({
           {/* Oval Face Target Mask */}
           <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
             <div
-              className={`w-48 h-64 sm:w-56 sm:h-72 border-2 border-dashed rounded-full transition-all duration-300 flex items-center justify-center ${
-                isScanning ? 'border-emerald-400 bg-emerald-500/10' : 'border-white/80'
+              className={`w-48 h-64 sm:w-56 sm:h-72 rounded-full transition-all duration-200 flex items-center justify-center ${
+                isScanning || ovalState === 'aligned'
+                  ? 'border-[3px] border-solid border-emerald-400 bg-emerald-500/10 shadow-[0_0_0_9999px_rgba(15,23,42,0.52)]'
+                  : ovalState === 'off_center' ||
+                      ovalState === 'too_far' ||
+                      ovalState === 'too_close' ||
+                      ovalState === 'too_dark'
+                    ? 'border-2 border-dashed border-amber-400 shadow-[0_0_0_9999px_rgba(15,23,42,0.48)]'
+                    : 'border-2 border-dashed border-white/80 shadow-[0_0_0_9999px_rgba(15,23,42,0.45)]'
               }`}
             >
               {isScanning && (
-                <div className="w-full h-0.5 bg-emerald-400 shadow-lg shadow-emerald-400/60 animate-bounce" />
+                <div className="w-full h-0.5 bg-emerald-400 shadow-lg shadow-emerald-400/60" />
               )}
             </div>
           </div>
@@ -529,7 +657,7 @@ export const FaceBiometricScanner: React.FC<FaceBiometricScannerProps> = ({
               <span className="truncate">Foto Registro: {trainer.name}</span>
             </div>
             <span className="text-emerald-400 font-mono font-bold text-[10px] shrink-0 ml-2">
-              1:1 FACIAL
+              AUTO ÓVALO
             </span>
           </div>
 
@@ -537,11 +665,13 @@ export const FaceBiometricScanner: React.FC<FaceBiometricScannerProps> = ({
           <div className="absolute bottom-3 inset-x-3 flex flex-col items-center space-y-2">
             <div className="w-full bg-black/80 backdrop-blur-md px-3 py-2 rounded-xl text-center border border-white/20">
               <p className="text-xs text-white font-medium">{scanStepText}</p>
-              {isScanning && (
+              {(isScanning || ovalHoldProgress > 0) && (
                 <div className="w-full bg-slate-700 h-1.5 rounded-full mt-1.5 overflow-hidden">
                   <div
                     className="bg-emerald-500 h-full transition-all duration-300"
-                    style={{ width: `${scanningProgress}%` }}
+                    style={{
+                      width: `${isScanning ? scanningProgress : ovalHoldProgress}%`,
+                    }}
                   />
                 </div>
               )}
@@ -560,12 +690,17 @@ export const FaceBiometricScanner: React.FC<FaceBiometricScannerProps> = ({
 
               <button
                 type="button"
-                onClick={executeScan}
+                onClick={() => {
+                  autoCooldownUntilRef.current = 0;
+                  void executeScan();
+                }}
                 disabled={isScanning || !isVideoReady || isStartingCamera}
-                className="px-5 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-xs shadow-lg transition active:scale-95 disabled:opacity-50 flex items-center cursor-pointer"
+                className="px-4 py-2.5 rounded-xl bg-slate-900/95 hover:bg-slate-800 text-white font-bold text-xs shadow-lg border border-white/20 transition active:scale-95 disabled:opacity-50 flex items-center whitespace-nowrap shrink-0 cursor-pointer"
               >
                 <ScanFace className="w-4 h-4 mr-1.5 shrink-0" />
-                <span>{isScanning ? 'Corroborando Rostro...' : 'Corroborar Rostro Ahora'}</span>
+                <span>
+                  {isScanning ? 'Corroborando Rostro...' : 'Capturar Manualmente'}
+                </span>
               </button>
 
               <button
