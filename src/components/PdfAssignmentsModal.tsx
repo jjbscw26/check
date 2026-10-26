@@ -15,7 +15,11 @@ import {
   Download,
   RefreshCw,
 } from 'lucide-react';
-import { getAssignmentDurationMinutes, calculateEndTimeHHMM } from '../utils/sessionAlarm';
+import {
+  getAssignmentDurationMinutes,
+  calculateEndTimeHHMM,
+  formatDurationHoursMinutes,
+} from '../utils/sessionAlarm';
 import { exportAssignmentsRoleToPdf } from '../utils/evidenceExport';
 
 interface PdfAssignmentsModalProps {
@@ -383,8 +387,8 @@ export const PdfAssignmentsModal: React.FC<PdfAssignmentsModalProps> = ({
                                   <span className="font-mono font-bold text-red-600 text-xs px-2 py-1 bg-red-50 rounded-lg border border-red-200/60 inline-block">
                                     {asg.time}{endHHMM ? `–${endHHMM}` : ' hrs'}
                                   </span>
-                                  <span className="block text-[10px] font-mono font-bold text-slate-600 mt-0.5">
-                                    Duración: {durMins} min
+                                  <span className="block text-[10px] font-mono tabular-nums font-bold text-slate-600 mt-0.5">
+                                    Duración: {formatDurationHoursMinutes(durMins)}
                                   </span>
                                 </td>
 
@@ -444,7 +448,7 @@ export const PdfAssignmentsModal: React.FC<PdfAssignmentsModalProps> = ({
                   {/* Compliance notice & Signatures */}
                   <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3">
                     <p className="text-[10px] text-slate-500 leading-relaxed italic">
-                      <strong className="text-slate-700">Normativa de Operación BSCW Check:</strong> La carga de cada asignación para registro de entrada se habilita desde 30 minutos antes y hasta 10 minutos después del horario de inicio pactado. Es obligatorio realizar la validación biométrica facial automática y verificación satelital GPS al ingresar a la sede oficial, así como capturar la fotografía obligatoria de salida al concluir. Toda sesión cuya salida no sea cerrada dentro de los 60 minutos posteriores a su término quedará registrada automáticamente como No Cerrada.
+                      <strong className="text-slate-700">Normativa de Operación BSCW Check:</strong> La carga de cada asignación para registro de entrada se habilita desde 30 minutos antes y hasta 10 minutos después del horario de inicio pactado. Es obligatorio activar el identificador biométrico facial y realizar la verificación satelital GPS al ingresar a la sede oficial, así como capturar la fotografía obligatoria de salida al concluir. Toda sesión cuya salida no sea cerrada dentro de los 60 minutos posteriores a su término quedará registrada automáticamente como No Cerrada.
                     </p>
 
                     <div className="grid grid-cols-2 gap-8 pt-6 border-t border-slate-200 print:pt-8">

@@ -34,7 +34,11 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import { AssignmentPreset } from './AdminAssignmentModal';
-import { getAssignmentDurationMinutes, calculateEndTimeHHMM } from '../utils/sessionAlarm';
+import {
+  getAssignmentDurationMinutes,
+  calculateEndTimeHHMM,
+  formatDurationHoursMinutes,
+} from '../utils/sessionAlarm';
 import { getAssignmentOccurrenceStatus, toggleAssignmentDateLock } from '../utils/assignmentLock';
 
 interface AdminScheduleViewProps {
@@ -733,7 +737,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                                     ? 'bg-amber-100/90 text-amber-900 border-amber-300 hover:bg-amber-100'
                                     : MONTH_CELL_MODALITY_CLASS[normType]
                             }`}
-                            title={`${asg.time} (${durMins} min) - ${asg.trainerName} en ${asg.companyName} (${ACTIVITY_TYPE_LABELS[normType]} · ${asg.activityName}) — ${cellLock.statusLabel}`}
+                            title={`${asg.time} (${formatDurationHoursMinutes(durMins)}) - ${asg.trainerName} en ${asg.companyName} (${ACTIVITY_TYPE_LABELS[normType]} · ${asg.activityName}) — ${cellLock.statusLabel}`}
                           >
                             <span
                               className={`font-mono font-bold shrink-0 flex items-center gap-0.5 ${
@@ -750,7 +754,9 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                               {asg.time}
                             </span>
                             <span className="truncate mx-1 font-medium">{trainerInitial}</span>
-                            <span className="font-mono text-[9px] opacity-80 shrink-0">{durMins}m</span>
+                            <span className="font-mono tabular-nums text-[9px] opacity-80 shrink-0">
+                              {formatDurationHoursMinutes(durMins, true)}
+                            </span>
                           </div>
                         );
                       })}
@@ -874,9 +880,9 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                             <Clock className="w-3 h-3 mr-1" />
                             {asg.time}{endHHMM ? `–${endHHMM}` : ' hrs'}
                           </span>
-                          <span className="font-mono font-bold text-[10px] px-1.5 py-0.5 rounded bg-white border border-slate-200 text-slate-700 flex items-center">
-                            <Timer className="w-2.5 h-2.5 mr-0.5 text-red-500" />
-                            {durMins} min
+                          <span className="font-mono tabular-nums font-bold text-[10px] px-1.5 py-0.5 rounded bg-white border border-slate-200 text-slate-700 flex items-center whitespace-nowrap">
+                            <Timer className="w-2.5 h-2.5 mr-0.5 text-red-500 shrink-0" />
+                            {formatDurationHoursMinutes(durMins)}
                           </span>
                         </div>
                         {lockInfo.isNonCompliant ? (
@@ -1132,8 +1138,8 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                             >
                               <Clock className="w-3 h-3 mr-1" />
                               {asg.time}
-                              <span className="ml-1 text-[10px] text-slate-500 font-semibold no-underline">
-                                ({durMins}m)
+                              <span className="ml-1 text-[10px] text-slate-500 font-semibold tabular-nums no-underline">
+                                ({formatDurationHoursMinutes(durMins, true)})
                               </span>
                             </span>
                             {dayLock.isNonCompliant ? (
@@ -1389,8 +1395,8 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                         >
                           {asg.time}
                         </span>
-                        <span className="text-[10px] font-mono font-bold text-amber-300 mt-0.5">
-                          {durMins} min
+                        <span className="text-[10px] font-mono tabular-nums font-bold text-amber-300 mt-0.5 whitespace-nowrap">
+                          {formatDurationHoursMinutes(durMins, true)}
                         </span>
                       </div>
 
@@ -1421,9 +1427,9 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                             {ACTIVITY_TYPE_LABELS[normType]}
                           </span>
 
-                          <span className="text-[11px] font-mono font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 flex items-center">
-                            <Timer className="w-3 h-3 mr-1 text-red-600" />
-                            Duración: {durMins} min {endHHMM ? `(${asg.time}–${endHHMM})` : ''}
+                          <span className="text-[11px] font-mono tabular-nums font-bold text-slate-700 bg-slate-100 px-2 py-0.5 rounded border border-slate-200 flex items-center whitespace-nowrap">
+                            <Timer className="w-3 h-3 mr-1 text-red-600 shrink-0" />
+                            Duración: {formatDurationHoursMinutes(durMins)} {endHHMM ? `(${asg.time}–${endHHMM})` : ''}
                           </span>
 
                           <span className="text-[11px] font-semibold text-slate-500 flex items-center">

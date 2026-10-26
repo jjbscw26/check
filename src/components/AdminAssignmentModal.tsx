@@ -14,6 +14,11 @@ import {
   getDefaultDurationMinutes,
   getAssignmentDurationMinutes,
   calculateEndTimeHHMM,
+  MIN_ASSIGNMENT_DURATION_MINUTES,
+  MAX_ASSIGNMENT_DURATION_MINUTES,
+  splitMinutesToHoursAndMinutes,
+  combineHoursAndMinutes,
+  formatDurationHoursMinutes,
 } from '../utils/sessionAlarm';
 import { formatLocalYYYYMMDD } from '../utils/assignmentLock';
 import {
@@ -92,7 +97,8 @@ const DAYS_OF_WEEK = [
   { value: 7, label: 'Domingo' },
 ];
 
-const DURATION_PRESETS = [15, 20, 30, 45, 50, 60, 90];
+const SHORT_DURATION_PRESETS = [15, 20, 30, 45, 50, 60, 90];
+const LONG_GYM_DURATION_PRESETS = [120, 180, 240, 300, 360, 420, 480];
 
 function getUpcomingDefaultTimeHHMM(): string {
   const now = new Date();
@@ -221,13 +227,15 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
 
   const normalizedTime = (time || '09:00').slice(0, 5);
   const resolvedDurationMinutes = Math.max(
-    5,
+    MIN_ASSIGNMENT_DURATION_MINUTES,
     Math.min(
-      240,
+      MAX_ASSIGNMENT_DURATION_MINUTES,
       parseInt(durationInput, 10) ||
         getDefaultDurationMinutes(activityType, activityName, activityCatalog)
     )
   );
+  const { hours: durationHours, minutes: durationRemainderMinutes } =
+    splitMinutesToHoursAndMinutes(resolvedDurationMinutes);
   const estimatedEndTime = calculateEndTimeHHMM(normalizedTime, resolvedDurationMinutes);
 
   const handleSubmit = (e: React.FormEvent) => {
@@ -569,111 +577,166 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
               </div>
             </div>
 
-            {/* Duration of Assignment Field */}
-            <div className="pt-2.5 border-t border-slate-200/90 space-y-2">
+            {/* Duration of Assignment Field in Hours & Minutes (up to 8 hours / 480 min) */}
+            <div className="pt-2.5 border-t border-slate-200/90 space-y-3">
               <div className="flex flex-wrap items-center justify-between gap-2">
-                <label
-                  htmlFor="assignment-duration-input"
-                  className="text-[11px] font-bold text-slate-800 flex items-center"
-                >
-                  <Timer className="w-3.5 h-3.5 mr-1 text-red-600" />
-                  Tiempo / Duración de la Asignación (minutos) *
-                </label>
+                <span className="text-[11px] font-bold text-slate-800 flex items-center">
+                  <Timer className="w-3.5 h-3.5 mr-1 text-red-600 shrink-0" />
+                  Tiempo y Duración de la Asignación (Horas y Minutos · hasta 8 h) *
+                </span>
                 {estimatedEndTime && (
-                  <span className="inline-flex items-center px-2 py-0.5 rounded-md bg-red-50 border border-red-200 text-[11px] font-mono font-bold text-red-700">
-                    {time} – {estimatedEndTime} hrs ({resolvedDurationMinutes} min)
+                  <span className="text-[11px] font-mono tabular-nums font-bold text-red-700">
+                    {normalizedTime} – {estimatedEndTime} hrs ·{' '}
+                    {formatDurationHoursMinutes(resolvedDurationMinutes)}
                   </span>
                 )}
               </div>
 
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
-                {/* Quick duration presets */}
+              {/* Hours + Minutes Selectors & Steppers */}
+              <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5 items-end bg-white p-3 rounded-xl border border-slate-200">
+                <div className="sm:col-span-4">
+                  <label
+                    htmlFor="assignment-duration-hours"
+                    className="block text-[10px] font-semibold text-slate-600 mb-1"
+                  >
+                    Horas (0 a 8 h)
+                  </label>
+                  <select
+                    id="assignment-duration-hours"
+                    value={durationHours}
+                    onChange={(e) => {
+                      const nextHours = parseInt(e.target.value, 10) || 0;
+                      const nextMins = nextHours >= 8 ? 0 : durationRemainderMinutes;
+                      const combined = combineHoursAndMinutes(
+                        nextHours,
+                        nextHours === 0 && nextMins < 5 ? 15 : nextMins
+                      );
+                      setDurationInput(String(combined));
+                    }}
+                    className="w-full bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs font-mono tabular-nums font-bold text-slate-900 focus:outline-none focus:border-red-500"
+                  >
+                    {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((h) => (
+                      <option key={h} value={h}>
+                        {h} {h === 1 ? 'hora' : 'horas'}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="sm:col-span-4">
+                  <label
+                    htmlFor="assignment-duration-minutes"
+                    className="block text-[10px] font-semibold text-slate-600 mb-1"
+                  >
+                    Minutos (0 a 59 min)
+                  </label>
+                  <div className="relative">
+                    <input
+                      id="assignment-duration-minutes"
+                      type="text"
+                      inputMode="numeric"
+                      pattern="[0-9]*"
+                      disabled={durationHours >= 8}
+                      value={durationHours >= 8 ? '0' : String(durationRemainderMinutes)}
+                      onFocus={(e) => e.target.select()}
+                      onChange={(e) => {
+                        const digits = e.target.value.replace(/[^0-9]/g, '');
+                        const parsedM = digits === '' ? 0 : Math.min(59, parseInt(digits, 10));
+                        const combined = combineHoursAndMinutes(durationHours, parsedM);
+                        setDurationInput(String(combined));
+                      }}
+                      className="w-full bg-slate-50 border border-slate-300 rounded-lg pl-2.5 pr-9 py-1.5 text-center text-xs font-mono tabular-nums font-bold text-slate-900 focus:outline-none focus:border-red-500 disabled:opacity-50"
+                    />
+                    <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-slate-400 pointer-events-none">
+                      min
+                    </span>
+                  </div>
+                </div>
+
+                <div className="sm:col-span-4 flex items-center justify-between sm:justify-end gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const step = resolvedDurationMinutes >= 120 ? 30 : 5;
+                      setDurationInput(
+                        String(Math.max(MIN_ASSIGNMENT_DURATION_MINUTES, resolvedDurationMinutes - step))
+                      );
+                    }}
+                    className="h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-300 text-slate-700 text-[11px] font-mono tabular-nums font-bold flex items-center justify-center gap-0.5 transition whitespace-nowrap shrink-0 cursor-pointer"
+                    title="Reducir duración"
+                  >
+                    <Minus className="w-3 h-3 shrink-0" />
+                    <span>{resolvedDurationMinutes >= 120 ? '30m' : '5m'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const step = resolvedDurationMinutes >= 120 ? 30 : 15;
+                      setDurationInput(
+                        String(Math.min(MAX_ASSIGNMENT_DURATION_MINUTES, resolvedDurationMinutes + step))
+                      );
+                    }}
+                    className="h-8 px-2.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-[11px] font-mono tabular-nums font-bold flex items-center justify-center gap-0.5 shadow-2xs transition whitespace-nowrap shrink-0 cursor-pointer"
+                    title="Aumentar duración"
+                  >
+                    <Plus className="w-3 h-3 shrink-0" />
+                    <span>{resolvedDurationMinutes >= 120 ? '30m' : '15m'}</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Quick Presets: Short Sessions + Long Corporate Gym Sessions (4h - 8h) */}
+              <div className="space-y-2">
                 <div className="flex flex-wrap items-center gap-1.5">
-                  {DURATION_PRESETS.map((mins) => {
-                    const isSelected = parseInt(durationInput, 10) === mins;
+                  <span className="text-[10px] font-semibold text-slate-500 mr-1">
+                    Sesiones breves / clases:
+                  </span>
+                  {SHORT_DURATION_PRESETS.map((mins) => {
+                    const isSelected = resolvedDurationMinutes === mins;
                     return (
                       <button
                         key={mins}
                         type="button"
                         onClick={() => setDurationInput(String(mins))}
-                        className={`px-2.5 py-1 rounded-lg text-[11px] font-mono font-bold border transition ${
+                        className={`px-2 py-1 rounded-lg text-[11px] font-mono tabular-nums font-bold border transition whitespace-nowrap shrink-0 cursor-pointer ${
                           isSelected
                             ? 'bg-red-600 text-white border-red-600 shadow-2xs'
                             : 'bg-white text-slate-700 border-slate-300 hover:border-red-300 hover:bg-red-50/40'
                         }`}
                       >
-                        {mins}m
+                        {formatDurationHoursMinutes(mins, true)}
                       </button>
                     );
                   })}
                 </div>
 
-                {/* Custom numeric input with -5 / +5 steppers */}
-                <div className="flex items-center space-x-1.5 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const cur = parseInt(durationInput, 10) || resolvedDurationMinutes;
-                      setDurationInput(String(Math.max(5, cur - 5)));
-                    }}
-                    className="w-8 h-8 rounded-lg bg-white hover:bg-slate-100 border border-slate-300 text-slate-700 flex items-center justify-center transition"
-                    title="Restar 5 minutos"
-                  >
-                    <Minus className="w-3.5 h-3.5" />
-                  </button>
-
-                  <div className="relative">
-                    <input
-                      id="assignment-duration-input"
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      required
-                      value={durationInput}
-                      onFocus={(e) => e.target.select()}
-                      onChange={(e) => {
-                        const digits = e.target.value.replace(/[^0-9]/g, '');
-                        if (digits === '') {
-                          setDurationInput('');
-                        } else {
-                          setDurationInput(String(Math.min(240, parseInt(digits, 10))));
-                        }
-                      }}
-                      onBlur={() => {
-                        if (!durationInput.trim() || parseInt(durationInput, 10) < 5) {
-                          setDurationInput(
-                            String(
-                              getDefaultDurationMinutes(
-                                activityType,
-                                activityName,
-                                activityCatalog
-                              )
-                            )
-                          );
-                        }
-                      }}
-                      className="w-20 bg-white border border-slate-300 rounded-lg pl-2.5 pr-8 py-1.5 text-center text-xs font-mono font-bold text-slate-900 focus:outline-none focus:border-red-500"
-                    />
-                    <span className="absolute right-2 top-1/2 -translate-y-1/2 text-[10px] font-semibold text-slate-400 pointer-events-none">
-                      min
-                    </span>
-                  </div>
-
-                  <button
-                    type="button"
-                    onClick={() => {
-                      const cur = parseInt(durationInput, 10) || resolvedDurationMinutes;
-                      setDurationInput(String(Math.min(240, cur + 5)));
-                    }}
-                    className="w-8 h-8 rounded-lg bg-red-600 hover:bg-red-700 text-white flex items-center justify-center shadow-2xs transition"
-                    title="Sumar 5 minutos"
-                  >
-                    <Plus className="w-3.5 h-3.5" />
-                  </button>
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[10px] font-semibold text-indigo-700 mr-1">
+                    Gimnasio / Jornadas largas (2h a 8h):
+                  </span>
+                  {LONG_GYM_DURATION_PRESETS.map((mins) => {
+                    const isSelected = resolvedDurationMinutes === mins;
+                    return (
+                      <button
+                        key={mins}
+                        type="button"
+                        onClick={() => setDurationInput(String(mins))}
+                        className={`px-2.5 py-1 rounded-lg text-[11px] font-mono tabular-nums font-bold border transition whitespace-nowrap shrink-0 cursor-pointer ${
+                          isSelected
+                            ? 'bg-indigo-600 text-white border-indigo-600 shadow-2xs'
+                            : 'bg-white text-slate-700 border-slate-300 hover:border-indigo-300 hover:bg-indigo-50/40'
+                        }`}
+                      >
+                        {formatDurationHoursMinutes(mins, true)}
+                      </button>
+                    );
+                  })}
                 </div>
               </div>
+
               <p className="text-[10px] text-slate-500">
-                Define cuánto tiempo debe durar esta sesión; configurará automáticamente el cronómetro y la alarma de salida del entrenador.
+                Permite asignar desde pausas activas de 15 min hasta jornadas completas de gimnasio corporativo de 4 a 8 horas continuas ({resolvedDurationMinutes} min en total).
               </p>
             </div>
           </div>

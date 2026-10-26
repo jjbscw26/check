@@ -7,8 +7,55 @@ import {
   normalizeActivityType,
 } from '../types';
 
+export const MIN_ASSIGNMENT_DURATION_MINUTES = 5;
+export const MAX_ASSIGNMENT_DURATION_MINUTES = 480; // Hasta 8 horas continuas (Gimnasio Corporativo / jornadas largas)
 export const UNCLOSED_GRACE_MINUTES = 60;
 export const UNCLOSED_GRACE_SECONDS = UNCLOSED_GRACE_MINUTES * 60;
+
+export function clampAssignmentDurationMinutes(totalMinutes: number): number {
+  if (!Number.isFinite(totalMinutes)) return 20;
+  return Math.max(
+    MIN_ASSIGNMENT_DURATION_MINUTES,
+    Math.min(MAX_ASSIGNMENT_DURATION_MINUTES, Math.round(totalMinutes))
+  );
+}
+
+export function splitMinutesToHoursAndMinutes(totalMinutes: number): {
+  hours: number;
+  minutes: number;
+} {
+  const safeTotal = Math.max(
+    0,
+    Math.min(MAX_ASSIGNMENT_DURATION_MINUTES, Math.round(Number(totalMinutes) || 0))
+  );
+  const hours = Math.floor(safeTotal / 60);
+  const minutes = safeTotal % 60;
+  return { hours, minutes };
+}
+
+export function combineHoursAndMinutes(hours: number, minutes: number): number {
+  const safeHours = Math.max(0, Math.min(8, Math.floor(Number(hours) || 0)));
+  const safeMinutes =
+    safeHours >= 8 ? 0 : Math.max(0, Math.min(59, Math.floor(Number(minutes) || 0)));
+  return clampAssignmentDurationMinutes(safeHours * 60 + safeMinutes);
+}
+
+export function formatDurationHoursMinutes(
+  totalMinutes: number,
+  compact: boolean = false
+): string {
+  const safe = Math.max(0, Math.round(Number(totalMinutes) || 0));
+  const h = Math.floor(safe / 60);
+  const m = safe % 60;
+
+  if (h <= 0) {
+    return compact ? `${m}m` : `${m} min`;
+  }
+  if (m === 0) {
+    return compact ? `${h}h` : `${h} h`;
+  }
+  return compact ? `${h}h ${m}m` : `${h} h ${m} min`;
+}
 
 export interface SessionAlarmStatus {
   plannedDurationMinutes: number;
@@ -46,7 +93,7 @@ export function getDefaultDurationMinutes(
       return item.name.slice(colonIdx + 1).trim().toLowerCase() === normalizedTarget;
     });
   if (match && match.defaultDurationMinutes > 0) {
-    return match.defaultDurationMinutes;
+    return clampAssignmentDurationMinutes(match.defaultDurationMinutes);
   }
   return ACTIVITY_TYPE_DEFAULT_MINUTES[normalizeActivityType(activityType)];
 }
@@ -56,7 +103,7 @@ export function getAssignmentDurationMinutes(
   catalog: ActivityCatalogItem[] = []
 ): number {
   if (assignment.durationMinutes && assignment.durationMinutes > 0) {
-    return assignment.durationMinutes;
+    return clampAssignmentDurationMinutes(assignment.durationMinutes);
   }
   return getDefaultDurationMinutes(assignment.activityType, assignment.activityName, catalog);
 }

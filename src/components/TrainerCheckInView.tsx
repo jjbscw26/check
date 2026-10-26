@@ -54,6 +54,11 @@ import { CameraCapture } from './CameraCapture';
 import { TrainerCheckOutModal } from './TrainerCheckOutModal';
 import { SessionEndAlarmModal } from './SessionEndAlarmModal';
 import {
+  MAX_ASSIGNMENT_DURATION_MINUTES,
+  MIN_ASSIGNMENT_DURATION_MINUTES,
+  combineHoursAndMinutes,
+  formatDurationHoursMinutes,
+  splitMinutesToHoursAndMinutes,
   getDefaultDurationMinutes,
   getAssignmentDurationMinutes,
   calculateEndTimeHHMM,
@@ -562,7 +567,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
     const parsedDuration = Math.max(
       1,
       Math.min(
-        240,
+        MAX_ASSIGNMENT_DURATION_MINUTES,
         parseInt(plannedDurationInput, 10) ||
           getDefaultDurationMinutes(activityType, activityName, activityCatalog)
       )
@@ -757,7 +762,10 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
 
   const handleAdjustActiveDuration = (deltaMinutes: number) => {
     if (!activeSession || !activeSessionAlarm) return;
-    const nextDuration = Math.max(1, Math.min(240, activeSessionAlarm.plannedDurationMinutes + deltaMinutes));
+    const nextDuration = Math.max(
+      1,
+      Math.min(MAX_ASSIGNMENT_DURATION_MINUTES, activeSessionAlarm.plannedDurationMinutes + deltaMinutes)
+    );
     onUpdateRecord({
       ...activeSession,
       plannedDurationMinutes: nextDuration,
@@ -888,7 +896,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                 </span>
 
                 <span className="text-[11px] text-red-100 font-mono tabular-nums">
-                  Duración: {activeSessionAlarm.plannedDurationMinutes} min (Fin est.{' '}
+                  Duración: {formatDurationHoursMinutes(activeSessionAlarm.plannedDurationMinutes)} (Fin est.{' '}
                   {activeSessionAlarm.expectedEndTimeFormatted})
                 </span>
 
@@ -904,22 +912,30 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                 <div className="inline-flex items-center bg-black/25 rounded-lg p-0.5 border border-white/15">
                   <button
                     type="button"
-                    onClick={() => handleAdjustActiveDuration(-5)}
-                    className="min-h-[34px] px-2.5 py-1 text-[11px] font-bold hover:bg-white/15 rounded-md transition"
-                    title="Restar 5 minutos a la duración de la alarma"
+                    onClick={() =>
+                      handleAdjustActiveDuration(
+                        activeSessionAlarm.plannedDurationMinutes >= 120 ? -15 : -5
+                      )
+                    }
+                    className="min-h-[34px] px-2.5 py-1 text-[11px] font-bold hover:bg-white/15 rounded-md transition whitespace-nowrap"
+                    title="Reducir duración de la alarma"
                   >
-                    -5m
+                    {activeSessionAlarm.plannedDurationMinutes >= 120 ? '-15m' : '-5m'}
                   </button>
-                  <span className="px-1.5 text-[10px] font-mono tabular-nums text-red-100">
-                    {activeSessionAlarm.plannedDurationMinutes}m
+                  <span className="px-1.5 text-[10px] font-mono tabular-nums text-red-100 whitespace-nowrap">
+                    {formatDurationHoursMinutes(activeSessionAlarm.plannedDurationMinutes, true)}
                   </span>
                   <button
                     type="button"
-                    onClick={() => handleAdjustActiveDuration(5)}
-                    className="min-h-[34px] px-2.5 py-1 text-[11px] font-bold hover:bg-white/15 rounded-md transition"
-                    title="Sumar 5 minutos a la duración de la alarma"
+                    onClick={() =>
+                      handleAdjustActiveDuration(
+                        activeSessionAlarm.plannedDurationMinutes >= 120 ? 15 : 5
+                      )
+                    }
+                    className="min-h-[34px] px-2.5 py-1 text-[11px] font-bold hover:bg-white/15 rounded-md transition whitespace-nowrap"
+                    title="Aumentar duración de la alarma"
                   >
-                    +5m
+                    {activeSessionAlarm.plannedDurationMinutes >= 120 ? '+15m' : '+5m'}
                   </button>
                 </div>
 
@@ -1423,7 +1439,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                                     </span>
                                     <span className="text-slate-300" aria-hidden="true">·</span>
                                     <span className="font-semibold text-slate-600">
-                                      {durMins} min
+                                      {formatDurationHoursMinutes(durMins)}
                                     </span>
                                   </>
                                 );
@@ -1717,7 +1733,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                                           : 'text-red-600'
                                       }`}
                                     >
-                                      {asg.time} ({getAssignmentDurationMinutes(asg, activityCatalog)}m)
+                                      {asg.time} ({formatDurationHoursMinutes(getAssignmentDurationMinutes(asg, activityCatalog), true)})
                                     </span>
                                     {dayLock.isNonCompliant ? (
                                       <span className="text-[9px] font-extrabold text-rose-800">
@@ -1867,7 +1883,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                   <span aria-hidden="true">·</span>
                   <span className="flex items-center font-mono tabular-nums font-bold text-slate-800">
                     <Clock className="w-3.5 h-3.5 mr-1 shrink-0" />
-                    {loadedAssignment.time} hrs ({getAssignmentDurationMinutes(loadedAssignment, activityCatalog)} min)
+                    {loadedAssignment.time} hrs ({formatDurationHoursMinutes(getAssignmentDurationMinutes(loadedAssignment, activityCatalog))})
                   </span>
                   <span aria-hidden="true">·</span>
                   <span>{loadedAssignment.companyName} ({loadedAssignment.sedeName})</span>
@@ -2241,73 +2257,113 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                 </div>
               </div>
 
-              {alarmEnabled && (
-                <div className="pt-2.5 border-t border-slate-200/80 flex flex-col sm:flex-row items-center justify-between gap-3">
-                  <div className="flex flex-wrap items-center justify-center sm:justify-start gap-1.5">
-                    <span className="text-[11px] font-semibold text-slate-600 w-full sm:w-auto text-center sm:text-left sm:mr-1">
-                      Duración para el aviso:
-                    </span>
-                    {[15, 20, 30, 45, 50, 60].map((mins) => {
-                      const isSelected = Boolean(loadedAssignment) && parseInt(plannedDurationInput, 10) === mins;
-                      return (
-                        <button
-                          key={mins}
-                          type="button"
-                          disabled={!loadedAssignment}
-                          onClick={() => setPlannedDurationInput(String(mins))}
-                          className={`min-h-[36px] px-2.5 py-1 rounded-lg text-xs font-bold border transition tabular-nums disabled:opacity-40 disabled:cursor-not-allowed ${
-                            isSelected
-                              ? 'bg-red-600 text-white border-red-600 shadow-2xs'
-                              : 'bg-white text-slate-700 border-slate-300 hover:border-red-300'
-                          }`}
-                        >
-                          {mins} min
-                        </button>
-                      );
-                    })}
-                  </div>
+              {alarmEnabled && (() => {
+                const currentPlannedMinutes = loadedAssignment
+                  ? Math.max(
+                      MIN_ASSIGNMENT_DURATION_MINUTES,
+                      Math.min(
+                        MAX_ASSIGNMENT_DURATION_MINUTES,
+                        parseInt(plannedDurationInput, 10) ||
+                          (activityType
+                            ? getDefaultDurationMinutes(activityType, activityName, activityCatalog)
+                            : 20)
+                      )
+                    )
+                  : 0;
+                const { hours: plannedH, minutes: plannedM } =
+                  splitMinutesToHoursAndMinutes(currentPlannedMinutes);
 
-                  <div className="flex items-center justify-center space-x-2">
-                    <label
-                      htmlFor="planned-duration-input"
-                      className="text-[11px] font-semibold text-slate-600 whitespace-nowrap"
-                    >
-                      Duración (min):
-                    </label>
-                    <input
-                      id="planned-duration-input"
-                      type="text"
-                      inputMode="numeric"
-                      pattern="[0-9]*"
-                      disabled={!loadedAssignment}
-                      placeholder=""
-                      value={plannedDurationInput}
-                      onFocus={(e) => e.target.select()}
-                      onChange={(e) => {
-                        const digits = e.target.value.replace(/[^0-9]/g, '');
-                        if (digits === '') {
-                          setPlannedDurationInput('');
-                        } else {
-                          setPlannedDurationInput(String(Math.min(240, parseInt(digits, 10))));
-                        }
-                      }}
-                      onBlur={() => {
-                        if (!loadedAssignment) return;
-                        if (!plannedDurationInput.trim() || parseInt(plannedDurationInput, 10) < 1) {
-                          setPlannedDurationInput(
-                            String(
-                              activityType
-                                ? getDefaultDurationMinutes(activityType, activityName, activityCatalog)
-                                : 20
-                            )
+                return (
+                  <div className="pt-2.5 border-t border-slate-200/80 space-y-2.5">
+                    <div className="flex flex-wrap items-center justify-center sm:justify-between gap-2">
+                      <div className="flex flex-wrap items-center justify-center sm:justify-start gap-1.5">
+                        <span className="text-[11px] font-semibold text-slate-600 w-full sm:w-auto text-center sm:text-left sm:mr-1">
+                          Duración para el aviso (hasta 8 h):
+                        </span>
+                        {[20, 30, 50, 60, 120, 240, 360, 480].map((mins) => {
+                          const isSelected = Boolean(loadedAssignment) && currentPlannedMinutes === mins;
+                          return (
+                            <button
+                              key={mins}
+                              type="button"
+                              disabled={!loadedAssignment}
+                              onClick={() => setPlannedDurationInput(String(mins))}
+                              className={`min-h-[34px] px-2.5 py-1 rounded-lg text-xs font-mono tabular-nums font-bold border transition whitespace-nowrap shrink-0 disabled:opacity-40 disabled:cursor-not-allowed ${
+                                isSelected
+                                  ? 'bg-red-600 text-white border-red-600 shadow-2xs'
+                                  : 'bg-white text-slate-700 border-slate-300 hover:border-red-300'
+                              }`}
+                            >
+                              {formatDurationHoursMinutes(mins, true)}
+                            </button>
                           );
-                        }
-                      }}
-                      className="w-16 min-h-[38px] bg-white border border-slate-300 rounded-lg px-2 py-1 text-center text-xs font-mono tabular-nums font-bold text-slate-900 focus:outline-none focus:border-red-500 disabled:bg-slate-50/80 disabled:text-slate-500"
-                    />
+                        })}
+                      </div>
+
+                      <div className="flex items-center justify-center gap-2">
+                        <div className="flex items-center gap-1">
+                          <label
+                            htmlFor="planned-duration-hours"
+                            className="text-[11px] font-semibold text-slate-600 whitespace-nowrap"
+                          >
+                            Hrs:
+                          </label>
+                          <select
+                            id="planned-duration-hours"
+                            disabled={!loadedAssignment}
+                            value={loadedAssignment ? plannedH : 0}
+                            onChange={(e) => {
+                              const nextH = parseInt(e.target.value, 10) || 0;
+                              const nextM = nextH >= 8 ? 0 : plannedM;
+                              setPlannedDurationInput(
+                                String(
+                                  combineHoursAndMinutes(
+                                    nextH,
+                                    nextH === 0 && nextM < 5 ? 15 : nextM
+                                  )
+                                )
+                              );
+                            }}
+                            className="min-h-[36px] bg-white border border-slate-300 rounded-lg px-2 py-1 text-xs font-mono tabular-nums font-bold text-slate-900 focus:outline-none focus:border-red-500 disabled:bg-slate-50/80 disabled:text-slate-500"
+                          >
+                            {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((h) => (
+                              <option key={h} value={h}>
+                                {h}h
+                              </option>
+                            ))}
+                          </select>
+                        </div>
+
+                        <div className="flex items-center gap-1">
+                          <label
+                            htmlFor="planned-duration-minutes"
+                            className="text-[11px] font-semibold text-slate-600 whitespace-nowrap"
+                          >
+                            Min:
+                          </label>
+                          <input
+                            id="planned-duration-minutes"
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            disabled={!loadedAssignment || plannedH >= 8}
+                            value={!loadedAssignment ? '' : plannedH >= 8 ? '0' : String(plannedM)}
+                            onFocus={(e) => e.target.select()}
+                            onChange={(e) => {
+                              const digits = e.target.value.replace(/[^0-9]/g, '');
+                              const parsedM = digits === '' ? 0 : Math.min(59, parseInt(digits, 10));
+                              setPlannedDurationInput(
+                                String(combineHoursAndMinutes(plannedH, parsedM))
+                              );
+                            }}
+                            className="w-14 min-h-[36px] bg-white border border-slate-300 rounded-lg px-2 py-1 text-center text-xs font-mono tabular-nums font-bold text-slate-900 focus:outline-none focus:border-red-500 disabled:bg-slate-50/80 disabled:text-slate-500"
+                          />
+                        </div>
+                      </div>
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
             </div>
           </div>
 

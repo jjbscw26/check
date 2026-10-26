@@ -10,7 +10,11 @@ import {
   Trainer,
 } from '../types';
 import { formatDistance } from './geo';
-import { calculateEndTimeHHMM, getAssignmentDurationMinutes } from './sessionAlarm';
+import {
+  calculateEndTimeHHMM,
+  formatDurationHoursMinutes,
+  getAssignmentDurationMinutes,
+} from './sessionAlarm';
 
 export type EvidencePhotoSlot = 'entry' | 'exit' | 'facial';
 
@@ -299,6 +303,10 @@ export function exportEvidenceRecordsToExcel(
     'Hora Salida Real':
       r.checkOutTime ||
       (r.status === 'incumplido' ? 'TERMINADA (+60m - NO CERRADA)' : 'En curso'),
+    'Duración Efectiva': r.durationMinutes ? formatDurationHoursMinutes(r.durationMinutes) : '',
+    'Duración Planeada': r.plannedDurationMinutes
+      ? formatDurationHoursMinutes(r.plannedDurationMinutes)
+      : '',
     'Duración Efectiva (min)': r.durationMinutes ?? '',
     'Duración Planeada (min)': r.plannedDurationMinutes ?? '',
     'Estado de Sesión': formatStatusLabel(r),
@@ -584,8 +592,8 @@ async function renderEvidenceCardsIntoPdf(
         `Entrada ${rec.checkInTime} · Salida ${
           rec.checkOutTime ||
           (rec.status === 'incumplido' ? 'Terminada +60m (No cerrada)' : 'En curso')
-        }${rec.durationMinutes ? ` (${rec.durationMinutes}m)` : ''}`
-      ).slice(0, 54),
+        }${rec.durationMinutes ? ` (${formatDurationHoursMinutes(rec.durationMinutes, true)})` : ''}`
+      ).slice(0, 56),
       col1X + 15,
       row2Y
     );
@@ -1477,7 +1485,7 @@ export async function exportAssignmentsRoleToPdf(
         doc.setFont('helvetica', 'normal');
         doc.setFontSize(6.3);
         doc.setTextColor(100, 116, 139);
-        doc.text(`${durMins} min`, cols[1].x, cursorY + 8);
+        doc.text(sanitizePdfText(formatDurationHoursMinutes(durMins)), cols[1].x, cursorY + 8);
 
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(7.1);
@@ -1530,7 +1538,7 @@ export async function exportAssignmentsRoleToPdf(
     doc.roundedRect(marginX, cursorY, contentWidth, 23, 1.8, 1.8, 'FD');
 
     const normativeText = sanitizePdfText(
-      'Normativa BSCW Check: La carga de la asignación para registro de entrada se habilita 30 minutos antes y hasta 10 minutos después del horario programado, con validación facial automática y geocerca GPS. La salida con fotografía es obligatoria al concluir; pasados 60 minutos del término sin cierre se marca automáticamente como No Cerrada.'
+      'Normativa BSCW Check: La carga de la asignación para registro de entrada se habilita 30 minutos antes y hasta 10 minutos después del horario programado, activando el identificador facial y geocerca GPS. La salida con fotografía es obligatoria al concluir; pasados 60 minutos del término sin cierre se marca automáticamente como No Cerrada.'
     );
     doc.setFont('helvetica', 'italic');
     doc.setFontSize(6.5);

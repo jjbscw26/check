@@ -67,19 +67,12 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
 
   const alignedStreakRef = useRef<number>(0);
   const autoCooldownUntilRef = useRef<number>(0);
-  const autoOpenAttemptedRef = useRef<boolean>(false);
   const authenticateFnRef = useRef<() => Promise<void>>(async () => {});
 
   const activeTrainers = trainers.filter((t) => t.active !== false);
   const trainersWithFacePhoto = activeTrainers.filter(
     (t) => !isPlaceholderOrMissingAvatar(t.avatar)
   );
-
-  useEffect(() => {
-    ensureBiometricModelsLoaded().catch(() => {
-      // Handled with user-facing feedback when scanning
-    });
-  }, []);
 
   const stopCamera = useCallback(() => {
     unregisterExclusiveCameraStream(LOGIN_CAMERA_OWNER_ID, streamRef.current);
@@ -132,6 +125,10 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
       setOvalHoldProgress(0);
       setScanStepText('Coloca tu rostro dentro del óvalo — verificación automática activa');
 
+      void ensureBiometricModelsLoaded().catch(() => {
+        // Handled with user-facing feedback when scanning
+      });
+
       try {
         const opened = await openCameraStreamWithFallback({
           ownerId: LOGIN_CAMERA_OWNER_ID,
@@ -166,18 +163,6 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
     },
     [stopCamera]
   );
-
-  useEffect(() => {
-    if (
-      !autoOpenAttemptedRef.current &&
-      trainersWithFacePhoto.length > 0 &&
-      !cameraActive &&
-      !isStartingCamera
-    ) {
-      autoOpenAttemptedRef.current = true;
-      void startCamera('user', undefined, true);
-    }
-  }, [trainersWithFacePhoto.length, cameraActive, isStartingCamera, startCamera]);
 
   const switchCameraDevice = () => {
     const nextMode: 'user' | 'environment' = facingMode === 'user' ? 'environment' : 'user';
@@ -556,34 +541,47 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
                   </div>
                 </div>
 
-                <button
-                  type="button"
-                  onClick={() => {
-                    autoCooldownUntilRef.current = 0;
-                    void handleAuthenticateByFace();
-                  }}
-                  disabled={!isVideoReady || isScanning || isStartingCamera}
-                  className="w-full max-w-sm mx-auto min-h-[44px] py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs shadow-sm transition flex items-center justify-center gap-2 whitespace-nowrap shrink-0 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  <ScanFace className="w-4 h-4 shrink-0" />
-                  <span>
-                    {isScanning
-                      ? 'Verificando identidad facial...'
-                      : 'Capturar Manualmente (Auto-detección activa)'}
-                  </span>
-                </button>
+                <div className="w-full max-w-sm mx-auto flex flex-col sm:flex-row items-stretch sm:items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      autoCooldownUntilRef.current = 0;
+                      void handleAuthenticateByFace();
+                    }}
+                    disabled={!isVideoReady || isScanning || isStartingCamera}
+                    className="flex-1 min-h-[44px] py-2.5 px-4 rounded-xl bg-slate-900 hover:bg-slate-800 text-white font-semibold text-xs shadow-sm transition flex items-center justify-center gap-2 whitespace-nowrap shrink-0 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                  >
+                    <ScanFace className="w-4 h-4 shrink-0" />
+                    <span>
+                      {isScanning ? 'Verificando identidad...' : 'Capturar Manualmente'}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={stopCamera}
+                    disabled={isScanning}
+                    className="min-h-[44px] py-2.5 px-3.5 rounded-xl bg-white hover:bg-slate-100 text-slate-700 border border-slate-300 font-semibold text-xs transition flex items-center justify-center gap-1.5 whitespace-nowrap shrink-0 disabled:opacity-50 cursor-pointer"
+                  >
+                    <X className="w-4 h-4 text-slate-500 shrink-0" />
+                    <span>Desactivar Identificador</span>
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="rounded-2xl border border-slate-200 bg-slate-50 p-5 sm:p-8 text-center space-y-4 flex flex-col items-center">
-                <div className="w-16 h-16 rounded-2xl bg-white border border-slate-200 text-red-600 flex items-center justify-center mx-auto shadow-xs">
+                <div className="w-16 h-16 rounded-2xl bg-white border border-slate-200 text-slate-500 flex items-center justify-center mx-auto shadow-xs">
                   <Camera className="w-8 h-8" />
                 </div>
-                <div className="space-y-1 max-w-md mx-auto">
+                <div className="space-y-1.5 max-w-md mx-auto">
+                  <span className="text-xs font-semibold text-slate-500 block">
+                    Identificador Facial Desactivado
+                  </span>
                   <h2 className="text-base font-bold text-slate-900 text-balance">
-                    Verificación Facial Requerida para Ver Tus Sesiones
+                    Activa el Identificador Facial Cuando Estés Listo
                   </h2>
                   <p className="text-xs text-slate-500 leading-relaxed">
-                    Activa tu cámara frontal, ubica tu rostro dentro de la guía y el sistema abrirá únicamente las sesiones, sedes y bitácora asignadas a tu perfil.
+                    La cámara y el reconocimiento biométrico permanecen desactivados por defecto. Al activarlo y ubicar tu rostro dentro del óvalo, se abrirán únicamente tus sesiones asignadas.
                   </p>
                 </div>
 
@@ -591,11 +589,11 @@ export const TrainerFacialLoginView: React.FC<TrainerFacialLoginViewProps> = ({
                   type="button"
                   onClick={() => void startCamera(facingMode)}
                   disabled={isStartingCamera}
-                  className="w-full max-w-sm mx-auto min-h-[48px] inline-flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-sm shadow-md transition text-center leading-snug disabled:opacity-50"
+                  className="w-full max-w-sm mx-auto min-h-[48px] inline-flex items-center justify-center gap-2 px-5 py-3.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold text-sm shadow-md transition whitespace-nowrap shrink-0 disabled:opacity-50 cursor-pointer"
                 >
                   <ScanFace className="w-5 h-5 shrink-0" />
                   <span>
-                    {isStartingCamera ? 'Iniciando cámara...' : 'Activar Cámara e Iniciar Sesión Facial'}
+                    {isStartingCamera ? 'Activando identificador...' : 'Activar Identificador Facial'}
                   </span>
                 </button>
               </div>

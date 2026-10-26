@@ -75,17 +75,9 @@ export const FaceBiometricScanner: React.FC<FaceBiometricScannerProps> = ({
 
   const alignedStreakRef = useRef<number>(0);
   const autoCooldownUntilRef = useRef<number>(0);
-  const autoOpenedTrainerIdRef = useRef<string | null>(null);
   const executeScanRef = useRef<() => Promise<void>>(async () => {});
 
   const missingRealRegistrationPhoto = isPlaceholderOrMissingAvatar(trainer.avatar);
-
-  // Preload neural biometric models in background so 1:1 verification is responsive
-  useEffect(() => {
-    ensureBiometricModelsLoaded().catch(() => {
-      // Handled with detailed feedback during scan if needed
-    });
-  }, []);
 
   const stopCamera = useCallback(() => {
     unregisterExclusiveCameraStream(OWNER_ID, streamRef.current);
@@ -156,6 +148,10 @@ export const FaceBiometricScanner: React.FC<FaceBiometricScannerProps> = ({
       setOvalHoldProgress(0);
       setScanStepText('Coloca tu rostro dentro del óvalo — verificación automática activa');
 
+      void ensureBiometricModelsLoaded().catch(() => {
+        // Handled with detailed feedback during scan if needed
+      });
+
       try {
         const opened = await openCameraStreamWithFallback({
           ownerId: OWNER_ID,
@@ -193,27 +189,6 @@ export const FaceBiometricScanner: React.FC<FaceBiometricScannerProps> = ({
     },
     [missingRealRegistrationPhoto, stopCamera, trainer.name]
   );
-
-  // Automatically open front camera when ready for verification
-  useEffect(() => {
-    if (
-      !verificationData?.verified &&
-      !missingRealRegistrationPhoto &&
-      autoOpenedTrainerIdRef.current !== trainer.id &&
-      !cameraActive &&
-      !isStartingCamera
-    ) {
-      autoOpenedTrainerIdRef.current = trainer.id;
-      void startCamera('user', undefined, true);
-    }
-  }, [
-    trainer.id,
-    verificationData?.verified,
-    missingRealRegistrationPhoto,
-    cameraActive,
-    isStartingCamera,
-    startCamera,
-  ]);
 
   const switchCameraDevice = () => {
     const nextMode: 'user' | 'environment' = facingMode === 'user' ? 'environment' : 'user';
@@ -471,13 +446,13 @@ export const FaceBiometricScanner: React.FC<FaceBiometricScannerProps> = ({
           <button
             type="button"
             onClick={() => {
+              stopCamera();
               onVerificationCleared();
-              startCamera(facingMode);
             }}
-            className="flex items-center text-xs text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-lg border border-slate-200 transition font-semibold cursor-pointer"
+            className="flex items-center text-xs text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 px-3 py-1.5 rounded-lg border border-slate-200 transition font-semibold whitespace-nowrap shrink-0 cursor-pointer"
           >
-            <RotateCcw className="w-3.5 h-3.5 mr-1" />
-            Volver a Escanear
+            <RotateCcw className="w-3.5 h-3.5 mr-1 shrink-0" />
+            <span>Limpiar / Repetir</span>
           </button>
         </div>
 
@@ -707,10 +682,11 @@ export const FaceBiometricScanner: React.FC<FaceBiometricScannerProps> = ({
                 type="button"
                 onClick={stopCamera}
                 disabled={isScanning}
-                className="p-2.5 rounded-xl bg-slate-800/90 text-slate-300 hover:text-white text-xs border border-slate-700 shadow cursor-pointer disabled:opacity-50"
-                title="Cerrar Cámara"
+                className="px-3 py-2.5 rounded-xl bg-slate-800/90 hover:bg-rose-600 text-slate-200 hover:text-white text-xs font-semibold border border-slate-700 shadow flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+                title="Desactivar Identificador Facial"
               >
-                <X className="w-4 h-4" />
+                <X className="w-4 h-4 shrink-0" />
+                <span>Desactivar</span>
               </button>
             </div>
           </div>
@@ -722,6 +698,7 @@ export const FaceBiometricScanner: React.FC<FaceBiometricScannerProps> = ({
               <img
                 src={trainer.avatar}
                 alt={trainer.name}
+                referrerPolicy="no-referrer"
                 className="w-16 h-16 rounded-2xl object-cover border-2 border-slate-300 shadow-sm bg-slate-100"
               />
               <span className="absolute -bottom-1 -right-1 bg-slate-900 text-white text-[9px] font-bold px-1.5 py-0.5 rounded">
@@ -729,31 +706,35 @@ export const FaceBiometricScanner: React.FC<FaceBiometricScannerProps> = ({
               </span>
             </div>
             <div className="text-left">
-              <span className="text-xs text-slate-500 font-medium">Foto de Registro Oficial</span>
+              <span className="text-xs text-slate-500 font-semibold block">
+                Identificador Facial Desactivado
+              </span>
               <h5 className="text-sm font-bold text-slate-900">{trainer.name}</h5>
               <p className="text-[11px] text-slate-500">
                 {missingRealRegistrationPhoto
                   ? 'Sin foto facial real — requiere captura en Directorio'
-                  : 'Se corroborará 1:1 contra tu rostro en vivo'}
+                  : 'Permanece apagado hasta que lo actives'}
               </p>
             </div>
           </div>
 
           <p className="text-xs text-slate-500 max-w-md mx-auto mb-4">
-            Colócate de frente a la cámara con buena iluminación y sin accesorios que cubran tu rostro para corroborar que coincide con tu foto de registro.
+            Activa el identificador facial cuando estés listo, ubica tu rostro dentro del óvalo y se corroborará automáticamente con tu foto oficial de registro.
           </p>
 
           <div className="flex flex-wrap items-center justify-center gap-2.5">
             <button
               type="button"
-              onClick={() => startCamera('user')}
+              onClick={() => void startCamera('user')}
               disabled={isStartingCamera || missingRealRegistrationPhoto}
-              className="flex items-center text-xs sm:text-sm px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md transition disabled:opacity-50 cursor-pointer"
+              className="flex items-center text-xs sm:text-sm px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md transition whitespace-nowrap shrink-0 disabled:opacity-50 cursor-pointer"
             >
-              <ScanFace className="w-4 h-4 mr-2" />
-              {isStartingCamera
-                ? 'Activando Cámara...'
-                : 'Activar Cámara para Corroborar Rostro'}
+              <ScanFace className="w-4 h-4 mr-2 shrink-0" />
+              <span>
+                {isStartingCamera
+                  ? 'Activando Identificador...'
+                  : 'Activar Identificador Facial'}
+              </span>
             </button>
           </div>
         </div>

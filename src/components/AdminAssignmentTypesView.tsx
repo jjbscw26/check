@@ -27,7 +27,15 @@ import {
   Lock,
   Ban,
 } from 'lucide-react';
-import { getAssignmentDurationMinutes, getDefaultDurationMinutes } from '../utils/sessionAlarm';
+import {
+  MAX_ASSIGNMENT_DURATION_MINUTES,
+  MIN_ASSIGNMENT_DURATION_MINUTES,
+  combineHoursAndMinutes,
+  formatDurationHoursMinutes,
+  getAssignmentDurationMinutes,
+  getDefaultDurationMinutes,
+  splitMinutesToHoursAndMinutes,
+} from '../utils/sessionAlarm';
 import {
   collectMissingCatalogItemsFromTrainers,
   getAssignmentDisciplineGroups,
@@ -226,8 +234,11 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
     if (!itemName.trim()) return;
 
     const duration = Math.max(
-      5,
-      parseInt(itemDurationInput, 10) || ACTIVITY_TYPE_DEFAULT_MINUTES[itemType]
+      MIN_ASSIGNMENT_DURATION_MINUTES,
+      Math.min(
+        MAX_ASSIGNMENT_DURATION_MINUTES,
+        parseInt(itemDurationInput, 10) || ACTIVITY_TYPE_DEFAULT_MINUTES[itemType]
+      )
     );
 
     const payload: ActivityCatalogItem = {
@@ -546,7 +557,9 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
                       </span>
                       <span className="inline-flex items-center font-mono tabular-nums font-bold text-slate-700">
                         <Timer className="w-3 h-3 mr-1 text-red-500 shrink-0" />
-                        {getAssignmentDurationMinutes(asg, activityCatalog)} min
+                        {formatDurationHoursMinutes(
+                          getAssignmentDurationMinutes(asg, activityCatalog)
+                        )}
                       </span>
                       {savedToastId === asg.id && (
                         <span className="inline-flex items-center text-[11px] font-bold text-emerald-700">
@@ -715,7 +728,8 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
                         )}
                         <span className="inline-flex items-center text-[11px] font-mono tabular-nums text-slate-500">
                           <Clock className={`w-3 h-3 mr-1 ${meta.clockIconClass}`} />
-                          Duración sugerida: {item.defaultDurationMinutes} min
+                          Duración sugerida:{' '}
+                          {formatDurationHoursMinutes(item.defaultDurationMinutes)}
                         </span>
                       </div>
 
@@ -815,21 +829,103 @@ export const AdminAssignmentTypesView: React.FC<AdminAssignmentTypesViewProps> =
                 />
               </div>
 
-              {/* Suggested Duration */}
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Duración Estimada (minutos)
-                </label>
-                <input
-                  type="text"
-                  inputMode="numeric"
-                  pattern="[0-9]*"
-                  value={itemDurationInput}
-                  onChange={(e) => setItemDurationInput(e.target.value.replace(/[^0-9]/g, ''))}
-                  placeholder={String(ACTIVITY_TYPE_DEFAULT_MINUTES[itemType])}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono tabular-nums font-bold text-slate-900 focus:outline-none focus:border-red-500"
-                />
-              </div>
+              {/* Suggested Duration in Hours & Minutes (up to 8 hours) */}
+              {(() => {
+                const resolvedItemDuration = Math.max(
+                  MIN_ASSIGNMENT_DURATION_MINUTES,
+                  Math.min(
+                    MAX_ASSIGNMENT_DURATION_MINUTES,
+                    parseInt(itemDurationInput, 10) || ACTIVITY_TYPE_DEFAULT_MINUTES[itemType]
+                  )
+                );
+                const { hours: itemHours, minutes: itemMins } =
+                  splitMinutesToHoursAndMinutes(resolvedItemDuration);
+
+                return (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <label className="font-semibold text-slate-700">
+                        Duración Estimada (Horas y Minutos · hasta 8 h)
+                      </label>
+                      <span className="font-mono tabular-nums font-bold text-red-700">
+                        {formatDurationHoursMinutes(resolvedItemDuration)}
+                      </span>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-2.5">
+                      <div>
+                        <span className="block text-[10px] font-semibold text-slate-500 mb-1">
+                          Horas (0 a 8 h)
+                        </span>
+                        <select
+                          value={itemHours}
+                          onChange={(e) => {
+                            const nextH = parseInt(e.target.value, 10) || 0;
+                            const nextM = nextH >= 8 ? 0 : itemMins;
+                            setItemDurationInput(
+                              String(
+                                combineHoursAndMinutes(
+                                  nextH,
+                                  nextH === 0 && nextM < 5 ? 15 : nextM
+                                )
+                              )
+                            );
+                          }}
+                          className="w-full bg-slate-50 border border-slate-300 rounded-xl px-2.5 py-2 text-xs font-mono tabular-nums font-bold text-slate-900 focus:outline-none focus:border-red-500"
+                        >
+                          {[0, 1, 2, 3, 4, 5, 6, 7, 8].map((h) => (
+                            <option key={h} value={h}>
+                              {h} {h === 1 ? 'hora' : 'horas'}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+
+                      <div>
+                        <span className="block text-[10px] font-semibold text-slate-500 mb-1">
+                          Minutos (0 a 59 min)
+                        </span>
+                        <input
+                          type="text"
+                          inputMode="numeric"
+                          pattern="[0-9]*"
+                          disabled={itemHours >= 8}
+                          value={itemHours >= 8 ? '0' : String(itemMins)}
+                          onFocus={(e) => e.target.select()}
+                          onChange={(e) => {
+                            const digits = e.target.value.replace(/[^0-9]/g, '');
+                            const parsedM = digits === '' ? 0 : Math.min(59, parseInt(digits, 10));
+                            setItemDurationInput(
+                              String(combineHoursAndMinutes(itemHours, parsedM))
+                            );
+                          }}
+                          className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-center text-xs font-mono tabular-nums font-bold text-slate-900 focus:outline-none focus:border-red-500 disabled:opacity-50"
+                        />
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap gap-1.5">
+                      {[20, 30, 50, 60, 120, 240, 360, 480].map((preset) => {
+                        const activePreset = resolvedItemDuration === preset;
+                        return (
+                          <button
+                            key={preset}
+                            type="button"
+                            onClick={() => setItemDurationInput(String(preset))}
+                            className={`px-2 py-1 rounded-lg text-[11px] font-mono tabular-nums font-bold border transition whitespace-nowrap shrink-0 cursor-pointer ${
+                              activePreset
+                                ? 'bg-red-600 text-white border-red-600'
+                                : 'bg-slate-50 text-slate-700 border-slate-300 hover:border-red-300'
+                            }`}
+                          >
+                            {formatDurationHoursMinutes(preset, true)}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                );
+              })()}
 
               {/* Description */}
               <div>
