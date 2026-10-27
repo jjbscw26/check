@@ -37,6 +37,8 @@ import {
   Ban,
   AlertTriangle,
   X,
+  Video,
+  UserCog,
 } from 'lucide-react';
 import { AssignmentPreset } from './AdminAssignmentModal';
 import {
@@ -54,10 +56,18 @@ import {
 } from '../utils/monthlyAssignmentHelper';
 import {
   cleanDisciplineLabel,
-  getAssignmentDisciplineGroups,
-  inferActivityTypeFromDiscipline,
+  getAllowedActivityTypesForTrainer,
+  getAllowedSpecialtiesForTrainer,
+  isActivityAllowedForTrainer,
   normalizeDisciplineKey,
 } from '../utils/specialtyDisciplines';
+import {
+  buildSharePayloadFromAssignmentLike,
+  isValidVirtualMeetingUrl,
+  normalizeVirtualMeetingUrl,
+  VIRTUAL_PLATFORM_PRESETS,
+} from '../utils/virtualClassShare';
+import { VirtualClassQuickShare } from './VirtualClassShareCard';
 
 interface AdminScheduleViewProps {
   assignments: ClassAssignment[];
@@ -70,6 +80,7 @@ interface AdminScheduleViewProps {
   onEditAssignment: (assignment: ClassAssignment) => void;
   onUpdateAssignment?: (assignment: ClassAssignment) => void;
   onDeleteAssignment: (assignmentId: string) => void;
+  onEditTrainerSpecialties?: (trainer: Trainer) => void;
   onOpenPdfReport?: (trainerId?: string) => void;
 }
 
@@ -132,6 +143,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
   onEditAssignment,
   onUpdateAssignment,
   onDeleteAssignment,
+  onEditTrainerSpecialties,
   onOpenPdfReport,
 }) => {
   // Calendar view mode: 'month' | 'week' | 'day'
@@ -161,10 +173,14 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
   const [bulkCompanyId, setBulkCompanyId] = useState<string>(() => companies[0]?.id || '');
   const [bulkSedeId, setBulkSedeId] = useState<string>(() => companies[0]?.sedes[0]?.id || '');
   const [bulkActivityType, setBulkActivityType] = useState<ActivityType>('clase_fitness');
-  const [bulkActivityName, setBulkActivityName] = useState<string>('Entrenamiento Funcional');
-  const [bulkIsCustomActivity, setBulkIsCustomActivity] = useState<boolean>(false);
-  const [bulkCustomActivity, setBulkCustomActivity] = useState<string>('');
+  const [bulkActivityName, setBulkActivityName] = useState<string>('Pausas Activas');
   const [bulkLocationArea, setBulkLocationArea] = useState<string>('Área Principal');
+  const [bulkIsVirtual, setBulkIsVirtual] = useState<boolean>(false);
+  const [bulkPlatformSelect, setBulkPlatformSelect] = useState<string>('Google Meet');
+  const [bulkCustomPlatformName, setBulkCustomPlatformName] = useState<string>('');
+  const [bulkVirtualMeetingUrl, setBulkVirtualMeetingUrl] = useState<string>('');
+  const [bulkVirtualMeetingId, setBulkVirtualMeetingId] = useState<string>('');
+  const [bulkVirtualPasscode, setBulkVirtualPasscode] = useState<string>('');
   const [bulkTime, setBulkTime] = useState<string>('09:00');
   const [bulkDurationHours, setBulkDurationHours] = useState<number>(1);
   const [bulkDurationMinutesPart, setBulkDurationMinutesPart] = useState<number>(0);
@@ -220,21 +236,25 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
     [companies, bulkCompanyId]
   );
 
-  const bulkDisciplineGroups = useMemo(
-    () =>
-      getAssignmentDisciplineGroups({
-        activityType: bulkActivityType,
-        selectedTrainer: selectedBulkTrainer,
-        trainers,
-        activityCatalog,
-      }),
-    [bulkActivityType, selectedBulkTrainer, trainers, activityCatalog]
+  const allowedBulkSpecialties = useMemo(
+    () => getAllowedSpecialtiesForTrainer(selectedBulkTrainer, activityCatalog),
+    [selectedBulkTrainer, activityCatalog]
   );
 
-  const resolvedBulkActivityName = useMemo(() => {
-    const raw = bulkIsCustomActivity ? bulkCustomActivity : bulkActivityName;
-    return cleanDisciplineLabel(raw);
-  }, [bulkIsCustomActivity, bulkCustomActivity, bulkActivityName]);
+  const allowedBulkActivityTypes = useMemo(
+    () => getAllowedActivityTypesForTrainer(selectedBulkTrainer, activityCatalog),
+    [selectedBulkTrainer, activityCatalog]
+  );
+
+  const resolvedBulkActivityName = useMemo(
+    () => cleanDisciplineLabel(bulkActivityName),
+    [bulkActivityName]
+  );
+
+  const resolvedBulkVirtualPlatform =
+    bulkPlatformSelect === 'Otra Plataforma'
+      ? bulkCustomPlatformName.trim() || 'Plataforma Virtual'
+      : bulkPlatformSelect;
 
   const bulkTotalDurationMinutes = useMemo(() => {
     const rawTotal = bulkDurationHours * 60 + bulkDurationMinutesPart;
@@ -256,49 +276,74 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
     setBulkDurationMinutesPart(m);
   };
 
-  const handleBulkModalityChange = (nextType: ActivityType) => {
-    setBulkActivityType(nextType);
-    const matchingCat = activityCatalog.find(
-      (c) => normalizeActivityType(c.activityType) === nextType && c.active !== false
-    );
-    if (!bulkIsCustomActivity) {
-      if (matchingCat) {
-        setBulkActivityName(cleanDisciplineLabel(matchingCat.name));
-        applyBulkDurationTotal(matchingCat.durationMinutes || ACTIVITY_TYPE_DEFAULT_MINUTES[nextType]);
+  // Auto-snap bulk activity strictly to selected trainer's registered specialties
+  React.useEffect(() => {
+    if (!selectedBulkTrainer) return;
+    if (!isActivityAllowedForTrainer(selectedBulkTrainer, bulkActivityName)) {
+      if (allowedBulkSpecialties.length > 0) {
+        const chosen = allowedBulkSpecialties[0];
+        setBulkActivityName(chosen.name);
+        setBulkActivityType(chosen.activityType);
+        applyBulkDurationTotal(chosen.durationMinutes);
       } else {
-        setBulkActivityName(ACTIVITY_TYPE_LABELS[nextType]);
-        applyBulkDurationTotal(ACTIVITY_TYPE_DEFAULT_MINUTES[nextType]);
+        setBulkActivityName('');
       }
-    } else {
-      applyBulkDurationTotal(ACTIVITY_TYPE_DEFAULT_MINUTES[nextType]);
     }
+  }, [selectedBulkTrainer, allowedBulkSpecialties, bulkActivityName]);
+
+  const handleBulkModalityChange = (nextType: ActivityType) => {
+    const matchingSpec = allowedBulkSpecialties.find((s) => s.activityType === nextType);
+    if (!matchingSpec) return;
+    setBulkActivityType(nextType);
+    setBulkActivityName(matchingSpec.name);
+    applyBulkDurationTotal(matchingSpec.durationMinutes);
   };
 
   const handleBulkDisciplineSelect = (val: string) => {
-    if (val === '__custom__') {
-      setBulkIsCustomActivity(true);
-      return;
-    }
-    setBulkIsCustomActivity(false);
-    setBulkActivityName(val);
-
-    const catMatch = activityCatalog.find(
-      (c) => c.active !== false && normalizeDisciplineKey(c.name) === normalizeDisciplineKey(val)
+    const matchingSpec = allowedBulkSpecialties.find(
+      (s) => normalizeDisciplineKey(s.name) === normalizeDisciplineKey(val)
     );
-    if (catMatch) {
-      const catType = normalizeActivityType(catMatch.activityType);
-      setBulkActivityType(catType);
-      if (catMatch.durationMinutes >= 5) {
-        applyBulkDurationTotal(catMatch.durationMinutes);
-      }
-    } else {
-      const inferred = inferActivityTypeFromDiscipline(val, bulkActivityType);
-      if (inferred !== bulkActivityType) {
-        setBulkActivityType(inferred);
-        applyBulkDurationTotal(ACTIVITY_TYPE_DEFAULT_MINUTES[inferred]);
-      }
-    }
+    if (!matchingSpec) return;
+    setBulkActivityName(matchingSpec.name);
+    setBulkActivityType(matchingSpec.activityType);
+    applyBulkDurationTotal(matchingSpec.durationMinutes);
   };
+
+  const liveBulkSharePayload = useMemo(() => {
+    if (!bulkIsVirtual || !selectedBulkTrainer || !selectedBulkCompany) return null;
+    const sede =
+      selectedBulkCompany.sedes.find((s) => s.id === bulkSedeId) || selectedBulkCompany.sedes[0];
+    return buildSharePayloadFromAssignmentLike({
+      activityName: resolvedBulkActivityName || 'Clase Virtual',
+      activityType: bulkActivityType,
+      companyName: selectedBulkCompany.name,
+      sedeName: sede?.name,
+      trainerName: selectedBulkTrainer.name,
+      frequency: 'fecha_unica',
+      date: bulkMarkedDates[0] || `${currentYearMonth}-01`,
+      time: bulkTime,
+      durationMinutes: bulkTotalDurationMinutes,
+      virtualPlatform: resolvedBulkVirtualPlatform,
+      virtualMeetingUrl: bulkVirtualMeetingUrl,
+      virtualMeetingId: bulkVirtualMeetingId,
+      virtualPasscode: bulkVirtualPasscode,
+    });
+  }, [
+    bulkIsVirtual,
+    selectedBulkTrainer,
+    selectedBulkCompany,
+    bulkSedeId,
+    resolvedBulkActivityName,
+    bulkActivityType,
+    bulkMarkedDates,
+    currentYearMonth,
+    bulkTime,
+    bulkTotalDurationMinutes,
+    resolvedBulkVirtualPlatform,
+    bulkVirtualMeetingUrl,
+    bulkVirtualMeetingId,
+    bulkVirtualPasscode,
+  ]);
 
   const handleToggleBulkMode = () => {
     setBulkFeedback(null);
@@ -360,13 +405,39 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
       });
       return;
     }
-    if (!resolvedBulkActivityName || resolvedBulkActivityName.length < 2) {
+    if (
+      !resolvedBulkActivityName ||
+      resolvedBulkActivityName.length < 2 ||
+      !isActivityAllowedForTrainer(selectedBulkTrainer, resolvedBulkActivityName)
+    ) {
       setBulkFeedback({
         type: 'error',
-        message: 'Indica el nombre de la actividad o disciplina que se marcará en el mes.',
+        message: `Solo puedes asignar actividades registradas en las especialidades de ${selectedBulkTrainer.name}.`,
       });
       return;
     }
+
+    let normalizedBulkMeetingUrl = '';
+    const finalBulkPlatform = resolvedBulkVirtualPlatform.trim();
+    if (bulkIsVirtual) {
+      if (finalBulkPlatform.length < 2 || finalBulkPlatform.length > 80) {
+        setBulkFeedback({
+          type: 'error',
+          message: 'Indica la plataforma virtual donde se impartirán las clases.',
+        });
+        return;
+      }
+      normalizedBulkMeetingUrl = normalizeVirtualMeetingUrl(bulkVirtualMeetingUrl);
+      if (!isValidVirtualMeetingUrl(normalizedBulkMeetingUrl)) {
+        setBulkFeedback({
+          type: 'error',
+          message:
+            'Ingresa un enlace válido para la sala virtual (ej. https://meet.google.com/... o https://zoom.us/j/...).',
+        });
+        return;
+      }
+    }
+
     if (bulkMarkedDates.length === 0) {
       setBulkFeedback({
         type: 'error',
@@ -387,6 +458,11 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
       activityName: resolvedBulkActivityName,
       locationArea: bulkLocationArea,
       expectedAttendees: bulkExpectedAttendees,
+      isVirtual: bulkIsVirtual,
+      virtualPlatform: bulkIsVirtual ? finalBulkPlatform : undefined,
+      virtualMeetingUrl: bulkIsVirtual ? normalizedBulkMeetingUrl : undefined,
+      virtualMeetingId: bulkIsVirtual ? bulkVirtualMeetingId.trim() : undefined,
+      virtualPasscode: bulkIsVirtual ? bulkVirtualPasscode.trim() : undefined,
       active: true,
     });
 
@@ -412,6 +488,11 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
         activityName: resolvedBulkActivityName,
         time: bulkTime,
         durationMinutes: bulkTotalDurationMinutes,
+        isVirtual: bulkIsVirtual,
+        virtualPlatform: bulkIsVirtual ? finalBulkPlatform : undefined,
+        virtualMeetingUrl: bulkIsVirtual ? normalizedBulkMeetingUrl : undefined,
+        virtualMeetingId: bulkIsVirtual ? bulkVirtualMeetingId.trim() : undefined,
+        virtualPasscode: bulkIsVirtual ? bulkVirtualPasscode.trim() : undefined,
       });
       return;
     }
@@ -423,8 +504,8 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
       trainerId: selectedBulkTrainer.id,
       message:
         skippedDuplicates > 0
-          ? `Se cargaron ${created.length} ${created.length === 1 ? 'día' : 'días'} de "${resolvedBulkActivityName}" (${bulkTime} hrs · ${formatDurationHoursMinutes(bulkTotalDurationMinutes)}) en el calendario de ${selectedBulkTrainer.name}. Se omitieron ${skippedDuplicates} por estar ya asignados.`
-          : `Se cargaron ${created.length} ${created.length === 1 ? 'día' : 'días'} de "${resolvedBulkActivityName}" (${bulkTime} hrs · ${formatDurationHoursMinutes(bulkTotalDurationMinutes)}) directamente en el calendario de ${selectedBulkTrainer.name}.`,
+          ? `Se cargaron ${created.length} ${created.length === 1 ? 'día' : 'días'} de "${resolvedBulkActivityName}" (${bulkIsVirtual ? `Clase Virtual · ${finalBulkPlatform} · ` : ''}${bulkTime} hrs · ${formatDurationHoursMinutes(bulkTotalDurationMinutes)}) en el calendario de ${selectedBulkTrainer.name}. Se omitieron ${skippedDuplicates} por estar ya asignados.`
+          : `Se cargaron ${created.length} ${created.length === 1 ? 'día' : 'días'} de "${resolvedBulkActivityName}" (${bulkIsVirtual ? `Clase Virtual · ${finalBulkPlatform} · ` : ''}${bulkTime} hrs · ${formatDurationHoursMinutes(bulkTotalDurationMinutes)}) directamente en el calendario de ${selectedBulkTrainer.name}.`,
     });
   };
 
@@ -875,9 +956,14 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                     activityName: resolvedBulkActivityName || undefined,
                     time: bulkTime,
                     durationMinutes: bulkTotalDurationMinutes,
+                    isVirtual: bulkIsVirtual,
+                    virtualPlatform: bulkIsVirtual ? resolvedBulkVirtualPlatform : undefined,
+                    virtualMeetingUrl: bulkIsVirtual ? bulkVirtualMeetingUrl : undefined,
+                    virtualMeetingId: bulkIsVirtual ? bulkVirtualMeetingId : undefined,
+                    virtualPasscode: bulkIsVirtual ? bulkVirtualPasscode : undefined,
                   });
                 }}
-                className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 text-xs font-bold transition whitespace-nowrap shrink-0"
+                className="px-3 py-1.5 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-800 border border-slate-300 text-xs font-bold transition whitespace-nowrap shrink-0 cursor-pointer"
               >
                 Abrir en Ventana Completa
               </button>
@@ -887,9 +973,21 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
           {/* Row 1: Entrenador + Empresa + Sede + Salón */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 text-xs">
             <div>
-              <label className="block font-bold text-slate-700 mb-1">
-                Entrenador a Cargar Calendario *
-              </label>
+              <div className="flex items-center justify-between gap-1 mb-1">
+                <label className="font-bold text-slate-700">
+                  Entrenador a Cargar Calendario *
+                </label>
+                {onEditTrainerSpecialties && selectedBulkTrainer && (
+                  <button
+                    type="button"
+                    onClick={() => onEditTrainerSpecialties(selectedBulkTrainer)}
+                    className="inline-flex items-center gap-1 text-[10px] font-semibold text-emerald-700 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    <UserCog className="w-3 h-3" />
+                    <span>Especialidades</span>
+                  </button>
+                )}
+              </div>
               <select
                 value={bulkTrainerId}
                 onChange={(e) => {
@@ -904,7 +1002,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                 {trainers.length === 0 && <option value="">Sin entrenadores registrados</option>}
                 {trainers.map((tr) => (
                   <option key={tr.id} value={tr.id}>
-                    {tr.name} ({tr.code})
+                    {tr.name} ({tr.specialties.join(', ')})
                   </option>
                 ))}
               </select>
@@ -946,27 +1044,38 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
             </div>
 
             <div>
-              <label className="block font-bold text-slate-700 mb-1">Salón / Área / Piso</label>
+              <label className="block font-bold text-slate-700 mb-1">
+                {bulkIsVirtual ? 'Sala / Referencia Virtual' : 'Salón / Área / Piso'}
+              </label>
               <input
                 type="text"
                 value={bulkLocationArea}
                 onChange={(e) => setBulkLocationArea(e.target.value)}
-                placeholder="Ej. Gimnasio Piso 2, Sala A..."
+                placeholder={
+                  bulkIsVirtual
+                    ? `Sala Virtual (${resolvedBulkVirtualPlatform})`
+                    : 'Ej. Gimnasio Piso 2, Sala A...'
+                }
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-emerald-600"
               />
             </div>
           </div>
 
-          {/* Row 2: Modalidad + Actividad/Disciplina + Hora Inicio + Duración (Horas y Minutos hasta 8h) + Aforo */}
+          {/* Row 2: Modalidad + Especialidad Registrada del Entrenador + Hora Inicio + Duración + Aforo */}
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3 text-xs items-end">
             <div className="lg:col-span-3">
-              <label className="block font-bold text-slate-700 mb-1">Tipo de Asignación *</label>
+              <label className="block font-bold text-slate-700 mb-1">
+                Modalidad Autorizada *
+              </label>
               <select
                 value={bulkActivityType}
                 onChange={(e) => handleBulkModalityChange(e.target.value as ActivityType)}
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
               >
-                {ALL_ACTIVITY_TYPES.map((typeKey) => (
+                {allowedBulkActivityTypes.length === 0 && (
+                  <option value={bulkActivityType}>Sin modalidades registradas</option>
+                )}
+                {allowedBulkActivityTypes.map((typeKey) => (
                   <option key={typeKey} value={typeKey}>
                     {ACTIVITY_TYPE_LABELS[typeKey]}
                   </option>
@@ -976,70 +1085,24 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
 
             <div className="lg:col-span-4">
               <label className="block font-bold text-slate-700 mb-1">
-                Actividad / Disciplina a Marcar *
+                Especialidad Registrada de {selectedBulkTrainer?.name.split(' ')[0] || 'Entrenador'} *
               </label>
-              {!bulkIsCustomActivity ? (
-                <select
-                  value={bulkActivityName}
-                  onChange={(e) => handleBulkDisciplineSelect(e.target.value)}
-                  className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
-                >
-                  <optgroup label={`Catálogo · ${ACTIVITY_TYPE_LABELS[bulkActivityType]}`}>
-                    {bulkDisciplineGroups.modalityCatalogOptions.map((opt) => (
-                      <option key={`mod_${opt}`} value={opt}>
-                        {opt}
-                      </option>
-                    ))}
-                  </optgroup>
-                  {bulkDisciplineGroups.selectedTrainerSpecialties.length > 0 && (
-                    <optgroup
-                      label={`Especialidades de ${selectedBulkTrainer?.name || 'Entrenador'}`}
-                    >
-                      {bulkDisciplineGroups.selectedTrainerSpecialties.map((opt) => (
-                        <option key={`tr_${opt}`} value={opt}>
-                          {opt}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                  {bulkDisciplineGroups.otherCatalogByType.map((grp) => (
-                    <optgroup key={`other_${grp.type}`} label={`Catálogo · ${grp.label}`}>
-                      {grp.items.map((opt) => (
-                        <option key={`cat_${grp.type}_${opt}`} value={opt}>
-                          {opt}
-                        </option>
-                      ))}
-                    </optgroup>
-                  ))}
-                  {bulkDisciplineGroups.otherTrainerSpecialties.length > 0 && (
-                    <optgroup label="Otras Especialidades Registradas en BD">
-                      {bulkDisciplineGroups.otherTrainerSpecialties.map((opt) => (
-                        <option key={`db_${opt}`} value={opt}>
-                          {opt}
-                        </option>
-                      ))}
-                    </optgroup>
-                  )}
-                  <option value="__custom__">+ Escribir otra actividad...</option>
-                </select>
-              ) : (
-                <div className="flex items-center gap-1.5">
-                  <input
-                    type="text"
-                    value={bulkCustomActivity}
-                    onChange={(e) => setBulkCustomActivity(e.target.value)}
-                    placeholder="Nombre de la actividad o disciplina..."
-                    className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setBulkIsCustomActivity(false)}
-                    className="px-2.5 py-2 rounded-xl border border-slate-300 bg-slate-100 hover:bg-slate-200 text-slate-700 font-bold whitespace-nowrap shrink-0"
-                  >
-                    Catálogo
-                  </button>
-                </div>
-              )}
+              <select
+                value={bulkActivityName}
+                onChange={(e) => handleBulkDisciplineSelect(e.target.value)}
+                disabled={allowedBulkSpecialties.length === 0}
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-emerald-600 disabled:opacity-60"
+              >
+                {allowedBulkSpecialties.length === 0 ? (
+                  <option value="">Sin especialidades en su registro</option>
+                ) : (
+                  allowedBulkSpecialties.map((spec) => (
+                    <option key={spec.name} value={spec.name}>
+                      {spec.name} · {spec.modalityLabel}
+                    </option>
+                  ))
+                )}
+              </select>
             </div>
 
             <div className="lg:col-span-2">
@@ -1105,6 +1168,144 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-2.5 py-2 text-xs font-mono tabular-nums font-bold text-slate-900 focus:outline-none focus:border-emerald-600"
               />
             </div>
+          </div>
+
+          {/* Row 2B: Virtual Class Option & Platform Fields in Bulk Mode */}
+          <div className="p-3 rounded-xl border border-slate-200 bg-slate-50/70 space-y-3 text-xs">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBulkIsVirtual(false);
+                    if (bulkLocationArea.startsWith('Sala Virtual')) {
+                      setBulkLocationArea('Área Principal');
+                    }
+                  }}
+                  className={`px-3 py-1.5 rounded-lg border font-semibold transition whitespace-nowrap shrink-0 cursor-pointer ${
+                    !bulkIsVirtual
+                      ? 'bg-slate-900 border-slate-900 text-white'
+                      : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-100'
+                  }`}
+                >
+                  Presencial en Sede
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setBulkIsVirtual(true);
+                    if (!bulkLocationArea || bulkLocationArea === 'Área Principal') {
+                      setBulkLocationArea(`Sala Virtual (${resolvedBulkVirtualPlatform})`);
+                    }
+                  }}
+                  className={`px-3 py-1.5 rounded-lg border font-semibold inline-flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer ${
+                    bulkIsVirtual
+                      ? 'bg-sky-600 border-sky-600 text-white'
+                      : 'bg-white border-slate-300 text-slate-600 hover:bg-sky-50 hover:text-sky-700'
+                  }`}
+                >
+                  <Video className="w-3.5 h-3.5 shrink-0" />
+                  <span>Clase Virtual / En Línea</span>
+                </button>
+              </div>
+              <span className="text-[11px] text-slate-500">
+                Solo se permiten asignaciones dentro de las especialidades registradas de {selectedBulkTrainer?.name || 'cada entrenador'}.
+              </span>
+            </div>
+
+            {bulkIsVirtual && (
+              <div className="space-y-3 pt-2 border-t border-slate-200">
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-12 gap-3">
+                  <div className="lg:col-span-3">
+                    <label className="block font-bold text-slate-700 mb-1">Plataforma *</label>
+                    <select
+                      value={bulkPlatformSelect}
+                      onChange={(e) => setBulkPlatformSelect(e.target.value)}
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-sky-500"
+                    >
+                      {VIRTUAL_PLATFORM_PRESETS.map((p) => (
+                        <option key={p} value={p}>
+                          {p}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {bulkPlatformSelect === 'Otra Plataforma' && (
+                    <div className="lg:col-span-2">
+                      <label className="block font-bold text-slate-700 mb-1">
+                        Nombre Plataforma *
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={80}
+                        value={bulkCustomPlatformName}
+                        onChange={(e) => setBulkCustomPlatformName(e.target.value)}
+                        placeholder="Ej. Jitsi"
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-sky-500"
+                      />
+                    </div>
+                  )}
+
+                  <div
+                    className={
+                      bulkPlatformSelect === 'Otra Plataforma' ? 'lg:col-span-4' : 'lg:col-span-5'
+                    }
+                  >
+                    <label className="block font-bold text-slate-700 mb-1">
+                      Link de la Sala Virtual *
+                    </label>
+                    <input
+                      type="text"
+                      maxLength={500}
+                      value={bulkVirtualMeetingUrl}
+                      onChange={(e) => setBulkVirtualMeetingUrl(e.target.value)}
+                      onBlur={() => {
+                        if (bulkVirtualMeetingUrl.trim()) {
+                          setBulkVirtualMeetingUrl(
+                            normalizeVirtualMeetingUrl(bulkVirtualMeetingUrl)
+                          );
+                        }
+                      }}
+                      placeholder="https://meet.google.com/... o https://zoom.us/j/..."
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono text-slate-900 focus:outline-none focus:border-sky-500"
+                    />
+                  </div>
+
+                  <div className="lg:col-span-2">
+                    <label className="block font-bold text-slate-700 mb-1">ID Reunión</label>
+                    <input
+                      type="text"
+                      maxLength={100}
+                      value={bulkVirtualMeetingId}
+                      onChange={(e) => setBulkVirtualMeetingId(e.target.value)}
+                      placeholder="Opcional"
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono tabular-nums text-slate-900 focus:outline-none focus:border-sky-500"
+                    />
+                  </div>
+
+                  <div
+                    className={
+                      bulkPlatformSelect === 'Otra Plataforma' ? 'lg:col-span-1' : 'lg:col-span-2'
+                    }
+                  >
+                    <label className="block font-bold text-slate-700 mb-1">Código Acceso</label>
+                    <input
+                      type="text"
+                      maxLength={120}
+                      value={bulkVirtualPasscode}
+                      onChange={(e) => setBulkVirtualPasscode(e.target.value)}
+                      placeholder="Opcional"
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono tabular-nums text-slate-900 focus:outline-none focus:border-sky-500"
+                    />
+                  </div>
+                </div>
+
+                {liveBulkSharePayload && (
+                  <VirtualClassQuickShare payload={liveBulkSharePayload} compact />
+                )}
+              </div>
+            )}
           </div>
 
           {/* Row 3: Quick Month Pattern Buttons + Primary Save Action */}
@@ -1598,6 +1799,9 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                               ) : (
                                 cellLock.isLocked && <Lock className="w-2.5 h-2.5 shrink-0" />
                               )}
+                              {asg.isVirtual && (
+                                <Video className="w-2.5 h-2.5 shrink-0 text-sky-600" />
+                              )}
                               {asg.time}
                             </span>
                             <span className="truncate mx-1 font-medium">{trainerInitial}</span>
@@ -1782,15 +1986,26 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
 
                       <div className="space-y-1 text-slate-700 bg-white p-2 rounded-lg border border-slate-200/80">
                         <p className="font-semibold text-slate-900 truncate">
-                          🏢 {asg.companyName}
+                          {asg.companyName}
                         </p>
                         <p className="text-slate-600 truncate text-[11px]">
-                          📍 {asg.sedeName} • {asg.locationArea}
+                          {asg.sedeName} · {asg.locationArea}
                         </p>
                         <p className="text-slate-800 font-medium truncate text-[11px] pt-1 border-t border-slate-100">
-                          ⚡ {asg.activityName}
+                          {asg.activityName}
                         </p>
                       </div>
+
+                      {asg.isVirtual && (() => {
+                        const sharePayload = buildSharePayloadFromAssignmentLike({
+                          ...asg,
+                          date: selectedDateStr,
+                          durationMinutes: durMins,
+                        });
+                        return sharePayload ? (
+                          <VirtualClassQuickShare payload={sharePayload} compact />
+                        ) : null;
+                      })()}
 
                       {lockInfo.isLocked && lockInfo.detailText && (
                         <div
@@ -2047,6 +2262,17 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                           <div className="text-[10px] font-medium text-slate-800 truncate border-t border-slate-200/60 pt-1">
                             {asg.activityName}
                           </div>
+
+                          {asg.isVirtual && (() => {
+                            const sharePayload = buildSharePayloadFromAssignmentLike({
+                              ...asg,
+                              date: day.dateStr,
+                              durationMinutes: durMins,
+                            });
+                            return sharePayload ? (
+                              <VirtualClassQuickShare payload={sharePayload} compact />
+                            ) : null;
+                          })()}
 
                           <div className="flex items-center justify-between pt-1 border-t border-slate-200/60 text-[9px] text-slate-400">
                             <span>
@@ -2340,6 +2566,17 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                             Notas: "{asg.notes}"
                           </p>
                         )}
+
+                        {asg.isVirtual && (() => {
+                          const sharePayload = buildSharePayloadFromAssignmentLike({
+                            ...asg,
+                            date: dayViewDateStr,
+                            durationMinutes: durMins,
+                          });
+                          return sharePayload ? (
+                            <VirtualClassQuickShare payload={sharePayload} compact />
+                          ) : null;
+                        })()}
                       </div>
                     </div>
 

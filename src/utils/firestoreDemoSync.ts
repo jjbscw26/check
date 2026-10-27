@@ -45,12 +45,19 @@ import {
   Company,
   FacialVerificationData,
   FirestoreAttendanceRecord,
+  FirestoreTransitTrackingRecord,
   GpsData,
   isValidActivityType,
   normalizeActivityType,
   Sede,
   Trainer,
+  TrainerTransitTracking,
 } from '../types';
+import { sanitizeTransitTrackingPayload } from './transitCalculations';
+import {
+  isValidVirtualMeetingUrl,
+  normalizeVirtualMeetingUrl,
+} from './virtualClassShare';
 import {
   AVATAR_PATTERN_REGEX,
   deriveCompanyLogoText,
@@ -133,6 +140,11 @@ const ASSIGNMENT_ALLOWED_KEYS = [
   'locationArea',
   'expectedAttendees',
   'notes',
+  'isVirtual',
+  'virtualPlatform',
+  'virtualMeetingUrl',
+  'virtualMeetingId',
+  'virtualPasscode',
   'active',
   'closed',
   'closedAt',
@@ -151,6 +163,11 @@ const ASSIGNMENT_OPTIONAL_KEYS = [
   'durationMinutes',
   'expectedAttendees',
   'notes',
+  'isVirtual',
+  'virtualPlatform',
+  'virtualMeetingUrl',
+  'virtualMeetingId',
+  'virtualPasscode',
   'closed',
   'closedAt',
   'completedDates',
@@ -186,6 +203,11 @@ const RECORD_ALLOWED_KEYS = [
   'attendeesCount',
   'locationArea',
   'observations',
+  'isVirtual',
+  'virtualPlatform',
+  'virtualMeetingUrl',
+  'virtualMeetingId',
+  'virtualPasscode',
   'checkInGps',
   'checkOutGps',
   'photoUrl',
@@ -206,6 +228,11 @@ const RECORD_OPTIONAL_KEYS = [
   'nonComplianceReason',
   'markedNonCompliantAt',
   'observations',
+  'isVirtual',
+  'virtualPlatform',
+  'virtualMeetingUrl',
+  'virtualMeetingId',
+  'virtualPasscode',
   'checkOutGps',
   'exitPhotoUrl',
   'facialVerification',
@@ -225,6 +252,46 @@ const CATALOG_ALLOWED_KEYS = [
 ] as const;
 
 const CATALOG_OPTIONAL_KEYS = ['description'] as const;
+
+const TRANSIT_TRACKING_STORAGE_KEY = 'bscw_transit_tracking_v1';
+
+const TRANSIT_TRACKING_ALLOWED_KEYS = [
+  'trainerId',
+  'trainerName',
+  'assignmentId',
+  'companyId',
+  'companyName',
+  'sedeId',
+  'sedeName',
+  'sedeAddress',
+  'sedeLat',
+  'sedeLng',
+  'geofenceRadiusMeters',
+  'date',
+  'scheduledTime',
+  'activityName',
+  'trainerLat',
+  'trainerLng',
+  'accuracyMeters',
+  'speedMps',
+  'straightDistanceMeters',
+  'routeDistanceMeters',
+  'estimatedDurationMinutes',
+  'estimatedArrivalHHMM',
+  'calculationSource',
+  'travelMode',
+  'status',
+  'isWithinGeofence',
+  'startedAtIso',
+  'lastUpdatedIso',
+  'stoppedAtIso',
+] as const;
+
+const TRANSIT_TRACKING_OPTIONAL_KEYS = [
+  'assignmentId',
+  'speedMps',
+  'stoppedAtIso',
+] as const;
 
 /**
  * Per-document write serializer so rapid create -> update / compliance / delete mutations
@@ -1234,6 +1301,27 @@ function sanitizeAssignmentFields(asg: ClassAssignment): Record<string, unknown>
     data.reopenedDates = reopenedDates;
   }
 
+  if (asg.isVirtual === true) {
+    const normalizedMeetingUrl = normalizeVirtualMeetingUrl(asg.virtualMeetingUrl || '');
+    if (isValidVirtualMeetingUrl(normalizedMeetingUrl)) {
+      data.isVirtual = true;
+      data.virtualPlatform = cleanBoundedText(asg.virtualPlatform, 'Google Meet', 2, 80);
+      data.virtualMeetingUrl = normalizedMeetingUrl;
+      if (typeof asg.virtualMeetingId === 'string' && asg.virtualMeetingId.trim()) {
+        data.virtualMeetingId = asg.virtualMeetingId
+          .replace(/[\r\n\t]+/g, ' ')
+          .trim()
+          .slice(0, 100);
+      }
+      if (typeof asg.virtualPasscode === 'string' && asg.virtualPasscode.trim()) {
+        data.virtualPasscode = asg.virtualPasscode
+          .replace(/[\r\n\t]+/g, ' ')
+          .trim()
+          .slice(0, 120);
+      }
+    }
+  }
+
   return data;
 }
 
@@ -1535,6 +1623,26 @@ async function sanitizeAttendanceRecordFields(
   if (typeof rec.adminNotes === 'string') {
     payload.adminNotes = rec.adminNotes.slice(0, 1000);
   }
+  if (rec.isVirtual === true) {
+    payload.isVirtual = true;
+    payload.virtualPlatform = cleanBoundedText(rec.virtualPlatform, 'Google Meet', 2, 80);
+    const normalizedMeetingUrl = normalizeVirtualMeetingUrl(rec.virtualMeetingUrl || '');
+    if (isValidVirtualMeetingUrl(normalizedMeetingUrl)) {
+      payload.virtualMeetingUrl = normalizedMeetingUrl;
+    }
+    if (typeof rec.virtualMeetingId === 'string' && rec.virtualMeetingId.trim()) {
+      payload.virtualMeetingId = rec.virtualMeetingId
+        .replace(/[\r\n\t]+/g, ' ')
+        .trim()
+        .slice(0, 100);
+    }
+    if (typeof rec.virtualPasscode === 'string' && rec.virtualPasscode.trim()) {
+      payload.virtualPasscode = rec.virtualPasscode
+        .replace(/[\r\n\t]+/g, ' ')
+        .trim()
+        .slice(0, 120);
+    }
+  }
 
   return payload;
 }
@@ -1664,6 +1772,19 @@ export function parseFirestoreAttendanceRecord(
     attendeesCount: Number(d.attendeesCount ?? 0),
     locationArea: String(d.locationArea || ''),
     ...(typeof d.observations === 'string' ? { observations: d.observations } : {}),
+    ...(typeof d.isVirtual === 'boolean' ? { isVirtual: d.isVirtual } : {}),
+    ...(typeof d.virtualPlatform === 'string' && d.virtualPlatform
+      ? { virtualPlatform: d.virtualPlatform }
+      : {}),
+    ...(typeof d.virtualMeetingUrl === 'string' && d.virtualMeetingUrl
+      ? { virtualMeetingUrl: d.virtualMeetingUrl }
+      : {}),
+    ...(typeof d.virtualMeetingId === 'string' && d.virtualMeetingId
+      ? { virtualMeetingId: d.virtualMeetingId }
+      : {}),
+    ...(typeof d.virtualPasscode === 'string' && d.virtualPasscode
+      ? { virtualPasscode: d.virtualPasscode }
+      : {}),
     checkInGps: parseFirestoreGpsField(d.checkInGps),
     ...(d.checkOutGps ? { checkOutGps: parseFirestoreGpsField(d.checkOutGps) } : {}),
     photoUrl: String(d.photoUrl || ''),
@@ -1770,6 +1891,185 @@ export async function deleteActivityCatalogItemFromFirestore(itemId: string): Pr
   return enqueueDocWrite(path, async () => {
     try {
       await deleteDoc(doc(db, 'activity_catalog', docId));
+    } catch (error) {
+      handleFirestoreError(error, OperationType.DELETE, path);
+    }
+  });
+}
+
+// ============================================================================
+// 6B. REAL-TIME TRANSIT TRACKING (/transit_tracking/{trackingId})
+// ============================================================================
+
+export function getStoredTransitTrackings(): TrainerTransitTracking[] {
+  if (typeof window === 'undefined') return [];
+  try {
+    const raw = localStorage.getItem(TRANSIT_TRACKING_STORAGE_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed.map((item) => sanitizeTransitTrackingPayload(item as TrainerTransitTracking));
+  } catch {
+    return [];
+  }
+}
+
+export function saveStoredTransitTrackings(records: TrainerTransitTracking[]): void {
+  if (typeof window === 'undefined') return;
+  try {
+    localStorage.setItem(TRANSIT_TRACKING_STORAGE_KEY, JSON.stringify(records.slice(0, 300)));
+  } catch {
+    // Ignore localStorage quota issues
+  }
+}
+
+function sanitizeSingleLineRequired(val: string, fallback: string, maxLen: number): string {
+  const cleaned = (val || '')
+    .replace(/[\r\n\t\u00A0\u202F]+/g, ' ')
+    .trim()
+    .slice(0, maxLen)
+    .trim();
+  return cleaned.length >= 2 ? cleaned : fallback.slice(0, maxLen);
+}
+
+function sanitizeTransitTrackingFields(record: TrainerTransitTracking): Record<string, unknown> {
+  const sanitized = sanitizeTransitTrackingPayload(record);
+  const payload: Record<string, unknown> = {
+    trainerId: toSafeDocId(sanitized.trainerId, 'tr'),
+    trainerName: sanitizeSingleLineRequired(sanitized.trainerName, 'Entrenador BSCW', 120),
+    companyId: toSafeDocId(sanitized.companyId, 'comp'),
+    companyName: sanitizeSingleLineRequired(sanitized.companyName, 'Empresa Corporativa', 150),
+    sedeId: toSafeDocId(sanitized.sedeId, 'sede'),
+    sedeName: sanitizeSingleLineRequired(sanitized.sedeName, 'Sede Corporativa', 150),
+    sedeAddress: sanitizeSingleLineRequired(sanitized.sedeAddress, 'Dirección corporativa', 250),
+    sedeLat: sanitized.sedeLat,
+    sedeLng: sanitized.sedeLng,
+    geofenceRadiusMeters: sanitized.geofenceRadiusMeters,
+    date: sanitized.date,
+    scheduledTime: sanitized.scheduledTime,
+    activityName: sanitizeSingleLineRequired(sanitized.activityName, 'Sesión Corporativa', 150),
+    trainerLat: sanitized.trainerLat,
+    trainerLng: sanitized.trainerLng,
+    accuracyMeters: sanitized.accuracyMeters,
+    straightDistanceMeters: sanitized.straightDistanceMeters,
+    routeDistanceMeters: sanitized.routeDistanceMeters,
+    estimatedDurationMinutes: sanitized.estimatedDurationMinutes,
+    estimatedArrivalHHMM: sanitized.estimatedArrivalHHMM,
+    calculationSource: sanitized.calculationSource,
+    travelMode: sanitized.travelMode,
+    status: sanitized.status,
+    isWithinGeofence: sanitized.isWithinGeofence,
+    startedAtIso: sanitized.startedAtIso.length >= 10 ? sanitized.startedAtIso : new Date().toISOString(),
+    lastUpdatedIso:
+      sanitized.lastUpdatedIso.length >= 10 ? sanitized.lastUpdatedIso : new Date().toISOString(),
+  };
+
+  if (sanitized.assignmentId) {
+    payload.assignmentId = toSafeDocId(sanitized.assignmentId, 'asg');
+  }
+  if (sanitized.speedMps !== undefined && Number.isFinite(sanitized.speedMps) && sanitized.speedMps >= 0) {
+    payload.speedMps = Math.min(200, Math.max(0, sanitized.speedMps));
+  }
+  if (sanitized.stoppedAtIso && sanitized.stoppedAtIso.trim().length > 0) {
+    payload.stoppedAtIso = sanitized.stoppedAtIso.trim().slice(0, 50);
+  }
+
+  return payload;
+}
+
+export function parseFirestoreTransitTracking(
+  docId: string,
+  d: Record<string, unknown>
+): FirestoreTransitTrackingRecord {
+  const createdTs = d.createdAt instanceof Timestamp ? d.createdAt.toMillis() : 0;
+  const updatedTs = d.updatedAt instanceof Timestamp ? d.updatedAt.toMillis() : createdTs;
+
+  const base = sanitizeTransitTrackingPayload({
+    id: docId,
+    trainerId: String(d.trainerId || ''),
+    trainerName: String(d.trainerName || ''),
+    ...(typeof d.assignmentId === 'string' && d.assignmentId
+      ? { assignmentId: d.assignmentId }
+      : {}),
+    companyId: String(d.companyId || ''),
+    companyName: String(d.companyName || ''),
+    sedeId: String(d.sedeId || ''),
+    sedeName: String(d.sedeName || ''),
+    sedeAddress: String(d.sedeAddress || ''),
+    sedeLat: Number(d.sedeLat ?? 19.4326),
+    sedeLng: Number(d.sedeLng ?? -99.1332),
+    geofenceRadiusMeters: Number(d.geofenceRadiusMeters ?? 150),
+    date: String(d.date || ''),
+    scheduledTime: normalizeHHMM(d.scheduledTime, '09:00'),
+    activityName: String(d.activityName || ''),
+    trainerLat: Number(d.trainerLat ?? 19.4326),
+    trainerLng: Number(d.trainerLng ?? -99.1332),
+    accuracyMeters: Number(d.accuracyMeters ?? 15),
+    ...(typeof d.speedMps === 'number' && Number.isFinite(d.speedMps)
+      ? { speedMps: d.speedMps }
+      : {}),
+    straightDistanceMeters: Number(d.straightDistanceMeters ?? 0),
+    routeDistanceMeters: Number(d.routeDistanceMeters ?? 0),
+    estimatedDurationMinutes: Number(d.estimatedDurationMinutes ?? 0),
+    estimatedArrivalHHMM: normalizeHHMM(d.estimatedArrivalHHMM, '09:00'),
+    calculationSource:
+      d.calculationSource === 'google_routes' ? 'google_routes' : 'haversine_estimado',
+    travelMode:
+      d.travelMode === 'TRANSIT' || d.travelMode === 'WALKING' || d.travelMode === 'TWO_WHEELER'
+        ? d.travelMode
+        : 'DRIVING',
+    status:
+      d.status === 'en_geocerca' ||
+      d.status === 'llegada_confirmada' ||
+      d.status === 'detenido'
+        ? d.status
+        : 'en_camino',
+    isWithinGeofence: Boolean(d.isWithinGeofence),
+    startedAtIso: String(d.startedAtIso || ''),
+    lastUpdatedIso: String(d.lastUpdatedIso || ''),
+    ...(typeof d.stoppedAtIso === 'string' && d.stoppedAtIso
+      ? { stoppedAtIso: d.stoppedAtIso }
+      : {}),
+  });
+
+  return {
+    ...base,
+    createdByUid: String(d.createdByUid || ''),
+    createdByEmail: String(d.createdByEmail || ''),
+    createdAtMs: createdTs,
+    updatedAtMs: updatedTs,
+  };
+}
+
+export async function saveTransitTrackingToFirestore(
+  record: TrainerTransitTracking
+): Promise<boolean> {
+  const docId = toSafeDocId(record.id, 'trk');
+  const docRef = doc(db, 'transit_tracking', docId);
+  const path = `transit_tracking/${docId}`;
+  let changed = false;
+
+  await enqueueDocWrite(path, async () => {
+    const payload = sanitizeTransitTrackingFields(record);
+    const result = await upsertOperationalDoc({
+      docRef,
+      path,
+      sanitizedPayload: payload,
+      allowedDataKeys: TRANSIT_TRACKING_ALLOWED_KEYS,
+      optionalKeys: TRANSIT_TRACKING_OPTIONAL_KEYS,
+    });
+    changed = result !== 'unchanged';
+  });
+
+  return changed;
+}
+
+export async function deleteTransitTrackingFromFirestore(trackingId: string): Promise<void> {
+  const docId = toSafeDocId(trackingId, 'trk');
+  const path = `transit_tracking/${docId}`;
+  return enqueueDocWrite(path, async () => {
+    try {
+      await deleteDoc(doc(db, 'transit_tracking', docId));
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, path);
     }

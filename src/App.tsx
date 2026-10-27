@@ -25,6 +25,7 @@ import {
   Sede,
   Trainer,
   TrainerBiometricSession,
+  TrainerTransitTracking,
 } from './types';
 import { Header } from './components/Header';
 import { TrainerCheckInView } from './components/TrainerCheckInView';
@@ -32,6 +33,7 @@ import { TrainerFacialLoginView } from './components/TrainerFacialLoginView';
 import { AdminDashboard } from './components/AdminDashboard';
 import { PersonnelRegistryView } from './components/PersonnelRegistryView';
 import { FirestoreErrorBoundary } from './components/FirestoreErrorBoundary';
+import { VirtualClassInviteLandingModal } from './components/VirtualClassShareCard';
 import {
   getSessionAlarmStatus,
   playAdminSessionStartChime,
@@ -63,19 +65,25 @@ import {
   deleteRecordFromFirestore,
   deleteSedeFromFirestore,
   deleteTrainerFromFirestore,
+  deleteTransitTrackingFromFirestore,
+  getStoredTransitTrackings,
   normalizeHHMM,
   parseFirestoreAttendanceRecord,
+  parseFirestoreTransitTracking,
   saveActivityCatalogItemToFirestore,
   saveAssignmentToFirestore,
   saveCompanyToFirestore,
   saveRecordToFirestore,
   saveSedeToFirestore,
+  saveStoredTransitTrackings,
   saveTrainerToFirestore,
+  saveTransitTrackingToFirestore,
   seedDemoDataToFirestore,
   syncDataSetsToFirestore,
   syncWorkspaceDataToFirestore,
   toSafeDocId,
 } from './utils/firestoreDemoSync';
+import { sanitizeTransitTrackingPayload } from './utils/transitCalculations';
 import { deriveCompanyLogoText, generateInitialsAvatarDataUrl } from './utils/personnelValidation';
 import { collectMissingCatalogItemsFromTrainers } from './utils/specialtyDisciplines';
 import { ShieldCheck, CheckCheck } from 'lucide-react';
@@ -184,6 +192,9 @@ export default function App() {
   const [trainers, setTrainers] = useState<Trainer[]>([]);
   const [assignments, setAssignments] = useState<ClassAssignment[]>([]);
   const [activityCatalog, setActivityCatalog] = useState<ActivityCatalogItem[]>([]);
+  const [transitTrackings, setTransitTrackings] = useState<TrainerTransitTracking[]>(() =>
+    getStoredTransitTrackings()
+  );
   const [isMobileOrTablet, setIsMobileOrTablet] = useState<boolean>(() =>
     checkIsMobileOrTablet()
   );
@@ -221,6 +232,9 @@ export default function App() {
   const assignmentsRef = useRef<ClassAssignment[]>([]);
   const activityCatalogRef = useRef<ActivityCatalogItem[]>([]);
   const recordsRef = useRef<AttendanceRecord[]>([]);
+  const transitTrackingsRef = useRef<TrainerTransitTracking[]>([]);
+  const pendingTransitByIdRef = useRef<Map<string, TrainerTransitTracking>>(new Map());
+  const deletedTransitIdsRef = useRef<Set<string>>(new Set());
 
   const enqueueAdminStartAlert = useCallback(
     (rec: AttendanceRecord, notifyWithSound: boolean) => {
@@ -278,6 +292,10 @@ export default function App() {
   useEffect(() => {
     recordsRef.current = records;
   }, [records]);
+
+  useEffect(() => {
+    transitTrackingsRef.current = transitTrackings;
+  }, [transitTrackings]);
 
   const resolveAssignmentParents = useCallback((asg: ClassAssignment, companyPool?: Company[]) => {
     const pool = companyPool ?? companiesRef.current;
@@ -792,6 +810,19 @@ export default function App() {
               ? { expectedAttendees: d.expectedAttendees }
               : {}),
             ...(typeof d.notes === 'string' ? { notes: d.notes } : {}),
+            ...(typeof d.isVirtual === 'boolean' ? { isVirtual: d.isVirtual } : {}),
+            ...(typeof d.virtualPlatform === 'string' && d.virtualPlatform
+              ? { virtualPlatform: d.virtualPlatform }
+              : {}),
+            ...(typeof d.virtualMeetingUrl === 'string' && d.virtualMeetingUrl
+              ? { virtualMeetingUrl: d.virtualMeetingUrl }
+              : {}),
+            ...(typeof d.virtualMeetingId === 'string' && d.virtualMeetingId
+              ? { virtualMeetingId: d.virtualMeetingId }
+              : {}),
+            ...(typeof d.virtualPasscode === 'string' && d.virtualPasscode
+              ? { virtualPasscode: d.virtualPasscode }
+              : {}),
             active: d.active !== false,
             ...(typeof d.closed === 'boolean' ? { closed: d.closed } : {}),
             ...(typeof d.closedAt === 'string' ? { closedAt: d.closedAt } : {}),
@@ -1044,6 +1075,42 @@ export default function App() {
       }
     );
 
+    const unsubTransit = onSnapshot(
+      mkQuery('transit_tracking'),
+      (snap) => {
+        const fsTransit: TrainerTransitTracking[] = snap.docs.map((docSnap) =>
+          parseFirestoreTransitTracking(docSnap.id, docSnap.data() as Record<string, unknown>)
+        );
+
+        const mergedMap = new Map<string, TrainerTransitTracking>();
+        for (const serverTrk of fsTransit) {
+          if (deletedTransitIdsRef.current.has(serverTrk.id)) continue;
+          const pending = pendingTransitByIdRef.current.get(serverTrk.id);
+          mergedMap.set(serverTrk.id, pending ?? serverTrk);
+        }
+        pendingTransitByIdRef.current.forEach((pendingTrk, pendingId) => {
+          if (!mergedMap.has(pendingId) && !deletedTransitIdsRef.current.has(pendingId)) {
+            mergedMap.set(pendingId, pendingTrk);
+          }
+        });
+
+        const mergedList = Array.from(mergedMap.values()).sort(
+          (a, b) =>
+            (b.lastUpdatedIso || '').localeCompare(a.lastUpdatedIso || '') ||
+            b.id.localeCompare(a.id)
+        );
+        transitTrackingsRef.current = mergedList;
+        updateStateIfChanged(setTransitTrackings, mergedList, saveStoredTransitTrackings);
+      },
+      (err) => {
+        try {
+          handleFirestoreError(err, OperationType.LIST, 'transit_tracking');
+        } catch (e) {
+          console.error(e);
+        }
+      }
+    );
+
     return () => {
       unsubTrainers();
       unsubCompanies();
@@ -1051,6 +1118,7 @@ export default function App() {
       unsubAssignments();
       unsubRecords();
       unsubCatalog();
+      unsubTransit();
     };
   }, [persistAssignmentToFirestore, persistRecordToFirestore, enqueueAdminStartAlert]);
 
@@ -1617,6 +1685,58 @@ export default function App() {
     deleteActivityCatalogItemFromFirestore(id).catch(console.error);
   };
 
+  // Real-time Transit Tracking CRUD handlers (synced with Firestore /transit_tracking)
+  const handleUpsertTransitTracking = useCallback((rawRecord: TrainerTransitTracking) => {
+    const safeId = toSafeDocId(rawRecord.id, 'trk');
+    const normalized = sanitizeTransitTrackingPayload({
+      ...rawRecord,
+      id: safeId,
+    });
+    deletedTransitIdsRef.current.delete(safeId);
+    pendingTransitByIdRef.current.set(safeId, normalized);
+
+    const updated = [
+      normalized,
+      ...transitTrackingsRef.current.filter((t) => t.id !== safeId && t.id !== rawRecord.id),
+    ].sort(
+      (a, b) =>
+        (b.lastUpdatedIso || '').localeCompare(a.lastUpdatedIso || '') || b.id.localeCompare(a.id)
+    );
+    transitTrackingsRef.current = updated;
+    setTransitTrackings(updated);
+    saveStoredTransitTrackings(updated);
+
+    saveTransitTrackingToFirestore(normalized)
+      .catch(console.error)
+      .finally(() => {
+        const currentPending = pendingTransitByIdRef.current.get(safeId);
+        if (currentPending?.lastUpdatedIso === normalized.lastUpdatedIso) {
+          pendingTransitByIdRef.current.delete(safeId);
+        }
+      });
+  }, []);
+
+  const handleDeleteTransitTracking = useCallback((trackingId: string) => {
+    const safeId = toSafeDocId(trackingId, 'trk');
+    deletedTransitIdsRef.current.add(safeId);
+    pendingTransitByIdRef.current.delete(safeId);
+
+    const updated = transitTrackingsRef.current.filter(
+      (t) => t.id !== trackingId && t.id !== safeId
+    );
+    transitTrackingsRef.current = updated;
+    setTransitTrackings(updated);
+    saveStoredTransitTrackings(updated);
+
+    deleteTransitTrackingFromFirestore(safeId)
+      .catch(console.error)
+      .finally(() => {
+        setTimeout(() => {
+          deletedTransitIdsRef.current.delete(safeId);
+        }, 4000);
+      });
+  }, []);
+
   // Global reset (also re-seeds demo data into Firestore automatically)
   const handleResetData = () => {
     seededNewModalitiesRef.current = false;
@@ -1647,6 +1767,11 @@ export default function App() {
     if (!authenticatedTrainer) return [];
     return records.filter((r) => r.trainerId === authenticatedTrainer.id);
   }, [records, authenticatedTrainer]);
+
+  const isolatedTrainerTransitTrackings = useMemo(() => {
+    if (!authenticatedTrainer) return [];
+    return transitTrackings.filter((t) => t.trainerId === authenticatedTrainer.id);
+  }, [transitTrackings, authenticatedTrainer]);
 
   const isTrainerPortalActive = isMobileOrTablet || currentView === 'trainer';
   const headerVisibleRecords = isTrainerPortalActive ? isolatedTrainerRecords : records;
@@ -1686,6 +1811,8 @@ export default function App() {
               records={isolatedTrainerRecords}
               assignments={isolatedTrainerAssignments}
               activityCatalog={activityCatalog}
+              transitTrackings={isolatedTrainerTransitTrackings}
+              onUpsertTransitTracking={handleUpsertTransitTracking}
               onSaveRecord={handleSaveRecord}
               onUpdateRecord={handleUpdateRecord}
             />
@@ -1713,6 +1840,8 @@ export default function App() {
               trainers={trainers}
               assignments={assignments}
               activityCatalog={activityCatalog}
+              transitTrackings={transitTrackings}
+              onDeleteTransitTracking={handleDeleteTransitTracking}
               onUpdateRecord={handleUpdateRecord}
               onDeleteRecord={handleDeleteRecord}
               onAddCompany={handleAddCompany}
@@ -1762,6 +1891,8 @@ export default function App() {
           </div>
         </div>
       </footer>
+
+      <VirtualClassInviteLandingModal />
     </div>
   );
 }

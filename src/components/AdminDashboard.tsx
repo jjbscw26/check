@@ -27,6 +27,7 @@ import {
   Lock,
   LayoutGrid,
   List,
+  Navigation,
   Play,
   RefreshCw,
   Volume2,
@@ -43,6 +44,7 @@ import {
   normalizeActivityType,
   Sede,
   Trainer,
+  TrainerTransitTracking,
 } from '../types';
 import { formatDistance } from '../utils/geo';
 import { getSessionAlarmStatus, formatSecondsClock } from '../utils/sessionAlarm';
@@ -69,7 +71,9 @@ import { PdfEvidenceLogModal } from './PdfEvidenceLogModal';
 import { EvidencePhotoLightbox } from './EvidencePhotoLightbox';
 import { PersonnelRegistryView } from './PersonnelRegistryView';
 import { FirestoreErrorBoundary } from './FirestoreErrorBoundary';
+import { AdminLiveTrackingView } from './AdminLiveTrackingView';
 import { collectAllSelectableSpecialties } from '../utils/specialtyDisciplines';
+import { formatDistanceMetric, formatTravelDuration } from '../utils/transitCalculations';
 
 interface AdminDashboardProps {
   records: AttendanceRecord[];
@@ -77,6 +81,8 @@ interface AdminDashboardProps {
   trainers: Trainer[];
   assignments: ClassAssignment[];
   activityCatalog: ActivityCatalogItem[];
+  transitTrackings?: TrainerTransitTracking[];
+  onDeleteTransitTracking?: (id: string) => void;
   onUpdateRecord: (updated: AttendanceRecord) => void;
   onDeleteRecord: (id: string) => void;
   onAddCompany: (comp: Company) => void;
@@ -109,6 +115,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   trainers,
   assignments,
   activityCatalog,
+  transitTrackings = [],
+  onDeleteTransitTracking,
   onUpdateRecord,
   onDeleteRecord,
   onAddCompany,
@@ -134,7 +142,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onClearAllAdminAlerts,
   onReplayAlertChime,
 }) => {
-  const [activeTab, setActiveTab] = useState<'reports' | 'schedule' | 'activity_types' | 'log' | 'sedes' | 'trainers' | 'personnel'>('reports');
+  const [activeTab, setActiveTab] = useState<'reports' | 'schedule' | 'live_tracking' | 'activity_types' | 'log' | 'sedes' | 'trainers' | 'personnel'>('reports');
   const [selectedRecordForDetail, setSelectedRecordForDetail] = useState<AttendanceRecord | null>(null);
 
   // Modals state
@@ -240,6 +248,12 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const overdueSessions = useMemo(() => {
     return activeInProgressSessions.filter((item) => item.alarm.isOverdue);
   }, [activeInProgressSessions]);
+
+  const activeTransitNow = useMemo(() => {
+    return transitTrackings.filter(
+      (t) => t.status === 'en_camino' || t.status === 'en_geocerca'
+    );
+  }, [transitTrackings]);
 
   // Summary of blocked & non-compliant assignments and sessions
   const nonCompliantSummary = useMemo(() => {
@@ -420,6 +434,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           r.sedeName.toLowerCase().includes(query) ||
           r.activityName.toLowerCase().includes(query) ||
           r.locationArea.toLowerCase().includes(query) ||
+          (r.virtualPlatform && r.virtualPlatform.toLowerCase().includes(query)) ||
+          (r.isVirtual && 'virtual en linea online'.includes(query)) ||
           r.id.toLowerCase().includes(query);
         if (!match) return false;
       }
@@ -585,13 +601,31 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <button
             type="button"
             onClick={() => setActiveTab('trainers')}
-            className={`px-3.5 py-1.5 rounded-lg transition ${
+            className={`px-3.5 py-1.5 rounded-lg transition whitespace-nowrap shrink-0 ${
               activeTab === 'trainers'
                 ? 'bg-red-600 text-white shadow-sm font-bold'
                 : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
             }`}
           >
             🏃 Entrenadores
+          </button>
+
+          <button
+            type="button"
+            onClick={() => setActiveTab('live_tracking')}
+            className={`px-3.5 py-1.5 rounded-lg transition inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 ${
+              activeTab === 'live_tracking'
+                ? 'bg-red-600 text-white shadow-sm font-bold'
+                : 'text-slate-600 hover:text-slate-900 hover:bg-slate-200/60'
+            }`}
+          >
+            <Navigation className="w-3.5 h-3.5 shrink-0" />
+            <span>
+              Seguimiento en Vivo
+              {transitTrackings.some((t) => t.status === 'en_camino' || t.status === 'en_geocerca')
+                ? ` (${transitTrackings.filter((t) => t.status === 'en_camino' || t.status === 'en_geocerca').length})`
+                : ''}
+            </span>
           </button>
 
           <button
@@ -735,6 +769,45 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </div>
               );
             })}
+          </div>
+        </div>
+      )}
+
+      {/* Real-Time Strip: Trainers Who Notified "Voy en trayecto" */}
+      {activeTransitNow.length > 0 && activeTab !== 'live_tracking' && (
+        <div className="bg-slate-900 text-white border border-slate-700 rounded-2xl p-4 shadow-xs flex flex-col lg:flex-row lg:items-center justify-between gap-3 print:hidden">
+          <div className="flex items-start gap-3">
+            <div className="w-9 h-9 rounded-xl bg-emerald-500/20 border border-emerald-400/40 text-emerald-300 flex items-center justify-center shrink-0">
+              <Navigation className="w-4 h-4" />
+            </div>
+            <div className="space-y-0.5 text-xs">
+              <p className="text-[11px] font-bold text-emerald-300">
+                Aviso «Voy en trayecto» · Seguimiento en Vivo Activo ({activeTransitNow.length})
+              </p>
+              <p className="font-semibold text-white">
+                {activeTransitNow
+                  .map(
+                    (t) =>
+                      `${t.trainerName} rumbo a ${t.companyName} (${t.sedeName}) · ${formatDistanceMetric(
+                        t.routeDistanceMeters
+                      )} · ${formatTravelDuration(t.estimatedDurationMinutes)} (Llegada est. ${
+                        t.estimatedArrivalHHMM
+                      } hrs)`
+                  )
+                  .join('  •  ')}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => setActiveTab('live_tracking')}
+              className="min-h-[38px] px-3.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold inline-flex items-center gap-1.5 whitespace-nowrap shrink-0 transition cursor-pointer"
+            >
+              <Navigation className="w-3.5 h-3.5 shrink-0" />
+              <span>Ver Seguimiento en Vivo</span>
+            </button>
           </div>
         </div>
       )}
@@ -1200,6 +1273,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           }}
           onUpdateAssignment={onUpdateAssignment}
           onDeleteAssignment={onDeleteAssignment}
+          onEditTrainerSpecialties={(tr) => {
+            setIsAssignmentModalOpen(false);
+            setEditingTrainer(tr);
+            setIsTrainerModalOpen(true);
+          }}
           onOpenPdfReport={(trainerId) => {
             setPdfAssignmentsTrainerTarget(trainerId || 'all');
             setIsPdfAssignmentsModalOpen(true);
@@ -1519,10 +1597,15 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                             <span className="font-bold text-slate-900 block truncate max-w-[175px]">
                               {rec.activityName}
                             </span>
-                            <span className="text-[10px] text-slate-500 font-mono tabular-nums">
+                            <span className="text-[10px] text-slate-500 font-mono tabular-nums block">
                               {ACTIVITY_TYPE_LABELS[normalizeActivityType(rec.activityType)]} ·{' '}
                               {rec.attendeesCount} part.
                             </span>
+                            {rec.isVirtual && (
+                              <span className="text-[10px] font-semibold text-indigo-700 block truncate max-w-[175px]">
+                                Clase Virtual · {rec.virtualPlatform || 'En línea'}
+                              </span>
+                            )}
                           </td>
 
                           {/* Punctuality */}
@@ -1546,18 +1629,27 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
 
                           {/* GPS */}
                           <td className="py-3 px-2 text-center whitespace-nowrap">
-                            <span
-                              className={`font-mono tabular-nums text-[11px] font-bold ${
-                                rec.checkInGps.isWithinGeofence
-                                  ? 'text-emerald-700'
-                                  : 'text-rose-700'
-                              }`}
-                              title={`Distancia a sede: ${formatDistance(
-                                rec.checkInGps.distanceToSedeMeters
-                              )}`}
-                            >
-                              {formatDistance(rec.checkInGps.distanceToSedeMeters)}
-                            </span>
+                            {rec.isVirtual ? (
+                              <span
+                                className="font-mono tabular-nums text-[11px] font-bold text-indigo-700"
+                                title={`Sesión virtual en ${rec.virtualPlatform || 'plataforma en línea'}`}
+                              >
+                                Virtual
+                              </span>
+                            ) : (
+                              <span
+                                className={`font-mono tabular-nums text-[11px] font-bold ${
+                                  rec.checkInGps.isWithinGeofence
+                                    ? 'text-emerald-700'
+                                    : 'text-rose-700'
+                                }`}
+                                title={`Distancia a sede: ${formatDistance(
+                                  rec.checkInGps.distanceToSedeMeters
+                                )}`}
+                              >
+                                {formatDistance(rec.checkInGps.distanceToSedeMeters)}
+                              </span>
+                            )}
                           </td>
 
                           {/* Evidence thumbnails (click opens Lightbox on exact photo) */}
@@ -1701,6 +1793,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                         <p className="text-[11px] text-slate-500 mt-0.5">
                           Entrenador: <strong className="text-slate-800">{rec.trainerName}</strong>{' '}
                           · {rec.activityName} ({rec.locationArea})
+                          {rec.isVirtual ? ` · Clase Virtual (${rec.virtualPlatform || 'En línea'})` : ''}
                         </p>
                       </div>
 
@@ -2218,6 +2311,16 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         />
       )}
 
+      {/* TAB: SEGUIMIENTO EN TIEMPO REAL DE TRASLADO A SEDES */}
+      {activeTab === 'live_tracking' && (
+        <AdminLiveTrackingView
+          transitTrackings={transitTrackings}
+          trainers={trainers}
+          companies={companies}
+          onDeleteTransitTracking={onDeleteTransitTracking}
+        />
+      )}
+
       {/* TAB: REGISTRO DE PERSONAL EN FIRESTORE (REQUIERE AUTENTICACIÓN) */}
       {activeTab === 'personnel' && (
         <FirestoreErrorBoundary>
@@ -2302,6 +2405,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         initialPreset={assignmentInitialPreset}
         onAddCatalogItem={onAddCatalogItem}
         onManageActivityTypes={() => setActiveTab('activity_types')}
+        onEditTrainerSpecialties={(tr) => {
+          setIsAssignmentModalOpen(false);
+          setEditingTrainer(tr);
+          setIsTrainerModalOpen(true);
+        }}
         onClose={() => {
           setIsAssignmentModalOpen(false);
           setEditingAssignment(null);

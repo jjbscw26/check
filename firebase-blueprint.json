@@ -525,6 +525,34 @@
           "type": "string",
           "maxLength": 500
         },
+        "isVirtual": {
+          "type": "boolean",
+          "description": "Indica si la asignación corresponde a una clase virtual en línea."
+        },
+        "virtualPlatform": {
+          "type": "string",
+          "description": "Plataforma donde se impartirá la clase virtual (ej. Google Meet, Zoom, Microsoft Teams).",
+          "minLength": 2,
+          "maxLength": 80,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "virtualMeetingUrl": {
+          "type": "string",
+          "description": "Enlace directo de acceso a la sala o reunión virtual.",
+          "minLength": 8,
+          "maxLength": 500,
+          "pattern": "^https?://\\S+$"
+        },
+        "virtualMeetingId": {
+          "type": "string",
+          "description": "ID de reunión o código de sala virtual opcional.",
+          "maxLength": 100
+        },
+        "virtualPasscode": {
+          "type": "string",
+          "description": "Código de acceso o contraseña opcional de la sesión virtual.",
+          "maxLength": 120
+        },
         "active": {
           "type": "boolean"
         },
@@ -726,6 +754,30 @@
         "observations": {
           "type": "string",
           "maxLength": 1000
+        },
+        "isVirtual": {
+          "type": "boolean",
+          "description": "Indica si el registro corresponde a una sesión virtual en línea."
+        },
+        "virtualPlatform": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 80,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "virtualMeetingUrl": {
+          "type": "string",
+          "minLength": 8,
+          "maxLength": 500,
+          "pattern": "^https?://\\S+$"
+        },
+        "virtualMeetingId": {
+          "type": "string",
+          "maxLength": 100
+        },
+        "virtualPasscode": {
+          "type": "string",
+          "maxLength": 120
         },
         "checkInGps": {
           "type": "object",
@@ -1023,6 +1075,200 @@
         }
       },
       "required": ["email", "grantedAt"]
+    },
+    "TransitTracking": {
+      "title": "TransitTracking",
+      "description": "Registro de seguimiento en tiempo real de traslado del entrenador hacia la sede asignada con distancia, tiempo estimado y estado de geocerca.",
+      "type": "object",
+      "properties": {
+        "trainerId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "trainerName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 120,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "assignmentId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "companyId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "companyName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "sedeId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "sedeName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "sedeAddress": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 250,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "sedeLat": {
+          "type": "number"
+        },
+        "sedeLng": {
+          "type": "number"
+        },
+        "geofenceRadiusMeters": {
+          "type": "number"
+        },
+        "date": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 10,
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "scheduledTime": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 5,
+          "pattern": "^[0-2][0-9]:[0-5][0-9]$"
+        },
+        "activityName": {
+          "type": "string",
+          "minLength": 2,
+          "maxLength": 150,
+          "pattern": "^\\S(.*\\S)?$"
+        },
+        "trainerLat": {
+          "type": "number"
+        },
+        "trainerLng": {
+          "type": "number"
+        },
+        "accuracyMeters": {
+          "type": "number"
+        },
+        "speedMps": {
+          "type": "number"
+        },
+        "straightDistanceMeters": {
+          "type": "number"
+        },
+        "routeDistanceMeters": {
+          "type": "number"
+        },
+        "estimatedDurationMinutes": {
+          "type": "number"
+        },
+        "estimatedArrivalHHMM": {
+          "type": "string",
+          "minLength": 5,
+          "maxLength": 5,
+          "pattern": "^[0-2][0-9]:[0-5][0-9]$"
+        },
+        "calculationSource": {
+          "type": "string",
+          "enum": ["google_routes", "haversine_estimado"],
+          "maxLength": 30
+        },
+        "travelMode": {
+          "type": "string",
+          "enum": ["DRIVING", "TRANSIT", "WALKING", "TWO_WHEELER"],
+          "maxLength": 20
+        },
+        "status": {
+          "type": "string",
+          "enum": ["en_camino", "en_geocerca", "llegada_confirmada", "detenido"],
+          "maxLength": 25
+        },
+        "isWithinGeofence": {
+          "type": "boolean"
+        },
+        "startedAtIso": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 50
+        },
+        "lastUpdatedIso": {
+          "type": "string",
+          "minLength": 10,
+          "maxLength": 50
+        },
+        "stoppedAtIso": {
+          "type": "string",
+          "maxLength": 50
+        },
+        "createdByUid": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128,
+          "pattern": "^[a-zA-Z0-9_\\-]+$"
+        },
+        "createdByEmail": {
+          "type": "string",
+          "format": "email",
+          "minLength": 5,
+          "maxLength": 254,
+          "pattern": "^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$"
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      },
+      "required": [
+        "trainerId",
+        "trainerName",
+        "companyId",
+        "companyName",
+        "sedeId",
+        "sedeName",
+        "sedeAddress",
+        "sedeLat",
+        "sedeLng",
+        "geofenceRadiusMeters",
+        "date",
+        "scheduledTime",
+        "activityName",
+        "trainerLat",
+        "trainerLng",
+        "accuracyMeters",
+        "straightDistanceMeters",
+        "routeDistanceMeters",
+        "estimatedDurationMinutes",
+        "estimatedArrivalHHMM",
+        "calculationSource",
+        "travelMode",
+        "status",
+        "isWithinGeofence",
+        "startedAtIso",
+        "lastUpdatedIso",
+        "createdByUid",
+        "createdByEmail",
+        "createdAt",
+        "updatedAt"
+      ]
     }
   },
   "firestore": {
@@ -1061,6 +1307,12 @@
         "$ref": "#/entities/ActivityCatalogItem"
       },
       "description": "Colección compartida del catálogo de modalidades y tipos de asignación con duraciones predeterminadas para el calendario."
+    },
+    "/transit_tracking/{trackingId}": {
+      "schema": {
+        "$ref": "#/entities/TransitTracking"
+      },
+      "description": "Colección compartida de seguimiento en tiempo real de ubicación, distancia y tiempo estimado de traslado de entrenadores hacia las sedes asignadas."
     },
     "/personnel/{personnelId}": {
       "schema": {

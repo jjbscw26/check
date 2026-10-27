@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import {
   ACTIVITY_TYPE_LABELS,
   ActivityCatalogItem,
@@ -27,6 +27,11 @@ import {
   Lock,
   Unlock,
   Ban,
+  Video,
+  Globe,
+  KeyRound,
+  Hash,
+  UserCog,
 } from 'lucide-react';
 import {
   getDefaultDurationMinutes,
@@ -50,12 +55,20 @@ import {
 } from '../utils/monthlyAssignmentHelper';
 import {
   buildCatalogItemFromSpecialty,
-  cleanDisciplineLabel,
-  getAssignmentDisciplineGroups,
+  getAllowedActivityTypesForTrainer,
+  getAllowedSpecialtiesForTrainer,
+  isActivityAllowedForTrainer,
   isDisciplineRepresentedInCatalog,
   normalizeDisciplineKey,
   resolveDisciplineSelection,
 } from '../utils/specialtyDisciplines';
+import {
+  buildSharePayloadFromAssignmentLike,
+  isValidVirtualMeetingUrl,
+  normalizeVirtualMeetingUrl,
+  VIRTUAL_PLATFORM_PRESETS,
+} from '../utils/virtualClassShare';
+import { VirtualClassQuickShare } from './VirtualClassShareCard';
 
 export interface AssignmentPreset {
   frequency?: 'semanal' | 'mensual' | 'fecha_unica';
@@ -72,6 +85,11 @@ export interface AssignmentPreset {
   activityName?: string;
   time?: string;
   durationMinutes?: number;
+  isVirtual?: boolean;
+  virtualPlatform?: string;
+  virtualMeetingUrl?: string;
+  virtualMeetingId?: string;
+  virtualPasscode?: string;
 }
 
 interface AdminAssignmentModalProps {
@@ -86,41 +104,9 @@ interface AdminAssignmentModalProps {
   onSaveBatch?: (assignments: ClassAssignment[]) => void;
   onAddCatalogItem?: (item: ActivityCatalogItem) => void;
   onManageActivityTypes?: () => void;
+  onEditTrainerSpecialties?: (trainer: Trainer) => void;
   initialPreset?: AssignmentPreset | null;
 }
-
-const PAUSA_OPTIONS = [
-  'Pausa Activa: Ergonomía y Estiramientos',
-  'Pausa Activa: Movilidad Articular y Postura',
-  'Pausa Activa: Respiración y Anti-estrés',
-  'Pausa Activa: Coordinación y Gimnasia Cerebral',
-];
-
-const FITNESS_OPTIONS = [
-  'Clase Fitness: Entrenamiento Funcional',
-  'Clase Fitness: Yoga Corporativo',
-  'Clase Fitness: Pilates Mat',
-  'Clase Fitness: Zumba y Ritmos Latinos',
-  'Clase Fitness: HIIT y Cardio Quema-grasa',
-  'Clase Fitness: Tonificación y Fuerza con Bandas',
-];
-
-const GIMNASIO_OPTIONS = [
-  'Gimnasio Corporativo: Acondicionamiento y Pesas',
-  'Gimnasio Corporativo: Circuito Funcional en Sala',
-];
-
-const MASAJES_OPTIONS = [
-  'Masajes: Masaje Descontracturante en Silla',
-  'Masajes: Descarga Muscular y Relajación Cervical',
-];
-
-const FALLBACK_OPTIONS_BY_TYPE: Record<ActivityType, string[]> = {
-  pausa_activa: PAUSA_OPTIONS,
-  clase_fitness: FITNESS_OPTIONS,
-  gimnasio_corporativo: GIMNASIO_OPTIONS,
-  masajes: MASAJES_OPTIONS,
-};
 
 const DAYS_OF_WEEK = [
   { value: 1, label: 'Lunes' },
@@ -134,6 +120,13 @@ const DAYS_OF_WEEK = [
 
 const SHORT_DURATION_PRESETS = [15, 20, 30, 45, 50, 60, 90];
 const LONG_GYM_DURATION_PRESETS = [120, 180, 240, 300, 360, 420, 480];
+
+const KNOWN_PLATFORM_NAMES = new Set<string>([
+  'Google Meet',
+  'Zoom',
+  'Microsoft Teams',
+  'Webex',
+]);
 
 function getUpcomingDefaultTimeHHMM(): string {
   const now = new Date();
@@ -163,16 +156,9 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
   onSaveBatch,
   onAddCatalogItem,
   onManageActivityTypes,
+  onEditTrainerSpecialties,
   initialPreset,
 }) => {
-  const getEffectiveOptionsForType = (type: ActivityType): string[] => {
-    const activeFromCatalog = activityCatalog
-      .filter((c) => normalizeActivityType(c.activityType) === type && c.active)
-      .map((c) => c.name);
-    return activeFromCatalog.length > 0 ? activeFromCatalog : FALLBACK_OPTIONS_BY_TYPE[type];
-  };
-
-  const effectivePausaOptions = getEffectiveOptionsForType('pausa_activa');
   const todayLocalStr = formatLocalYYYYMMDD(new Date());
 
   const [trainerId, setTrainerId] = useState(trainers[0]?.id || '');
@@ -190,11 +176,12 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
   );
   const [selectedMonthDates, setSelectedMonthDates] = useState<string[]>([]);
   const [multiDayError, setMultiDayError] = useState<string | null>(null);
+  const [formValidationError, setFormValidationError] = useState<string | null>(null);
   const [time, setTime] = useState<string>(() => getUpcomingDefaultTimeHHMM());
   const [durationInput, setDurationInput] = useState<string>('20');
 
   const [activityType, setActivityType] = useState<ActivityType>('pausa_activa');
-  const [activityName, setActivityName] = useState<string>(effectivePausaOptions[0]);
+  const [activityName, setActivityName] = useState<string>('Pausas Activas');
   const [locationArea, setLocationArea] = useState<string>('Piso 4 - Sala SUM');
   const [expectedAttendeesInput, setExpectedAttendeesInput] = useState<string>('20');
   const [notes, setNotes] = useState<string>('');
@@ -202,17 +189,54 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
   const [closed, setClosed] = useState<boolean>(false);
   const [nonCompliant, setNonCompliant] = useState<boolean>(false);
 
-  const [showQuickCreateDiscipline, setShowQuickCreateDiscipline] = useState<boolean>(false);
-  const [newDisciplineName, setNewDisciplineName] = useState<string>('');
-  const [quickCreatedNotice, setQuickCreatedNotice] = useState<string | null>(null);
+  // Virtual Class State
+  const [isVirtual, setIsVirtual] = useState<boolean>(false);
+  const [platformSelect, setPlatformSelect] = useState<string>('Google Meet');
+  const [customPlatformName, setCustomPlatformName] = useState<string>('');
+  const [virtualMeetingUrl, setVirtualMeetingUrl] = useState<string>('');
+  const [virtualMeetingId, setVirtualMeetingId] = useState<string>('');
+  const [virtualPasscode, setVirtualPasscode] = useState<string>('');
 
   // Selected trainer & company
   const selectedTrainer = trainers.find((t) => t.id === trainerId) || trainers[0];
   const selectedCompany = companies.find((c) => c.id === companyId) || companies[0];
 
+  const allowedTrainerSpecialties = useMemo(
+    () => getAllowedSpecialtiesForTrainer(selectedTrainer, activityCatalog),
+    [selectedTrainer, activityCatalog]
+  );
+
+  const allowedTrainerActivityTypes = useMemo(
+    () => getAllowedActivityTypesForTrainer(selectedTrainer, activityCatalog),
+    [selectedTrainer, activityCatalog]
+  );
+
+  const resolvedVirtualPlatform =
+    platformSelect === 'Otra Plataforma'
+      ? customPlatformName.trim() || 'Plataforma Virtual'
+      : platformSelect;
+
   useEffect(() => {
+    const syncPlatformState = (rawPlatform?: string) => {
+      const trimmed = (rawPlatform || '').trim();
+      if (!trimmed) {
+        setPlatformSelect('Google Meet');
+        setCustomPlatformName('');
+      } else if (KNOWN_PLATFORM_NAMES.has(trimmed)) {
+        setPlatformSelect(trimmed);
+        setCustomPlatformName('');
+      } else {
+        setPlatformSelect('Otra Plataforma');
+        setCustomPlatformName(trimmed);
+      }
+    };
+
     if (assignment) {
-      setTrainerId(assignment.trainerId);
+      const targetTrainer =
+        trainers.find((t) => t.id === assignment.trainerId) || trainers[0];
+      const trainerSpecs = getAllowedSpecialtiesForTrainer(targetTrainer, activityCatalog);
+
+      setTrainerId(targetTrainer?.id || assignment.trainerId);
       setCompanyId(assignment.companyId);
       setSedeId(assignment.sedeId);
       setScheduleMode(assignment.frequency || 'semanal');
@@ -223,31 +247,89 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
       setTargetMonth(asgDate.slice(0, 7));
       setSelectedMonthDates([]);
       setTime((assignment.time || '09:00').slice(0, 5));
-      const normType = normalizeActivityType(assignment.activityType);
-      setActivityType(normType);
-      setActivityName(assignment.activityName || getEffectiveOptionsForType(normType)[0]);
-      setDurationInput(
-        String(getAssignmentDurationMinutes(assignment, activityCatalog))
-      );
+
+      if (
+        targetTrainer &&
+        isActivityAllowedForTrainer(targetTrainer, assignment.activityName)
+      ) {
+        const normType = normalizeActivityType(assignment.activityType);
+        setActivityType(normType);
+        setActivityName(assignment.activityName);
+        setDurationInput(
+          String(getAssignmentDurationMinutes(assignment, activityCatalog))
+        );
+      } else if (trainerSpecs.length > 0) {
+        setActivityType(trainerSpecs[0].activityType);
+        setActivityName(trainerSpecs[0].name);
+        setDurationInput(
+          String(
+            assignment.durationMinutes ||
+              trainerSpecs[0].durationMinutes
+          )
+        );
+      } else {
+        const normType = normalizeActivityType(assignment.activityType);
+        setActivityType(normType);
+        setActivityName(assignment.activityName || '');
+        setDurationInput(
+          String(getAssignmentDurationMinutes(assignment, activityCatalog))
+        );
+      }
+
       setLocationArea(assignment.locationArea || 'Piso 4 - Sala SUM');
       setExpectedAttendeesInput(String(assignment.expectedAttendees ?? 20));
       setNotes(assignment.notes || '');
+      setIsVirtual(Boolean(assignment.isVirtual));
+      syncPlatformState(assignment.virtualPlatform);
+      setVirtualMeetingUrl(assignment.virtualMeetingUrl || '');
+      setVirtualMeetingId(assignment.virtualMeetingId || '');
+      setVirtualPasscode(assignment.virtualPasscode || '');
       setActive(assignment.active !== false);
       setClosed(Boolean(assignment.closed));
       setNonCompliant(Boolean(assignment.nonCompliant));
     } else {
-      const presetActType: ActivityType = initialPreset?.activityType
+      const targetTrainer =
+        (initialPreset?.trainerId &&
+          trainers.find((t) => t.id === initialPreset.trainerId)) ||
+        trainers[0];
+      const trainerSpecs = getAllowedSpecialtiesForTrainer(targetTrainer, activityCatalog);
+
+      let initialActName = initialPreset?.activityName || '';
+      let initialActType: ActivityType = initialPreset?.activityType
         ? normalizeActivityType(initialPreset.activityType)
-        : 'pausa_activa';
-      const defaultActName =
-        initialPreset?.activityName || getEffectiveOptionsForType(presetActType)[0];
-      const defaultDur =
+        : trainerSpecs[0]?.activityType || 'pausa_activa';
+      let initialDur =
         initialPreset?.durationMinutes ||
-        getDefaultDurationMinutes(presetActType, defaultActName, activityCatalog);
+        trainerSpecs[0]?.durationMinutes ||
+        20;
+
+      if (
+        initialActName &&
+        targetTrainer &&
+        isActivityAllowedForTrainer(targetTrainer, initialActName)
+      ) {
+        const resolved = resolveDisciplineSelection(
+          initialActName,
+          initialActType,
+          activityCatalog
+        );
+        initialActName = resolved.activityName;
+        initialActType = resolved.activityType;
+        initialDur = initialPreset?.durationMinutes || resolved.durationMinutes;
+      } else if (trainerSpecs.length > 0) {
+        const preferredByType = trainerSpecs.find(
+          (s) => s.activityType === initialActType
+        );
+        const chosen = preferredByType || trainerSpecs[0];
+        initialActName = chosen.name;
+        initialActType = chosen.activityType;
+        initialDur = initialPreset?.durationMinutes || chosen.durationMinutes;
+      }
+
       const presetDate = initialPreset?.date || formatLocalYYYYMMDD(new Date());
       const presetMonth = initialPreset?.targetMonth || presetDate.slice(0, 7);
 
-      setTrainerId(initialPreset?.trainerId || trainers[0]?.id || '');
+      setTrainerId(targetTrainer?.id || '');
       const presetComp =
         (initialPreset?.companyId && companies.find((c) => c.id === initialPreset.companyId)) ||
         companies[0];
@@ -276,10 +358,22 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
           : []
       );
       setTime((initialPreset?.time || getUpcomingDefaultTimeHHMM()).slice(0, 5));
-      setActivityType(presetActType);
-      setActivityName(defaultActName);
-      setDurationInput(String(defaultDur));
-      setLocationArea('Piso 4 - Sala SUM');
+      setActivityType(initialActType);
+      setActivityName(initialActName);
+      setDurationInput(String(initialDur));
+
+      const presetVirtual = Boolean(initialPreset?.isVirtual);
+      setIsVirtual(presetVirtual);
+      syncPlatformState(initialPreset?.virtualPlatform);
+      setVirtualMeetingUrl(initialPreset?.virtualMeetingUrl || '');
+      setVirtualMeetingId(initialPreset?.virtualMeetingId || '');
+      setVirtualPasscode(initialPreset?.virtualPasscode || '');
+
+      setLocationArea(
+        presetVirtual
+          ? `Sala Virtual (${initialPreset?.virtualPlatform || 'Google Meet'})`
+          : 'Piso 4 - Sala SUM'
+      );
       setExpectedAttendeesInput('0');
       setNotes('');
       setActive(true);
@@ -287,17 +381,47 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
       setNonCompliant(false);
     }
     setMultiDayError(null);
-    setShowQuickCreateDiscipline(false);
-    setNewDisciplineName('');
-    setQuickCreatedNotice(null);
-  }, [assignment, trainers, companies, isOpen, initialPreset]);
+    setFormValidationError(null);
+  }, [assignment, trainers, companies, isOpen, initialPreset, activityCatalog]);
 
   if (!isOpen) return null;
+
+  const handleTrainerChange = (nextTrainerId: string) => {
+    setTrainerId(nextTrainerId);
+    setFormValidationError(null);
+    const nextTrainer = trainers.find((t) => t.id === nextTrainerId);
+    if (!nextTrainer) return;
+
+    if (!isActivityAllowedForTrainer(nextTrainer, activityName)) {
+      const nextSpecs = getAllowedSpecialtiesForTrainer(nextTrainer, activityCatalog);
+      if (nextSpecs.length > 0) {
+        const sameModalitySpec = nextSpecs.find((s) => s.activityType === activityType);
+        const chosen = sameModalitySpec || nextSpecs[0];
+        setActivityName(chosen.name);
+        setActivityType(chosen.activityType);
+        setDurationInput(String(chosen.durationMinutes));
+      } else {
+        setActivityName('');
+      }
+    }
+  };
 
   const handleCompanyChange = (cId: string) => {
     setCompanyId(cId);
     const comp = companies.find((c) => c.id === cId);
     setSedeId(comp?.sedes[0]?.id || '');
+  };
+
+  const handleToggleVirtualModality = (nextVirtual: boolean) => {
+    setIsVirtual(nextVirtual);
+    setFormValidationError(null);
+    if (nextVirtual) {
+      if (!locationArea.trim() || locationArea === 'Piso 4 - Sala SUM') {
+        setLocationArea(`Sala Virtual (${resolvedVirtualPlatform})`);
+      }
+    } else if (locationArea.startsWith('Sala Virtual')) {
+      setLocationArea('Piso 4 - Sala SUM');
+    }
   };
 
   const normalizedTime = (time || '09:00').slice(0, 5);
@@ -329,12 +453,100 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
     });
   };
 
+  const applyDisciplineChoice = (chosenName: string) => {
+    setFormValidationError(null);
+    const resolved = resolveDisciplineSelection(chosenName, activityType, activityCatalog);
+    setActivityName(resolved.activityName);
+    setActivityType(resolved.activityType);
+    setDurationInput(
+      String(getDefaultDurationMinutes(resolved.activityType, resolved.activityName, activityCatalog))
+    );
+  };
+
+  const liveVirtualSharePayload = useMemo(() => {
+    if (!isVirtual) return null;
+    const sede = selectedCompany?.sedes.find((s) => s.id === sedeId) || selectedCompany?.sedes[0];
+    const previewFrequency: 'semanal' | 'mensual' | 'fecha_unica' =
+      scheduleMode === 'dias_mes' ? 'fecha_unica' : scheduleMode;
+    const previewDate =
+      scheduleMode === 'dias_mes'
+        ? selectedMonthDates[0] || `${targetMonth}-01`
+        : specificDate;
+
+    return buildSharePayloadFromAssignmentLike({
+      activityName: activityName || 'Clase Virtual Corporativa',
+      activityType,
+      companyName: selectedCompany?.name || 'Empresa Cliente',
+      sedeName: sede?.name,
+      trainerName: selectedTrainer?.name || 'Entrenador BSCW',
+      frequency: previewFrequency,
+      dayOfWeek: previewFrequency === 'semanal' ? dayOfWeek : undefined,
+      dayOfMonth: previewFrequency === 'mensual' ? dayOfMonth : undefined,
+      date: previewFrequency === 'fecha_unica' ? previewDate : undefined,
+      time: normalizedTime,
+      durationMinutes: resolvedDurationMinutes,
+      virtualPlatform: resolvedVirtualPlatform,
+      virtualMeetingUrl,
+      virtualMeetingId,
+      virtualPasscode,
+      notes,
+    });
+  }, [
+    isVirtual,
+    selectedCompany,
+    sedeId,
+    scheduleMode,
+    selectedMonthDates,
+    targetMonth,
+    specificDate,
+    activityName,
+    activityType,
+    selectedTrainer,
+    dayOfWeek,
+    dayOfMonth,
+    normalizedTime,
+    resolvedDurationMinutes,
+    resolvedVirtualPlatform,
+    virtualMeetingUrl,
+    virtualMeetingId,
+    virtualPasscode,
+    notes,
+  ]);
+
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    setFormValidationError(null);
 
     const trainer = trainers.find((t) => t.id === trainerId) || trainers[0];
     const company = companies.find((c) => c.id === companyId) || companies[0];
     if (!trainer || !company) return;
+
+    // Enforce strict specialty restriction
+    if (!activityName.trim() || !isActivityAllowedForTrainer(trainer, activityName)) {
+      setFormValidationError(
+        `Solo puedes asignar actividades registradas en las especialidades de ${trainer.name}. Selecciona una de sus especialidades o actualiza su perfil.`
+      );
+      return;
+    }
+
+    // Validate Virtual Class fields when enabled
+    let normalizedMeetingUrl = '';
+    const finalPlatformName = resolvedVirtualPlatform.trim();
+    if (isVirtual) {
+      if (finalPlatformName.length < 2 || finalPlatformName.length > 80) {
+        setFormValidationError(
+          'Indica el nombre de la plataforma donde se impartirá la clase virtual (ej. Google Meet, Zoom, Teams).'
+        );
+        return;
+      }
+      normalizedMeetingUrl = normalizeVirtualMeetingUrl(virtualMeetingUrl);
+      if (!isValidVirtualMeetingUrl(normalizedMeetingUrl)) {
+        setFormValidationError(
+          'Ingresa un link válido de la sala virtual (ej. https://meet.google.com/abc-defg-hij o https://zoom.us/j/...).'
+        );
+        return;
+      }
+    }
 
     if (onAddCatalogItem && !isDisciplineRepresentedInCatalog(activityName, activityCatalog)) {
       const autoCatalogItem = buildCatalogItemFromSpecialty(activityName, {
@@ -368,6 +580,11 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
         locationArea,
         expectedAttendees: Math.max(0, parseInt(expectedAttendeesInput, 10) || 0),
         notes,
+        isVirtual,
+        virtualPlatform: isVirtual ? finalPlatformName : undefined,
+        virtualMeetingUrl: isVirtual ? normalizedMeetingUrl : undefined,
+        virtualMeetingId: isVirtual ? virtualMeetingId.trim() : undefined,
+        virtualPasscode: isVirtual ? virtualPasscode.trim() : undefined,
         active,
       });
 
@@ -405,7 +622,6 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
         existingCompletedDates.delete(specificDate);
         existingReopenedDates.delete(specificDate);
       } else if (assignment?.nonCompliant) {
-        // Admin explicitly cleared non-compliant status -> rehabilitate this date
         existingMissedDates.delete(specificDate);
         existingReopenedDates.add(specificDate);
       }
@@ -430,9 +646,24 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
       durationMinutes: resolvedDurationMinutes,
       activityType,
       activityName,
-      locationArea: locationArea.trim() || 'Área Principal',
+      locationArea:
+        locationArea.trim() ||
+        (isVirtual ? `Sala Virtual (${finalPlatformName})` : 'Área Principal'),
       expectedAttendees: Math.max(0, parseInt(expectedAttendeesInput, 10) || 0),
       notes: notes.trim(),
+      ...(isVirtual
+        ? {
+            isVirtual: true,
+            virtualPlatform: finalPlatformName,
+            virtualMeetingUrl: normalizedMeetingUrl,
+            ...(virtualMeetingId.trim()
+              ? { virtualMeetingId: virtualMeetingId.trim().slice(0, 100) }
+              : {}),
+            ...(virtualPasscode.trim()
+              ? { virtualPasscode: virtualPasscode.trim().slice(0, 120) }
+              : {}),
+          }
+        : {}),
       active,
       closed: nonCompliant ? false : closed,
       closedAt:
@@ -453,62 +684,6 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
     onClose();
   };
 
-  const disciplineGroups = getAssignmentDisciplineGroups({
-    activityType,
-    selectedTrainer,
-    trainers,
-    activityCatalog,
-    fallbackOptionsByType: FALLBACK_OPTIONS_BY_TYPE,
-  });
-
-  const trainerDirectSpecialties = Array.from(
-    new Set(
-      (selectedTrainer?.specialties || [])
-        .map((s) => cleanDisciplineLabel(s))
-        .filter((s) => s.length >= 2)
-    )
-  );
-
-  const applyDisciplineChoice = (chosenName: string) => {
-    const resolved = resolveDisciplineSelection(chosenName, activityType, activityCatalog);
-    setActivityName(resolved.activityName);
-    setActivityType(resolved.activityType);
-    setDurationInput(
-      String(getDefaultDurationMinutes(resolved.activityType, resolved.activityName, activityCatalog))
-    );
-    setQuickCreatedNotice(null);
-  };
-
-  const handleQuickCreateDiscipline = () => {
-    const cleaned = cleanDisciplineLabel(newDisciplineName);
-    if (cleaned.length < 2) return;
-
-    const existingMatch = activityCatalog.find(
-      (item) => normalizeDisciplineKey(item.name) === normalizeDisciplineKey(cleaned)
-    );
-    if (existingMatch) {
-      applyDisciplineChoice(existingMatch.name);
-      setNewDisciplineName('');
-      setShowQuickCreateDiscipline(false);
-      setQuickCreatedNotice(`"${existingMatch.name}" seleccionada del catálogo existente.`);
-      return;
-    }
-
-    const built = buildCatalogItemFromSpecialty(cleaned, {
-      activityType,
-      durationMinutes: resolvedDurationMinutes,
-    });
-    if (!built) return;
-
-    onAddCatalogItem?.(built);
-    setActivityName(built.name);
-    setActivityType(built.activityType);
-    setDurationInput(String(built.defaultDurationMinutes));
-    setNewDisciplineName('');
-    setShowQuickCreateDiscipline(false);
-    setQuickCreatedNotice(`"${built.name}" guardada en Firestore y asignada a esta clase.`);
-  };
-
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-3 sm:p-4 bg-slate-900/60 backdrop-blur-sm overflow-y-auto">
       <div className="bg-white border border-slate-200 rounded-2xl sm:rounded-3xl w-full max-w-xl max-h-[94vh] flex flex-col overflow-hidden shadow-2xl my-auto">
@@ -522,34 +697,52 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                 {assignment ? 'Editar Asignación de Clase' : 'Programar y Asignar Clase'}
               </h3>
               <p className="text-xs text-red-100">
-                Planificación semanal o mensual de sesiones y duración para entrenadores
+                Sesiones presenciales o virtuales limitadas a las especialidades de cada entrenador
               </p>
             </div>
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="text-white/80 hover:text-white p-1 rounded-lg"
+            className="text-white/80 hover:text-white p-1 rounded-lg cursor-pointer"
           >
             ✕
           </button>
         </div>
 
-        <form onSubmit={handleSubmit} className="p-5 sm:p-6 space-y-4 text-slate-800 text-xs flex-1 overflow-y-auto">
+        <form
+          onSubmit={handleSubmit}
+          className="p-5 sm:p-6 space-y-4 text-slate-800 text-xs flex-1 overflow-y-auto"
+        >
           {/* Trainer selection */}
           <div>
-            <label className="block font-bold text-slate-700 mb-1 flex items-center">
-              <User className="w-3.5 h-3.5 mr-1 text-red-600" />
-              Entrenador Asignado *
-            </label>
+            <div className="flex items-center justify-between gap-2 mb-1">
+              <label className="font-bold text-slate-700 flex items-center">
+                <User className="w-3.5 h-3.5 mr-1 text-red-600" />
+                Entrenador Asignado *
+              </label>
+              {onEditTrainerSpecialties && selectedTrainer && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    onClose();
+                    onEditTrainerSpecialties(selectedTrainer);
+                  }}
+                  className="inline-flex items-center gap-1 text-[11px] font-semibold text-red-600 hover:text-red-700 hover:underline whitespace-nowrap shrink-0 cursor-pointer"
+                >
+                  <UserCog className="w-3 h-3" />
+                  <span>Editar especialidades del entrenador</span>
+                </button>
+              )}
+            </div>
             <select
               value={trainerId}
-              onChange={(e) => setTrainerId(e.target.value)}
+              onChange={(e) => handleTrainerChange(e.target.value)}
               className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-red-500"
             >
               {trainers.map((tr) => (
                 <option key={tr.id} value={tr.id}>
-                  {tr.name} ({tr.specialties.slice(0, 2).join(', ')})
+                  {tr.name} ({tr.specialties.join(', ')})
                 </option>
               ))}
             </select>
@@ -596,6 +789,209 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                 )}
               </select>
             </div>
+          </div>
+
+          {/* Delivery Modality: Presencial vs Clase Virtual + Platform Details & Share Link */}
+          <div
+            className={`p-3.5 rounded-2xl border space-y-3 transition-colors ${
+              isVirtual
+                ? 'bg-sky-50/50 border-sky-200'
+                : 'bg-slate-50 border-slate-200'
+            }`}
+          >
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <span className="font-bold text-slate-900 flex items-center gap-1.5">
+                <Video className={`w-3.5 h-3.5 ${isVirtual ? 'text-sky-600' : 'text-slate-500'}`} />
+                <span>Modalidad de Impartición (Presencial o Clase Virtual)</span>
+              </span>
+              <span className="text-[11px] text-slate-500">
+                {isVirtual ? 'Sesión en línea con link compartible' : 'Sesión física en sede'}
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                type="button"
+                onClick={() => handleToggleVirtualModality(false)}
+                className={`py-2 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer ${
+                  !isVirtual
+                    ? 'bg-slate-900 border-slate-900 text-white font-bold shadow-xs'
+                    : 'bg-white border-slate-300 text-slate-600 hover:bg-slate-100'
+                }`}
+              >
+                <MapPin className="w-3.5 h-3.5 shrink-0" />
+                <span>Presencial en Sede</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => handleToggleVirtualModality(true)}
+                className={`py-2 px-3 rounded-xl border text-xs font-semibold flex items-center justify-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer ${
+                  isVirtual
+                    ? 'bg-sky-600 border-sky-600 text-white font-bold shadow-xs'
+                    : 'bg-white border-slate-300 text-slate-600 hover:bg-sky-50 hover:text-sky-700'
+                }`}
+              >
+                <Video className="w-3.5 h-3.5 shrink-0" />
+                <span>Clase Virtual / En Línea</span>
+              </button>
+            </div>
+
+            {isVirtual && (
+              <div className="pt-2 border-t border-sky-200/70 space-y-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div>
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                      <Globe className="w-3 h-3 text-sky-600 shrink-0" />
+                      <span>Plataforma donde se dará *</span>
+                    </label>
+                    <select
+                      value={platformSelect}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setPlatformSelect(val);
+                        const nextName =
+                          val === 'Otra Plataforma'
+                            ? customPlatformName.trim() || 'Plataforma Virtual'
+                            : val;
+                        if (locationArea.startsWith('Sala Virtual')) {
+                          setLocationArea(`Sala Virtual (${nextName})`);
+                        }
+                      }}
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-sky-500"
+                    >
+                      {VIRTUAL_PLATFORM_PRESETS.map((plat) => (
+                        <option key={plat} value={plat}>
+                          {plat}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+
+                  {platformSelect === 'Otra Plataforma' ? (
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                        Nombre de la Plataforma *
+                      </label>
+                      <input
+                        type="text"
+                        required
+                        maxLength={80}
+                        value={customPlatformName}
+                        onChange={(e) => {
+                          setCustomPlatformName(e.target.value);
+                          if (locationArea.startsWith('Sala Virtual')) {
+                            setLocationArea(
+                              `Sala Virtual (${e.target.value.trim() || 'Plataforma Virtual'})`
+                            );
+                          }
+                        }}
+                        placeholder="Ej: Jitsi Meet, Discord, Chime..."
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-sky-500"
+                      />
+                    </div>
+                  ) : (
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                        <Hash className="w-3 h-3 text-sky-600 shrink-0" />
+                        <span>ID de Reunión / Sala (opcional)</span>
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={100}
+                        value={virtualMeetingId}
+                        onChange={(e) => setVirtualMeetingId(e.target.value)}
+                        placeholder="Ej: 842 9104 2211 o abc-defg-hij"
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono tabular-nums text-slate-900 focus:outline-none focus:border-sky-500"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {platformSelect === 'Otra Plataforma' && (
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                        <Hash className="w-3 h-3 text-sky-600 shrink-0" />
+                        <span>ID de Reunión / Sala (opcional)</span>
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={100}
+                        value={virtualMeetingId}
+                        onChange={(e) => setVirtualMeetingId(e.target.value)}
+                        placeholder="Ej: 842 9104 2211"
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono tabular-nums text-slate-900 focus:outline-none focus:border-sky-500"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                        <KeyRound className="w-3 h-3 text-sky-600 shrink-0" />
+                        <span>Código de Acceso / Passcode (opcional)</span>
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={120}
+                        value={virtualPasscode}
+                        onChange={(e) => setVirtualPasscode(e.target.value)}
+                        placeholder="Ej: BSCW2026"
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono tabular-nums text-slate-900 focus:outline-none focus:border-sky-500"
+                      />
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 sm:grid-cols-12 gap-3">
+                  <div className={platformSelect === 'Otra Plataforma' ? 'sm:col-span-12' : 'sm:col-span-8'}>
+                    <label className="block text-[11px] font-semibold text-slate-700 mb-1">
+                      Link / Enlace de la Sala Virtual *
+                    </label>
+                    <input
+                      type="text"
+                      required={isVirtual}
+                      maxLength={500}
+                      value={virtualMeetingUrl}
+                      onChange={(e) => {
+                        setVirtualMeetingUrl(e.target.value);
+                        setFormValidationError(null);
+                      }}
+                      onBlur={() => {
+                        if (virtualMeetingUrl.trim()) {
+                          setVirtualMeetingUrl(normalizeVirtualMeetingUrl(virtualMeetingUrl));
+                        }
+                      }}
+                      placeholder="https://meet.google.com/abc-defg-hij o https://zoom.us/j/..."
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono text-slate-900 focus:outline-none focus:border-sky-500"
+                    />
+                  </div>
+
+                  {platformSelect !== 'Otra Plataforma' && (
+                    <div className="sm:col-span-4">
+                      <label className="block text-[11px] font-semibold text-slate-700 mb-1 flex items-center gap-1">
+                        <KeyRound className="w-3 h-3 text-sky-600 shrink-0" />
+                        <span>Código Acceso</span>
+                      </label>
+                      <input
+                        type="text"
+                        maxLength={120}
+                        value={virtualPasscode}
+                        onChange={(e) => setVirtualPasscode(e.target.value)}
+                        placeholder="Opcional"
+                        className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-mono tabular-nums text-slate-900 focus:outline-none focus:border-sky-500"
+                      />
+                    </div>
+                  )}
+                </div>
+
+                {liveVirtualSharePayload ? (
+                  <VirtualClassQuickShare payload={liveVirtualSharePayload} />
+                ) : (
+                  <p className="text-[11px] text-slate-500">
+                    Ingresa el enlace de la sala (ej. <span className="font-mono">https://meet.google.com/...</span>) para generar automáticamente el link para compartir los datos de acceso.
+                  </p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* Frequency (Semanal / Mensual / Fecha Única / Marcar Días del Mes) + Duration */}
@@ -732,10 +1128,12 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                 <div className="bg-white border border-slate-200 rounded-xl p-3 space-y-2.5">
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <span className="text-[11px] font-bold text-slate-800">
-                      Marca los días de {monthGrid.monthName} {monthGrid.year} para {selectedTrainer?.name || 'el entrenador'}:
+                      Marca los días de {monthGrid.monthName} {monthGrid.year} para{' '}
+                      {selectedTrainer?.name || 'el entrenador'}:
                     </span>
                     <span className="text-[11px] font-mono tabular-nums font-bold text-red-600">
-                      {selectedMonthDates.length} {selectedMonthDates.length === 1 ? 'día marcado' : 'días marcados'}
+                      {selectedMonthDates.length}{' '}
+                      {selectedMonthDates.length === 1 ? 'día marcado' : 'días marcados'}
                     </span>
                   </div>
 
@@ -744,7 +1142,9 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                       type="button"
                       onClick={() => {
                         setMultiDayError(null);
-                        setSelectedMonthDates(getMonthDatesByPattern(targetMonth, 'weekdays', todayLocalStr));
+                        setSelectedMonthDates(
+                          getMonthDatesByPattern(targetMonth, 'weekdays', todayLocalStr)
+                        );
                       }}
                       className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-red-50 hover:text-red-700 border border-slate-200 text-[11px] font-semibold text-slate-700 transition whitespace-nowrap shrink-0 cursor-pointer"
                     >
@@ -754,7 +1154,9 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                       type="button"
                       onClick={() => {
                         setMultiDayError(null);
-                        setSelectedMonthDates(getMonthDatesByPattern(targetMonth, 'mwf', todayLocalStr));
+                        setSelectedMonthDates(
+                          getMonthDatesByPattern(targetMonth, 'mwf', todayLocalStr)
+                        );
                       }}
                       className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-red-50 hover:text-red-700 border border-slate-200 text-[11px] font-semibold text-slate-700 transition whitespace-nowrap shrink-0 cursor-pointer"
                     >
@@ -764,7 +1166,9 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                       type="button"
                       onClick={() => {
                         setMultiDayError(null);
-                        setSelectedMonthDates(getMonthDatesByPattern(targetMonth, 'tth', todayLocalStr));
+                        setSelectedMonthDates(
+                          getMonthDatesByPattern(targetMonth, 'tth', todayLocalStr)
+                        );
                       }}
                       className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-red-50 hover:text-red-700 border border-slate-200 text-[11px] font-semibold text-slate-700 transition whitespace-nowrap shrink-0 cursor-pointer"
                     >
@@ -774,7 +1178,9 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                       type="button"
                       onClick={() => {
                         setMultiDayError(null);
-                        setSelectedMonthDates(getMonthDatesByPattern(targetMonth, 'saturdays', todayLocalStr));
+                        setSelectedMonthDates(
+                          getMonthDatesByPattern(targetMonth, 'saturdays', todayLocalStr)
+                        );
                       }}
                       className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-red-50 hover:text-red-700 border border-slate-200 text-[11px] font-semibold text-slate-700 transition whitespace-nowrap shrink-0 cursor-pointer"
                     >
@@ -784,7 +1190,9 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                       type="button"
                       onClick={() => {
                         setMultiDayError(null);
-                        setSelectedMonthDates(getMonthDatesByPattern(targetMonth, 'all', todayLocalStr));
+                        setSelectedMonthDates(
+                          getMonthDatesByPattern(targetMonth, 'all', todayLocalStr)
+                        );
                       }}
                       className="px-2.5 py-1 rounded-lg bg-slate-100 hover:bg-red-50 hover:text-red-700 border border-slate-200 text-[11px] font-semibold text-slate-700 transition whitespace-nowrap shrink-0 cursor-pointer"
                     >
@@ -878,7 +1286,9 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                             title={
                               alreadySameSlot
                                 ? `${cell.dateStr}: Ya cuenta con esta misma actividad y horario asignado`
-                                : `${cell.dateStr}: Clic para ${isMarked ? 'desmarcar' : 'marcar con ' + activityName}`
+                                : `${cell.dateStr}: Clic para ${
+                                    isMarked ? 'desmarcar' : 'marcar con ' + activityName
+                                  }`
                             }
                           >
                             <div className="w-full flex items-center justify-between px-0.5">
@@ -962,7 +1372,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                       max={31}
                       value={dayOfMonth}
                       onChange={(e) => setDayOfMonth(parseInt(e.target.value) || 1)}
-                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono focus:outline-none focus:border-red-500"
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono tabular-nums focus:outline-none focus:border-red-500"
                     />
                   </div>
                 )}
@@ -976,7 +1386,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                       type="date"
                       value={specificDate}
                       onChange={(e) => setSpecificDate(e.target.value)}
-                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono focus:outline-none focus:border-red-500"
+                      className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono tabular-nums focus:outline-none focus:border-red-500"
                     />
                   </div>
                 )}
@@ -991,7 +1401,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                     required
                     value={time}
                     onChange={(e) => setTime(e.target.value)}
-                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono focus:outline-none focus:border-red-500"
+                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono tabular-nums focus:outline-none focus:border-red-500"
                   />
                 </div>
               </div>
@@ -1079,7 +1489,9 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                     onClick={() => {
                       const step = resolvedDurationMinutes >= 120 ? 30 : 5;
                       setDurationInput(
-                        String(Math.max(MIN_ASSIGNMENT_DURATION_MINUTES, resolvedDurationMinutes - step))
+                        String(
+                          Math.max(MIN_ASSIGNMENT_DURATION_MINUTES, resolvedDurationMinutes - step)
+                        )
                       );
                     }}
                     className="h-8 px-2.5 rounded-lg bg-slate-50 hover:bg-slate-100 border border-slate-300 text-slate-700 text-[11px] font-mono tabular-nums font-bold flex items-center justify-center gap-0.5 transition whitespace-nowrap shrink-0 cursor-pointer"
@@ -1094,7 +1506,9 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                     onClick={() => {
                       const step = resolvedDurationMinutes >= 120 ? 30 : 15;
                       setDurationInput(
-                        String(Math.min(MAX_ASSIGNMENT_DURATION_MINUTES, resolvedDurationMinutes + step))
+                        String(
+                          Math.min(MAX_ASSIGNMENT_DURATION_MINUTES, resolvedDurationMinutes + step)
+                        )
                       );
                     }}
                     className="h-8 px-2.5 rounded-lg bg-red-600 hover:bg-red-700 text-white text-[11px] font-mono tabular-nums font-bold flex items-center justify-center gap-0.5 shadow-2xs transition whitespace-nowrap shrink-0 cursor-pointer"
@@ -1154,32 +1568,28 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                   })}
                 </div>
               </div>
-
-              <p className="text-[10px] text-slate-500">
-                Permite asignar desde pausas activas de 15 min hasta jornadas completas de gimnasio corporativo de 4 a 8 horas continuas ({resolvedDurationMinutes} min en total).
-              </p>
             </div>
           </div>
 
-          {/* Activity Type, Trainer Specialties & Database Disciplines */}
+          {/* Strictly Restricted Trainer Specialties & Modality */}
           <div className="p-3.5 bg-slate-50 rounded-2xl border border-slate-200 space-y-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="font-bold text-slate-900 flex items-center">
                 <Activity className="w-3.5 h-3.5 mr-1 text-red-600 shrink-0" />
-                Tipo de Asignación, Especialidad y Disciplina
+                Especialidades Autorizadas del Entrenador
               </span>
               <div className="flex items-center gap-2.5">
-                {onAddCatalogItem && (
+                {onEditTrainerSpecialties && selectedTrainer && (
                   <button
                     type="button"
                     onClick={() => {
-                      setShowQuickCreateDiscipline((prev) => !prev);
-                      setQuickCreatedNotice(null);
+                      onClose();
+                      onEditTrainerSpecialties(selectedTrainer);
                     }}
-                    className="text-[11px] font-bold text-slate-700 hover:text-red-600 flex items-center gap-1 whitespace-nowrap cursor-pointer"
+                    className="text-[11px] font-bold text-slate-700 hover:text-red-600 flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer"
                   >
-                    <Plus className="w-3 h-3 text-red-600" />
-                    <span>Nueva disciplina</span>
+                    <UserCog className="w-3 h-3 text-red-600" />
+                    <span>Gestionar especialidades</span>
                   </button>
                 )}
                 {onManageActivityTypes && (
@@ -1189,203 +1599,147 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                       onClose();
                       onManageActivityTypes();
                     }}
-                    className="text-[11px] font-bold text-red-600 hover:text-red-700 hover:underline flex items-center space-x-1 whitespace-nowrap cursor-pointer"
+                    className="text-[11px] font-bold text-red-600 hover:text-red-700 hover:underline flex items-center space-x-1 whitespace-nowrap shrink-0 cursor-pointer"
                   >
                     <Settings2 className="w-3 h-3" />
-                    <span>Editar catálogo</span>
+                    <span>Catálogo</span>
                   </button>
                 )}
               </div>
             </div>
 
-            <div className="space-y-3">
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1.5">
-                  Modalidad Principal *
-                </label>
-                <div className="grid grid-cols-2 gap-2">
-                  {ALL_ACTIVITY_TYPES.map((type) => {
-                    const isSelected = activityType === type;
-                    return (
-                      <button
-                        key={type}
-                        type="button"
-                        onClick={() => {
-                          const nextOptions = getEffectiveOptionsForType(type);
-                          const nextAct = nextOptions[0];
-                          setActivityType(type);
-                          setActivityName(nextAct);
-                          setDurationInput(
-                            String(getDefaultDurationMinutes(type, nextAct, activityCatalog))
-                          );
-                          setQuickCreatedNotice(null);
-                        }}
-                        className={`py-2 px-2.5 text-xs font-semibold rounded-xl border text-center transition whitespace-nowrap cursor-pointer ${
-                          isSelected
-                            ? 'bg-red-50 border-red-500 text-red-700 font-bold shadow-2xs'
-                            : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'
-                        }`}
-                      >
-                        {ACTIVITY_TYPE_LABELS[type]}
-                      </button>
-                    );
-                  })}
-                </div>
+            {allowedTrainerSpecialties.length === 0 ? (
+              <div className="p-3 rounded-xl border border-amber-200 bg-amber-50 text-amber-900 space-y-2">
+                <p className="font-semibold text-xs">
+                  {selectedTrainer?.name || 'Este entrenador'} aún no tiene especialidades registradas en su perfil.
+                </p>
+                {onEditTrainerSpecialties && selectedTrainer && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onEditTrainerSpecialties(selectedTrainer);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    Registrar especialidades ahora
+                  </button>
+                )}
               </div>
-
-              {/* Direct quick-select from selected trainer's specialties in Firestore */}
-              {trainerDirectSpecialties.length > 0 && (
-                <div className="space-y-1.5">
-                  <span className="block text-[11px] font-semibold text-slate-600">
-                    Especialidades y disciplinas de {selectedTrainer?.name || 'entrenador'} en BD:
-                  </span>
-                  <div className="flex flex-wrap gap-1.5">
-                    {trainerDirectSpecialties.map((spec) => {
-                      const isCurrent =
-                        normalizeDisciplineKey(activityName) === normalizeDisciplineKey(spec);
+            ) : (
+              <div className="space-y-3">
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1.5">
+                    Modalidades habilitadas según sus especialidades
+                  </label>
+                  <div className="grid grid-cols-2 gap-2">
+                    {ALL_ACTIVITY_TYPES.map((type) => {
+                      const isAllowedType = allowedTrainerActivityTypes.includes(type);
+                      const isSelected = activityType === type && isAllowedType;
                       return (
                         <button
-                          key={spec}
+                          key={type}
                           type="button"
-                          onClick={() => applyDisciplineChoice(spec)}
-                          className={`px-2.5 py-1 rounded-lg text-[11px] font-semibold border transition whitespace-nowrap cursor-pointer ${
-                            isCurrent
-                              ? 'bg-red-600 border-red-600 text-white font-bold'
-                              : 'bg-white border-slate-200 text-slate-700 hover:border-red-300 hover:text-red-700'
+                          disabled={!isAllowedType}
+                          title={
+                            isAllowedType
+                              ? `Filtrar especialidades de ${ACTIVITY_TYPE_LABELS[type]}`
+                              : `${selectedTrainer?.name || 'El entrenador'} no cuenta con especialidades en ${ACTIVITY_TYPE_LABELS[type]}`
+                          }
+                          onClick={() => {
+                            if (!isAllowedType) return;
+                            const matchingSpec = allowedTrainerSpecialties.find(
+                              (s) => s.activityType === type
+                            );
+                            if (matchingSpec) {
+                              setActivityType(type);
+                              setActivityName(matchingSpec.name);
+                              setDurationInput(String(matchingSpec.durationMinutes));
+                              setFormValidationError(null);
+                            }
+                          }}
+                          className={`py-2 px-2.5 text-xs font-semibold rounded-xl border text-center transition whitespace-nowrap ${
+                            !isAllowedType
+                              ? 'bg-slate-100 border-slate-200 text-slate-400 cursor-not-allowed opacity-60'
+                              : isSelected
+                              ? 'bg-red-50 border-red-500 text-red-700 font-bold shadow-2xs cursor-pointer'
+                              : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100 cursor-pointer'
                           }`}
                         >
-                          {spec}
+                          {ACTIVITY_TYPE_LABELS[type]}
                         </button>
                       );
                     })}
                   </div>
                 </div>
-              )}
 
-              {/* Inline quick-add discipline to Firestore /activity_catalog */}
-              {showQuickCreateDiscipline && onAddCatalogItem && (
-                <div className="p-2.5 rounded-xl bg-white border border-slate-300 space-y-2">
-                  <span className="block text-[11px] font-bold text-slate-800">
-                    Guardar nueva especialidad / disciplina en {ACTIVITY_TYPE_LABELS[activityType]}:
+                {/* Quick selector buttons strictly for this trainer's registered specialties */}
+                <div className="space-y-1.5">
+                  <span className="block text-[11px] font-semibold text-slate-600">
+                    Especialidades en el registro de {selectedTrainer?.name || 'entrenador'} ({allowedTrainerSpecialties.length}):
                   </span>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={newDisciplineName}
-                      onChange={(e) => setNewDisciplineName(e.target.value)}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Enter') {
-                          e.preventDefault();
-                          handleQuickCreateDiscipline();
-                        }
-                      }}
-                      placeholder={`Ej: ${ACTIVITY_TYPE_LABELS[activityType]}: Boxeo Funcional, Tai Chi...`}
-                      className="flex-1 bg-slate-50 border border-slate-300 rounded-lg px-2.5 py-1.5 text-xs text-slate-900 focus:outline-none focus:border-red-500"
-                    />
-                    <button
-                      type="button"
-                      onClick={handleQuickCreateDiscipline}
-                      disabled={cleanDisciplineLabel(newDisciplineName).length < 2}
-                      className="px-3 py-1.5 rounded-lg bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white text-xs font-bold whitespace-nowrap shrink-0 cursor-pointer"
-                    >
-                      Guardar y Asignar
-                    </button>
+                  <div className="flex flex-wrap gap-1.5">
+                    {allowedTrainerSpecialties.map((spec) => {
+                      const isCurrent =
+                        normalizeDisciplineKey(activityName) ===
+                        normalizeDisciplineKey(spec.name);
+                      return (
+                        <button
+                          key={spec.name}
+                          type="button"
+                          onClick={() => applyDisciplineChoice(spec.name)}
+                          className={`px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition whitespace-nowrap shrink-0 cursor-pointer ${
+                            isCurrent
+                              ? 'bg-red-600 border-red-600 text-white font-bold'
+                              : 'bg-white border-slate-200 text-slate-700 hover:border-red-300 hover:text-red-700'
+                          }`}
+                        >
+                          {spec.name}
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
-              )}
 
-              {quickCreatedNotice && (
-                <p className="text-[11px] font-semibold text-emerald-700">
-                  {quickCreatedNotice}
-                </p>
-              )}
-
-              <div>
-                <label className="block font-semibold text-slate-700 mb-1">
-                  Actividad / Especialidad o Disciplina Específica *
-                </label>
-                <select
-                  value={activityName}
-                  onChange={(e) => applyDisciplineChoice(e.target.value)}
-                  className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-red-500"
-                >
-                  {(() => {
-                    const allGroupedNames = [
-                      ...disciplineGroups.modalityCatalogOptions,
-                      ...disciplineGroups.selectedTrainerSpecialties,
-                      ...disciplineGroups.otherTrainerSpecialties,
-                      ...disciplineGroups.otherCatalogByType.flatMap((g) => g.items),
-                    ];
-                    const hasExactMatch = allGroupedNames.includes(activityName);
-
-                    return (
-                      <>
-                        {!hasExactMatch && activityName && (
-                          <option value={activityName}>{activityName}</option>
-                        )}
-
-                        <optgroup label={`Catálogo — ${ACTIVITY_TYPE_LABELS[activityType]}`}>
-                          {disciplineGroups.modalityCatalogOptions.map((act) => (
-                            <option key={`mod_${act}`} value={act}>
-                              {act}
-                            </option>
-                          ))}
-                        </optgroup>
-
-                        {disciplineGroups.selectedTrainerSpecialties.length > 0 && (
-                          <optgroup
-                            label={`Especialidades de ${selectedTrainer?.name || 'Entrenador'}`}
-                          >
-                            {disciplineGroups.selectedTrainerSpecialties.map((spec) => (
-                              <option key={`tr_${spec}`} value={spec}>
-                                {spec}
-                              </option>
-                            ))}
-                          </optgroup>
-                        )}
-
-                        {disciplineGroups.otherTrainerSpecialties.length > 0 && (
-                          <optgroup label="Especialidades y Disciplinas en Entrenadores (BD)">
-                            {disciplineGroups.otherTrainerSpecialties.map((spec) => (
-                              <option key={`dbtr_${spec}`} value={spec}>
-                                {spec}
-                              </option>
-                            ))}
-                          </optgroup>
-                        )}
-
-                        {disciplineGroups.otherCatalogByType.map((group) => (
-                          <optgroup key={group.type} label={`Catálogo — ${group.label}`}>
-                            {group.items.map((act) => (
-                              <option key={`other_${group.type}_${act}`} value={act}>
-                                {act}
-                              </option>
-                            ))}
-                          </optgroup>
-                        ))}
-                      </>
-                    );
-                  })()}
-                </select>
-                <p className="text-[10px] text-slate-500 mt-1">
-                  Incluye todas las actividades del catálogo y todas las especialidades/disciplinas añadidas a entrenadores en Firestore.
-                </p>
+                <div>
+                  <label className="block font-semibold text-slate-700 mb-1">
+                    Actividad / Especialidad Asignada (exclusivo del perfil del entrenador) *
+                  </label>
+                  <select
+                    value={activityName}
+                    onChange={(e) => applyDisciplineChoice(e.target.value)}
+                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-red-500"
+                  >
+                    {allowedTrainerSpecialties.map((spec) => (
+                      <option key={spec.name} value={spec.name}>
+                        {spec.name} · {spec.modalityLabel}
+                      </option>
+                    ))}
+                  </select>
+                  <p className="text-[10px] text-slate-500 mt-1">
+                    Las asignaciones están limitadas únicamente a las especialidades dadas de alta en el registro de {selectedTrainer?.name || 'este entrenador'}.
+                  </p>
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           {/* Area & Expected attendees */}
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div>
               <label className="block font-semibold text-slate-700 mb-1">
-                Salón / Piso / Área Designada *
+                {isVirtual ? 'Sala / Canal o Referencia Virtual *' : 'Salón / Piso / Área Designada *'}
               </label>
               <input
                 type="text"
                 required
                 value={locationArea}
                 onChange={(e) => setLocationArea(e.target.value)}
-                placeholder="Piso 4 - Sala SUM / Gimnasio"
+                placeholder={
+                  isVirtual
+                    ? `Sala Virtual (${resolvedVirtualPlatform})`
+                    : 'Piso 4 - Sala SUM / Gimnasio'
+                }
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-red-500"
               />
             </div>
@@ -1402,12 +1756,14 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                 onFocus={(e) => e.target.select()}
                 onChange={(e) => {
                   const digits = e.target.value.replace(/[^0-9]/g, '');
-                  setExpectedAttendeesInput(digits === '' ? '' : String(Math.min(999, parseInt(digits, 10))));
+                  setExpectedAttendeesInput(
+                    digits === '' ? '' : String(Math.min(999, parseInt(digits, 10)))
+                  );
                 }}
                 onBlur={() => {
                   if (expectedAttendeesInput.trim() === '') setExpectedAttendeesInput('0');
                 }}
-                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 font-mono font-bold focus:outline-none focus:border-red-500"
+                className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 font-mono tabular-nums font-bold focus:outline-none focus:border-red-500"
               />
             </div>
           </div>
@@ -1421,7 +1777,11 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
               type="text"
               value={notes}
               onChange={(e) => setNotes(e.target.value)}
-              placeholder="Ej: Acceso por puerta lateral de contratistas, llevar bandas elásticas..."
+              placeholder={
+                isVirtual
+                  ? 'Ej: Conectarse 10 min antes para prueba de cámara y audio...'
+                  : 'Ej: Acceso por puerta lateral de contratistas, llevar bandas elásticas...'
+              }
               className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 placeholder-slate-400 focus:outline-none focus:border-red-500"
             />
           </div>
@@ -1463,7 +1823,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                     return next;
                   });
                 }}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold border shrink-0 flex items-center space-x-1.5 transition ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border shrink-0 flex items-center space-x-1.5 transition whitespace-nowrap cursor-pointer ${
                   closed
                     ? 'bg-slate-900 text-white border-slate-900 hover:bg-slate-800'
                     : 'bg-white text-slate-700 border-slate-300 hover:bg-slate-100'
@@ -1514,7 +1874,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                     return next;
                   });
                 }}
-                className={`px-3 py-1.5 rounded-xl text-xs font-bold border shrink-0 flex items-center space-x-1.5 transition ${
+                className={`px-3 py-1.5 rounded-xl text-xs font-bold border shrink-0 flex items-center space-x-1.5 transition whitespace-nowrap cursor-pointer ${
                   nonCompliant
                     ? 'bg-rose-700 text-white border-rose-700 hover:bg-rose-800'
                     : 'bg-white text-rose-700 border-rose-200 hover:bg-rose-50'
@@ -1540,7 +1900,9 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
             <div>
               <span className="font-bold text-slate-800 block">Visibilidad en Planificador</span>
               <span className="text-[11px] text-slate-500">
-                {active ? 'Activa y visible en el planificador del entrenador' : 'Oculta / En pausa'}
+                {active
+                  ? 'Activa y visible en el planificador del entrenador'
+                  : 'Oculta / En pausa'}
               </span>
             </div>
             <label className="relative inline-flex items-center cursor-pointer">
@@ -1554,17 +1916,24 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
             </label>
           </div>
 
+          {formValidationError && (
+            <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 font-semibold text-xs">
+              {formValidationError}
+            </div>
+          )}
+
           <div className="pt-3 border-t border-slate-200 flex items-center justify-end space-x-2">
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold whitespace-nowrap cursor-pointer"
+              className="px-4 py-2 rounded-xl bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold whitespace-nowrap shrink-0 cursor-pointer"
             >
               Cancelar
             </button>
             <button
               type="submit"
-              className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md shadow-red-500/20 whitespace-nowrap cursor-pointer"
+              disabled={allowedTrainerSpecialties.length === 0}
+              className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-bold shadow-md shadow-red-500/20 whitespace-nowrap shrink-0 cursor-pointer"
             >
               {assignment
                 ? 'Guardar Cambios'

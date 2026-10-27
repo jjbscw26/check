@@ -227,6 +227,11 @@ export function buildMonthlyBatchAssignments(params: {
   locationArea: string;
   expectedAttendees: number;
   notes?: string;
+  isVirtual?: boolean;
+  virtualPlatform?: string;
+  virtualMeetingUrl?: string;
+  virtualMeetingId?: string;
+  virtualPasscode?: string;
   active?: boolean;
 }): { created: ClassAssignment[]; skippedDuplicates: number } {
   const {
@@ -242,6 +247,11 @@ export function buildMonthlyBatchAssignments(params: {
     locationArea,
     expectedAttendees,
     notes = '',
+    isVirtual = false,
+    virtualPlatform = '',
+    virtualMeetingUrl = '',
+    virtualMeetingId = '',
+    virtualPasscode = '',
     active = true,
   } = params;
 
@@ -293,9 +303,20 @@ export function buildMonthlyBatchAssignments(params: {
       durationMinutes,
       activityType,
       activityName,
-      locationArea: locationArea.trim() || 'Área Principal',
+      locationArea:
+        locationArea.trim() ||
+        (isVirtual ? `Sala Virtual (${virtualPlatform.trim() || 'En línea'})` : 'Área Principal'),
       expectedAttendees: Math.max(0, Math.round(expectedAttendees) || 0),
       notes: notes.trim(),
+      ...(isVirtual
+        ? {
+            isVirtual: true,
+            virtualPlatform: virtualPlatform.trim() || 'Google Meet',
+            virtualMeetingUrl: virtualMeetingUrl.trim(),
+            ...(virtualMeetingId.trim() ? { virtualMeetingId: virtualMeetingId.trim() } : {}),
+            ...(virtualPasscode.trim() ? { virtualPasscode: virtualPasscode.trim() } : {}),
+          }
+        : {}),
       active,
       closed: false,
       completedDates: [],
@@ -307,3 +328,4 @@ export function buildMonthlyBatchAssignments(params: {
 
   return { created, skippedDuplicates };
 }
+

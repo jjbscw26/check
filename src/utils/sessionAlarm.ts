@@ -192,7 +192,8 @@ export function getSessionAlarmStatus(
   const isOverdue = isInProgress && remainingSeconds <= 0;
   const isNearEnd = isInProgress && remainingSeconds > 0 && remainingSeconds <= 180;
   const remainingBeforeNonComplianceSeconds = Math.max(0, UNCLOSED_GRACE_SECONDS - overdueSeconds);
-  const hasExceededUnclosedGrace = isInProgress && (nowMs >= autoLockDeadlineMs || overdueSeconds >= UNCLOSED_GRACE_SECONDS);
+  const hasExceededUnclosedGrace =
+    isInProgress && (nowMs >= autoLockDeadlineMs || overdueSeconds >= UNCLOSED_GRACE_SECONDS);
 
   // Deactivate alarm automatically if 60-minute post-end unclosed limit has been reached
   const alarmEnabled = record.alarmEnabled !== false && !hasExceededUnclosedGrace;
@@ -206,7 +207,8 @@ export function getSessionAlarmStatus(
   }
 
   const isSnoozed = Boolean(snoozedUntilMs && nowMs < snoozedUntilMs);
-  const shouldRing = isInProgress && alarmEnabled && isOverdue && !isSnoozed && !hasExceededUnclosedGrace;
+  const shouldRing =
+    isInProgress && alarmEnabled && isOverdue && !isSnoozed && !hasExceededUnclosedGrace;
 
   return {
     plannedDurationMinutes,
@@ -263,24 +265,79 @@ export function formatSecondsClock(totalSeconds: number): string {
 }
 
 // ============================================================================
-// MOBILE-COMPATIBLE ALARM AUDIO ENGINE (iOS Safari + Android Chrome)
+// SLEEP-PROOF MOBILE ALARM ENGINE (iOS Safari + Android Chrome en Reposo)
 // ============================================================================
-// Why mobile alarms often fail in web apps:
-// 1. iOS Safari & Android Chrome block AudioContext / <audio> unless unlocked
-//    synchronously inside a direct user gesture (touchstart / pointerdown / click).
-// 2. On iPhone/iPad, Web Audio API alone obeys the hardware Silent/Ring switch.
-//    Playing a synthesized 16-bit PCM WAV via HTML5 <audio> + setting
-//    navigator.audioSession.type = 'playback' routes sound through the Media
-//    Playback channel so it rings aloud even if the phone's silent switch is on.
-// 3. Phone micro-speakers require rich upper harmonics (880–2600 Hz) at high
-//    normalized amplitude (~0.92) rather than quiet low-gain triangle waves.
+// Why standard web alarms fail when a phone enters sleep/lock mode (`en reposo`):
+// 1. Mobile browsers freeze/throttle JS `setInterval` & `setTimeout` when the
+//    screen turns off (`document.visibilityState === 'hidden'`).
+// 2. Mobile OSes reject new `.play()` calls initiated while the screen is locked.
+// 3. Solution:
+//    - Maintain a persistent HTML5 `<audio>` element (`sentinelAudioEl`) on the
+//      `playback` audio session looping a 2s sub-audible (-84 dBFS, non-zero LSB)
+//      16-bit PCM WAV during an active `en_curso` session.
+//    - Because non-zero PCM audio is continuously playing, iOS CoreAudio and
+//      Android AudioTrack keep the media pipeline + `timeupdate` events alive
+//      even when the phone is locked in the trainer's pocket!
+//    - The hardware audio clock fires `timeupdate` (~4x/sec) in sleep mode: the
+//      exact moment `Date.now() >= targetAlarmMs`, `sentinelAudioEl` swaps in-place
+//      to a 3.2s looping high-clarity alarm WAV at `volume = 1.0`, updates the
+//      lock-screen MediaSession banner, vibrates, and triggers the Service Worker
+//      lock-screen notification (`/alarm-sw.js`).
 
 let sharedAudioContext: AudioContext | null = null;
 let sharedAlarmAudioEl: HTMLAudioElement | null = null;
+let sentinelAudioEl: HTMLAudioElement | null = null;
+
 let cachedAlarmWavDataUri: string | null = null;
+let cachedLoopingAlarmWavDataUri: string | null = null;
+let cachedSubAudibleWavDataUri: string | null = null;
+
 let mobileAudioUnlocked = false;
 let isActivelyRingingNow = false;
 let lastAlarmTimestampMs = 0;
+
+type SentinelMode = 'off' | 'sentinel' | 'ringing';
+let currentSentinelMode: SentinelMode = 'off';
+let sleepSentinelArmed = false;
+let sleepAlarmLocallyMuted = false;
+let lastSwScheduleSignature = '';
+let lastBackgroundNotifiedTargetKey = '';
+
+interface ActiveSleepAlarmTarget {
+  record: AttendanceRecord;
+  targetAlarmMs: number;
+  autoLockDeadlineMs: number;
+  expectedEndTimeFormatted: string;
+  shouldBeActive: boolean;
+  onLockScreenSnooze5m?: () => void;
+  onLockScreenStop?: () => void;
+}
+
+let activeSleepTarget: ActiveSleepAlarmTarget | null = null;
+const sentinelListeners = new Set<(armed: boolean) => void>();
+
+function notifySentinelListeners(): void {
+  const armed = sleepSentinelArmed && currentSentinelMode !== 'off';
+  sentinelListeners.forEach((fn) => {
+    try {
+      fn(armed);
+    } catch {
+      // Ignore listener errors
+    }
+  });
+}
+
+export function isSleepAlarmSentinelArmed(): boolean {
+  return sleepSentinelArmed && currentSentinelMode !== 'off';
+}
+
+export function subscribeSleepSentinelState(listener: (armed: boolean) => void): () => void {
+  sentinelListeners.add(listener);
+  listener(isSleepAlarmSentinelArmed());
+  return () => {
+    sentinelListeners.delete(listener);
+  };
+}
 
 function configureIosPlaybackAudioSession(): void {
   try {
@@ -305,27 +362,12 @@ function encodeBase64FromBytes(bytes: Uint8Array): string {
   return btoa(binary);
 }
 
-/**
- * Generates a high-clarity, loud 16-bit PCM WAV data URI optimized for mobile speakers.
- * Two urgent ascending harmonic bursts + attention double-beep (total ~1.45s).
- */
-function getAlarmWavDataUri(): string {
-  if (cachedAlarmWavDataUri) return cachedAlarmWavDataUri;
-
-  const sampleRate = 16000;
-  const durationSec = 1.45;
-  const numSamples = Math.floor(sampleRate * durationSec);
-  const dataBytes = numSamples * 2;
-  const buffer = new ArrayBuffer(44 + dataBytes);
-  const view = new DataView(buffer);
-
+function writeWavHeader(view: DataView, sampleRate: number, dataBytes: number): void {
   const writeAscii = (offset: number, str: string) => {
     for (let i = 0; i < str.length; i++) {
       view.setUint8(offset + i, str.charCodeAt(i));
     }
   };
-
-  // RIFF / WAVE header
   writeAscii(0, 'RIFF');
   view.setUint32(4, 36 + dataBytes, true);
   writeAscii(8, 'WAVE');
@@ -339,8 +381,13 @@ function getAlarmWavDataUri(): string {
   view.setUint16(34, 16, true); // BitsPerSample
   writeAscii(36, 'data');
   view.setUint32(40, dataBytes, true);
+}
 
-  // Loud smartphone-optimized alarm notes (880Hz - 1760Hz with 2nd & 3rd harmonics)
+function renderAlarmChimeIntoPcm(
+  view: DataView,
+  sampleRate: number,
+  totalSamples: number
+): void {
   const notes = [
     { freq: 987.77, start: 0.0, dur: 0.14 },   // B5
     { freq: 1318.51, start: 0.15, dur: 0.14 }, // E6
@@ -351,36 +398,105 @@ function getAlarmWavDataUri(): string {
     { freq: 1760.0, start: 1.20, dur: 0.22 },  // A6
   ];
 
-  for (let i = 0; i < numSamples; i++) {
+  for (let i = 0; i < totalSamples; i++) {
     const t = i / sampleRate;
     let sampleVal = 0;
 
-    for (let n = 0; n < notes.length; n++) {
-      const note = notes[n];
-      if (t >= note.start && t <= note.start + note.dur) {
-        const localT = t - note.start;
-        // Smooth 8ms attack and 16ms release to prevent speaker clicks
-        const attack = Math.min(1, localT / 0.008);
-        const release = Math.min(1, (note.dur - localT) / 0.016);
-        const env = Math.max(0, Math.min(attack, release));
+    if (t <= 1.48) {
+      for (let n = 0; n < notes.length; n++) {
+        const note = notes[n];
+        if (t >= note.start && t <= note.start + note.dur) {
+          const localT = t - note.start;
+          const attack = Math.min(1, localT / 0.008);
+          const release = Math.min(1, (note.dur - localT) / 0.016);
+          const env = Math.max(0, Math.min(attack, release));
 
-        const w = 2 * Math.PI * note.freq * localT;
-        // Fundamental + 2nd + 3rd harmonic for crisp phone speaker projection
-        const wave =
-          0.62 * Math.sin(w) +
-          0.26 * Math.sin(2 * w) +
-          0.12 * Math.sin(3 * w);
+          const w = 2 * Math.PI * note.freq * localT;
+          const wave =
+            0.62 * Math.sin(w) +
+            0.26 * Math.sin(2 * w) +
+            0.12 * Math.sin(3 * w);
 
-        sampleVal += env * wave * 0.92;
+          sampleVal += env * wave * 0.94;
+        }
       }
+    } else {
+      // Keep non-zero ±2 LSB during inter-burst gap so OS never classifies gap as digital silence
+      const carrier = Math.sin(2 * Math.PI * 30 * t) >= 0 ? 2 / 32767 : -2 / 32767;
+      sampleVal = carrier;
     }
 
     const clamped = Math.max(-1, Math.min(1, sampleVal));
     view.setInt16(44 + i * 2, Math.round(clamped * 32767), true);
   }
+}
+
+/**
+ * Single 1.45s alarm burst WAV for manual button tests / foreground chimes.
+ */
+function getAlarmWavDataUri(): string {
+  if (cachedAlarmWavDataUri) return cachedAlarmWavDataUri;
+
+  const sampleRate = 16000;
+  const durationSec = 1.45;
+  const numSamples = Math.floor(sampleRate * durationSec);
+  const dataBytes = numSamples * 2;
+  const buffer = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buffer);
+
+  writeWavHeader(view, sampleRate, dataBytes);
+  renderAlarmChimeIntoPcm(view, sampleRate, numSamples);
 
   cachedAlarmWavDataUri = `data:audio/wav;base64,${encodeBase64FromBytes(new Uint8Array(buffer))}`;
   return cachedAlarmWavDataUri;
+}
+
+/**
+ * Continuous 3.2s looping alarm WAV (1.45s loud harmonic burst + 1.75s cadence gap)
+ * so HTML5 `<audio loop>` rings repeatedly in sleep mode without needing JS setInterval.
+ */
+function getLoopingAlarmWavDataUri(): string {
+  if (cachedLoopingAlarmWavDataUri) return cachedLoopingAlarmWavDataUri;
+
+  const sampleRate = 16000;
+  const durationSec = 3.2;
+  const numSamples = Math.floor(sampleRate * durationSec);
+  const dataBytes = numSamples * 2;
+  const buffer = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buffer);
+
+  writeWavHeader(view, sampleRate, dataBytes);
+  renderAlarmChimeIntoPcm(view, sampleRate, numSamples);
+
+  cachedLoopingAlarmWavDataUri = `data:audio/wav;base64,${encodeBase64FromBytes(new Uint8Array(buffer))}`;
+  return cachedLoopingAlarmWavDataUri;
+}
+
+/**
+ * 2.0s sub-audible (-84 dBFS, ±2 LSB at 25 Hz) PCM WAV keep-alive stream.
+ * Completely imperceptible to human ears, yet prevents iOS Safari & Android Chrome
+ * from suspending the media session when the screen is turned off (`en reposo`).
+ */
+function getSubAudibleSentinelWavDataUri(): string {
+  if (cachedSubAudibleWavDataUri) return cachedSubAudibleWavDataUri;
+
+  const sampleRate = 8000;
+  const durationSec = 2.0;
+  const numSamples = Math.floor(sampleRate * durationSec);
+  const dataBytes = numSamples * 2;
+  const buffer = new ArrayBuffer(44 + dataBytes);
+  const view = new DataView(buffer);
+
+  writeWavHeader(view, sampleRate, dataBytes);
+
+  for (let i = 0; i < numSamples; i++) {
+    const t = i / sampleRate;
+    const lsbSample = Math.sin(2 * Math.PI * 25 * t) >= 0 ? 2 : -2;
+    view.setInt16(44 + i * 2, lsbSample, true);
+  }
+
+  cachedSubAudibleWavDataUri = `data:audio/wav;base64,${encodeBase64FromBytes(new Uint8Array(buffer))}`;
+  return cachedSubAudibleWavDataUri;
 }
 
 function getSharedAlarmAudioElement(): HTMLAudioElement | null {
@@ -394,6 +510,319 @@ function getSharedAlarmAudioElement(): HTMLAudioElement | null {
     sharedAlarmAudioEl = audio;
   }
   return sharedAlarmAudioEl;
+}
+
+function updateLockScreenMediaSession(mode: SentinelMode): void {
+  if (typeof navigator === 'undefined' || !('mediaSession' in navigator) || !navigator.mediaSession) {
+    return;
+  }
+  try {
+    if (mode === 'off' || !activeSleepTarget) {
+      navigator.mediaSession.playbackState = 'none';
+      return;
+    }
+
+    const rec = activeSleepTarget.record;
+    if (typeof MediaMetadata !== 'undefined') {
+      if (mode === 'ringing') {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: '⚠️ ¡Sesión Finalizada! Registra tu Salida',
+          artist: `${rec.companyName} — ${rec.sedeName}`,
+          album: `BSCW Check · ${rec.activityName}`,
+        });
+      } else {
+        navigator.mediaSession.metadata = new MediaMetadata({
+          title: `Sesión en Curso · Fin ${activeSleepTarget.expectedEndTimeFormatted} hrs`,
+          artist: `${rec.companyName} — ${rec.sedeName}`,
+          album: 'BSCW Check · Alarma en Reposo Activa',
+        });
+      }
+    }
+
+    navigator.mediaSession.playbackState = 'playing';
+
+    navigator.mediaSession.setActionHandler('pause', () => {
+      if (currentSentinelMode === 'ringing') {
+        if (activeSleepTarget?.onLockScreenSnooze5m) {
+          activeSleepTarget.onLockScreenSnooze5m();
+        } else {
+          setSleepAlarmLocalMute(true);
+        }
+      }
+    });
+
+    navigator.mediaSession.setActionHandler('stop', () => {
+      if (currentSentinelMode === 'ringing') {
+        if (activeSleepTarget?.onLockScreenStop) {
+          activeSleepTarget.onLockScreenStop();
+        } else {
+          setSleepAlarmLocalMute(true);
+        }
+      }
+    });
+  } catch {
+    // Ignore unsupported MediaSession handlers
+  }
+}
+
+function evaluateSleepSentinelTick(): void {
+  if (!activeSleepTarget || !activeSleepTarget.shouldBeActive) {
+    if (currentSentinelMode !== 'off') {
+      stopSentinelCompletely();
+    }
+    return;
+  }
+
+  const now = Date.now();
+
+  // Hard 60-minute post-end unclosed limit: stop ringing automatically
+  if (now >= activeSleepTarget.autoLockDeadlineMs) {
+    stopSentinelCompletely();
+    cancelServiceWorkerAlarm();
+    return;
+  }
+
+  const shouldRingNow = now >= activeSleepTarget.targetAlarmMs && !sleepAlarmLocallyMuted;
+
+  if (shouldRingNow && currentSentinelMode !== 'ringing') {
+    switchSentinelToRinging();
+  } else if (!shouldRingNow && currentSentinelMode === 'ringing') {
+    // Snoozed or locally muted while session is still en_curso -> drop back to silent keep-alive sentinel
+    switchSentinelToSilentKeepAlive();
+  }
+}
+
+function getOrCreateSentinelAudioElement(): HTMLAudioElement | null {
+  if (typeof window === 'undefined' || typeof Audio === 'undefined') return null;
+  if (!sentinelAudioEl) {
+    const el = new Audio(getSubAudibleSentinelWavDataUri());
+    el.preload = 'auto';
+    el.loop = true;
+    el.volume = 0.02;
+    el.setAttribute('playsinline', 'true');
+    el.setAttribute('webkit-playsinline', 'true');
+
+    el.addEventListener('timeupdate', () => {
+      evaluateSleepSentinelTick();
+    });
+
+    el.addEventListener('pause', () => {
+      // If mobile OS paused unexpectedly while session still needs sentinel (e.g., transient call interruption), try resuming
+      if (activeSleepTarget?.shouldBeActive && sleepSentinelArmed) {
+        setTimeout(() => {
+          if (activeSleepTarget?.shouldBeActive && sentinelAudioEl && sentinelAudioEl.paused) {
+            sentinelAudioEl.play().catch(() => {
+              sleepSentinelArmed = false;
+              notifySentinelListeners();
+            });
+          }
+        }, 350);
+      }
+    });
+
+    sentinelAudioEl = el;
+  }
+  return sentinelAudioEl;
+}
+
+function switchSentinelToSilentKeepAlive(): void {
+  const el = getOrCreateSentinelAudioElement();
+  if (!el) return;
+
+  configureIosPlaybackAudioSession();
+  const silentSrc = getSubAudibleSentinelWavDataUri();
+  if (el.src !== silentSrc) {
+    el.src = silentSrc;
+  }
+  el.loop = true;
+  el.muted = false;
+  el.volume = 0.02;
+
+  const p = el.play();
+  if (p && typeof p.then === 'function') {
+    p.then(() => {
+      currentSentinelMode = 'sentinel';
+      sleepSentinelArmed = true;
+      mobileAudioUnlocked = true;
+      updateLockScreenMediaSession('sentinel');
+      notifySentinelListeners();
+    }).catch(() => {
+      sleepSentinelArmed = false;
+      notifySentinelListeners();
+    });
+  }
+}
+
+function switchSentinelToRinging(): void {
+  const el = getOrCreateSentinelAudioElement();
+  if (!el) return;
+
+  configureIosPlaybackAudioSession();
+  const loudLoopSrc = getLoopingAlarmWavDataUri();
+  if (el.src !== loudLoopSrc) {
+    el.src = loudLoopSrc;
+  }
+  el.loop = true;
+  el.muted = false;
+  el.volume = 1.0;
+
+  currentSentinelMode = 'ringing';
+  isActivelyRingingNow = true;
+  lastAlarmTimestampMs = Date.now();
+
+  try {
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      navigator.vibrate([500, 150, 500, 150, 800, 200, 800]);
+    }
+  } catch {
+    // Ignore vibration errors
+  }
+
+  if (activeSleepTarget) {
+    const notifKey = `${activeSleepTarget.record.id}:${activeSleepTarget.targetAlarmMs}`;
+    if (lastBackgroundNotifiedTargetKey !== notifKey) {
+      lastBackgroundNotifiedTargetKey = notifKey;
+      triggerBrowserCheckoutNotification(activeSleepTarget.record);
+    }
+  }
+
+  updateLockScreenMediaSession('ringing');
+
+  const p = el.play();
+  if (p && typeof p.then === 'function') {
+    p.then(() => {
+      sleepSentinelArmed = true;
+      mobileAudioUnlocked = true;
+      notifySentinelListeners();
+    }).catch(() => {
+      sleepSentinelArmed = false;
+      notifySentinelListeners();
+      void playWebAudioFallback();
+    });
+  }
+}
+
+function stopSentinelCompletely(): void {
+  currentSentinelMode = 'off';
+  sleepSentinelArmed = false;
+  isActivelyRingingNow = false;
+  if (sentinelAudioEl) {
+    try {
+      sentinelAudioEl.pause();
+      sentinelAudioEl.currentTime = 0;
+    } catch {
+      // Ignore
+    }
+  }
+  updateLockScreenMediaSession('off');
+  notifySentinelListeners();
+}
+
+export function setSleepAlarmLocalMute(muted: boolean): void {
+  sleepAlarmLocallyMuted = muted;
+  if (muted) {
+    if (sharedAlarmAudioEl) {
+      try {
+        sharedAlarmAudioEl.pause();
+        sharedAlarmAudioEl.currentTime = 0;
+      } catch {
+        // Ignore
+      }
+    }
+    if (currentSentinelMode === 'ringing' && activeSleepTarget?.shouldBeActive) {
+      switchSentinelToSilentKeepAlive();
+    }
+  } else {
+    evaluateSleepSentinelTick();
+  }
+}
+
+/**
+ * Arms the sleep-mode sentinel immediately inside a user tap/click gesture.
+ */
+export function armSleepProofSentinelFromGesture(): void {
+  unlockMobileAlarmAudio();
+  if (!activeSleepTarget || !activeSleepTarget.shouldBeActive) return;
+
+  const now = Date.now();
+  if (now >= activeSleepTarget.autoLockDeadlineMs) return;
+
+  if (now >= activeSleepTarget.targetAlarmMs && !sleepAlarmLocallyMuted) {
+    switchSentinelToRinging();
+  } else {
+    switchSentinelToSilentKeepAlive();
+  }
+}
+
+/**
+ * Synchronizes the active `en_curso` session with both the sub-audible HTML5 media
+ * sentinel (for loud audio in lock/sleep mode) and the Service Worker notification scheduler.
+ */
+export function syncSleepProofSessionAlarm(params: {
+  record: AttendanceRecord | null | undefined;
+  alarmStatus: SessionAlarmStatus | null | undefined;
+  onLockScreenSnooze5m?: () => void;
+  onLockScreenStop?: () => void;
+}): void {
+  const { record, alarmStatus, onLockScreenSnooze5m, onLockScreenStop } = params;
+
+  const shouldBeActive = Boolean(
+    record &&
+      alarmStatus &&
+      record.status === 'en_curso' &&
+      !record.checkOutTime &&
+      alarmStatus.alarmEnabled &&
+      !alarmStatus.hasExceededUnclosedGrace
+  );
+
+  if (!shouldBeActive || !record || !alarmStatus) {
+    activeSleepTarget = null;
+    sleepAlarmLocallyMuted = false;
+    lastSwScheduleSignature = '';
+    stopSentinelCompletely();
+    cancelServiceWorkerAlarm();
+    return;
+  }
+
+  const effectiveTargetMs =
+    alarmStatus.snoozedUntilMs && alarmStatus.snoozedUntilMs > alarmStatus.expectedEndMs
+      ? alarmStatus.snoozedUntilMs
+      : alarmStatus.expectedEndMs;
+
+  // Reset local mute whenever the trainer changes duration or snoozes to a new future target
+  if (activeSleepTarget && activeSleepTarget.targetAlarmMs !== effectiveTargetMs) {
+    sleepAlarmLocallyMuted = false;
+  }
+
+  activeSleepTarget = {
+    record,
+    targetAlarmMs: effectiveTargetMs,
+    autoLockDeadlineMs: alarmStatus.autoLockDeadlineMs,
+    expectedEndTimeFormatted: alarmStatus.expectedEndTimeFormatted,
+    shouldBeActive: true,
+    onLockScreenSnooze5m,
+    onLockScreenStop,
+  };
+
+  // Schedule backup notification in Service Worker
+  const swSig = `${record.id}|${effectiveTargetMs}|${alarmStatus.autoLockDeadlineMs}`;
+  if (swSig !== lastSwScheduleSignature) {
+    lastSwScheduleSignature = swSig;
+    scheduleServiceWorkerAlarm(record, effectiveTargetMs, alarmStatus);
+  }
+
+  const now = Date.now();
+  if (now >= effectiveTargetMs && !sleepAlarmLocallyMuted) {
+    if (currentSentinelMode !== 'ringing') {
+      switchSentinelToRinging();
+    }
+  } else {
+    if (currentSentinelMode === 'ringing' || currentSentinelMode === 'off') {
+      switchSentinelToSilentKeepAlive();
+    } else {
+      updateLockScreenMediaSession('sentinel');
+    }
+  }
 }
 
 function getAudioContext(): AudioContext | null {
@@ -410,21 +839,20 @@ function getAudioContext(): AudioContext | null {
 }
 
 export function isMobileAlarmAudioUnlocked(): boolean {
-  if (mobileAudioUnlocked) return true;
+  if (mobileAudioUnlocked || isSleepAlarmSentinelArmed()) return true;
   if (sharedAudioContext && sharedAudioContext.state === 'running') return true;
   return false;
 }
 
 /**
- * Unlocks both HTML5 <audio> and Web Audio API synchronously inside any user tap/click.
- * Safe to call silently on touchstart/pointerdown/click anywhere in the app.
+ * Unlocks HTML5 <audio>, the Sleep-Mode Sentinel, and Web Audio API synchronously inside any user tap/click.
  */
 export function unlockMobileAlarmAudio(): void {
   if (typeof window === 'undefined') return;
 
   configureIosPlaybackAudioSession();
 
-  // 1. Unlock Web Audio API (including iOS 'interrupted' state) with a 1-sample silent buffer
+  // 1. Unlock Web Audio API
   try {
     const ctx = getAudioContext();
     if (ctx) {
@@ -442,7 +870,7 @@ export function unlockMobileAlarmAudio(): void {
     // Ignore Web Audio unlock errors
   }
 
-  // 2. Prime & unlock the persistent HTML5 <audio> element silently if not currently ringing
+  // 2. Prime foreground HTML5 <audio> element silently if not currently ringing
   if (!mobileAudioUnlocked && !isActivelyRingingNow) {
     try {
       const audioEl = getSharedAlarmAudioElement();
@@ -467,6 +895,21 @@ export function unlockMobileAlarmAudio(): void {
       // Ignore silent priming errors
     }
   }
+
+  // 3. Also prime or arm the sleep-mode sentinel element on user gesture
+  try {
+    const sentinel = getOrCreateSentinelAudioElement();
+    if (sentinel && activeSleepTarget?.shouldBeActive && currentSentinelMode === 'off') {
+      const now = Date.now();
+      if (now >= activeSleepTarget.targetAlarmMs && !sleepAlarmLocallyMuted) {
+        switchSentinelToRinging();
+      } else {
+        switchSentinelToSilentKeepAlive();
+      }
+    }
+  } catch {
+    // Ignore sentinel priming errors
+  }
 }
 
 function scheduleWebAudioOscillators(ctx: AudioContext): void {
@@ -485,7 +928,6 @@ function scheduleWebAudioOscillators(ctx: AudioContext): void {
     const osc = ctx.createOscillator();
     const gain = ctx.createGain();
 
-    // Square/sawtooth blend via square wave cuts through phone speakers clearly
     osc.type = 'square';
     osc.frequency.setValueAtTime(freq, now + offset);
 
@@ -525,13 +967,34 @@ async function playWebAudioFallback(): Promise<boolean> {
 
 /**
  * Plays a loud, mobile-compatible corporate alarm chime + vibration.
- * Returns `true` if audio playback succeeded, or `false` if the mobile browser
- * blocked playback (e.g., page reloaded without any touch gesture yet).
+ * If the sleep-mode sentinel is already actively looping the alarm WAV, avoids
+ * overlapping duplicate audio streams unless `forceBurst` / `fromUserGesture` is requested.
  */
 export async function playAlarmPattern(options?: {
   fromUserGesture?: boolean;
   skipIfPlayedWithinMs?: number;
 }): Promise<boolean> {
+  configureIosPlaybackAudioSession();
+
+  // Trigger mobile vibration on Android devices
+  try {
+    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
+      navigator.vibrate([400, 140, 400, 140, 650]);
+    }
+  } catch {
+    // Ignore vibration errors on iOS / unsupported browsers
+  }
+
+  // If the sleep-mode sentinel is already playing the continuous loud alarm loop, keep it going cleanly
+  if (
+    currentSentinelMode === 'ringing' &&
+    sentinelAudioEl &&
+    !sentinelAudioEl.paused &&
+    !options?.fromUserGesture
+  ) {
+    return true;
+  }
+
   const nowMs = Date.now();
   if (
     options?.skipIfPlayedWithinMs &&
@@ -541,19 +1004,8 @@ export async function playAlarmPattern(options?: {
   }
   lastAlarmTimestampMs = nowMs;
 
-  configureIosPlaybackAudioSession();
-
-  // Trigger mobile vibration on Android devices
-  try {
-    if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
-      navigator.vibrate([320, 120, 320, 120, 500]);
-    }
-  } catch {
-    // Ignore vibration errors on iOS / unsupported browsers
-  }
-
-  // Also ensure Web Audio context is resumed if inside a user gesture
   if (options?.fromUserGesture) {
+    setSleepAlarmLocalMute(false);
     try {
       const ctx = getAudioContext();
       if (ctx && String(ctx.state) !== 'running') {
@@ -562,14 +1014,20 @@ export async function playAlarmPattern(options?: {
     } catch {
       // Ignore
     }
+    // If real session is overdue, arm the continuous sleep-proof ringing stream too
+    if (activeSleepTarget?.shouldBeActive && nowMs >= activeSleepTarget.targetAlarmMs) {
+      switchSentinelToRinging();
+      return true;
+    }
   }
 
   isActivelyRingingNow = true;
   setTimeout(() => {
-    isActivelyRingingNow = false;
+    if (currentSentinelMode !== 'ringing') {
+      isActivelyRingingNow = false;
+    }
   }, 1500);
 
-  // Primary: HTML5 <audio> with 16-bit WAV (works on Android Media stream & bypasses iOS silent switch)
   try {
     const audioEl = getSharedAlarmAudioElement();
     if (audioEl) {
@@ -581,10 +1039,9 @@ export async function playAlarmPattern(options?: {
       return true;
     }
   } catch {
-    // Fallback to Web Audio API if HTML5 <audio>.play() rejected
+    // Fallback to Web Audio API
   }
 
-  // Secondary fallback: Web Audio API
   return playWebAudioFallback();
 }
 
@@ -595,12 +1052,99 @@ export function stopAlarmAudioImmediately(): void {
       sharedAlarmAudioEl.pause();
       sharedAlarmAudioEl.currentTime = 0;
     }
+    if (currentSentinelMode === 'ringing') {
+      if (activeSleepTarget?.shouldBeActive) {
+        sleepAlarmLocallyMuted = true;
+        switchSentinelToSilentKeepAlive();
+      } else {
+        stopSentinelCompletely();
+      }
+    }
     if (typeof navigator !== 'undefined' && typeof navigator.vibrate === 'function') {
       navigator.vibrate(0);
     }
   } catch {
     // Ignore
   }
+}
+
+// ============================================================================
+// SERVICE WORKER REGISTRATION & SLEEP-MODE NOTIFICATION SCHEDULER
+// ============================================================================
+let alarmSwRegistrationPromise: Promise<ServiceWorkerRegistration | null> | null = null;
+
+export function registerAlarmServiceWorker(): Promise<ServiceWorkerRegistration | null> {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
+    return Promise.resolve(null);
+  }
+  if (!alarmSwRegistrationPromise) {
+    alarmSwRegistrationPromise = navigator.serviceWorker
+      .register('/alarm-sw.js')
+      .then((reg) => reg)
+      .catch(() => null);
+  }
+  return alarmSwRegistrationPromise;
+}
+
+function postMessageToAlarmSw(payload: Record<string, unknown>): void {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) return;
+  registerAlarmServiceWorker()
+    .then((reg) => {
+      const targetWorker =
+        reg?.active || reg?.waiting || reg?.installing || navigator.serviceWorker.controller;
+      if (targetWorker) {
+        targetWorker.postMessage(payload);
+      }
+    })
+    .catch(() => {});
+}
+
+function scheduleServiceWorkerAlarm(
+  record: AttendanceRecord,
+  targetAlarmMs: number,
+  alarmStatus: SessionAlarmStatus
+): void {
+  postMessageToAlarmSw({
+    type: 'SCHEDULE_SESSION_ALARM',
+    recordId: record.id,
+    targetAlarmMs,
+    autoLockDeadlineMs: alarmStatus.autoLockDeadlineMs,
+    expectedEndTimeFormatted: alarmStatus.expectedEndTimeFormatted,
+    title: '⚠️ BSCW Check: ¡Sesión Finalizada!',
+    body: `La sesión "${record.activityName}" en ${record.companyName} (${record.sedeName}) ha terminado. Registra tu salida ahora.`,
+  });
+}
+
+function cancelServiceWorkerAlarm(): void {
+  postMessageToAlarmSw({
+    type: 'CANCEL_SESSION_ALARM',
+  });
+}
+
+export function subscribeToAlarmServiceWorkerActions(
+  handler: (action: 'checkout' | 'snooze_5m' | 'open' | 'sw_fired', recordId: string) => void
+): () => void {
+  if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
+    return () => {};
+  }
+
+  const listener = (event: MessageEvent) => {
+    const data = event.data;
+    if (!data || typeof data !== 'object') return;
+    if (data.type === 'ALARM_NOTIFICATION_ACTION') {
+      const act =
+        data.action === 'checkout' || data.action === 'snooze_5m' ? data.action : 'open';
+      handler(act, String(data.recordId || ''));
+    } else if (data.type === 'SW_ALARM_FIRED') {
+      evaluateSleepSentinelTick();
+      handler('sw_fired', String(data.recordId || ''));
+    }
+  };
+
+  navigator.serviceWorker.addEventListener('message', listener);
+  return () => {
+    navigator.serviceWorker.removeEventListener('message', listener);
+  };
 }
 
 // ============================================================================
@@ -647,7 +1191,9 @@ export async function releaseSessionWakeLock(): Promise<void> {
 // ============================================================================
 // MOBILE & DESKTOP NOTIFICATIONS
 // ============================================================================
-export async function requestAlarmNotificationPermission(): Promise<NotificationPermission | 'unsupported'> {
+export async function requestAlarmNotificationPermission(): Promise<
+  NotificationPermission | 'unsupported'
+> {
   if (typeof window === 'undefined' || !('Notification' in window)) {
     return 'unsupported';
   }
@@ -665,15 +1211,27 @@ export function triggerBrowserCheckoutNotification(record: AttendanceRecord): vo
   if (typeof window === 'undefined' || !('Notification' in window)) return;
   if (Notification.permission !== 'granted') return;
 
-  const title = '⚠️ BSCW Check: Salida Pendiente de Registrar';
-  const options: NotificationOptions & { vibrate?: number[]; renotify?: boolean } = {
-    body: `La sesión "${record.activityName}" en ${record.companyName} (${record.sedeName}) ha finalizado. Por favor registra tu salida.`,
+  const title = '⚠️ BSCW Check: ¡Sesión Finalizada! Salida Pendiente';
+  const body = `La sesión "${record.activityName}" en ${record.companyName} (${record.sedeName}) ha finalizado. Por favor registra tu salida.`;
+  const options: NotificationOptions & {
+    vibrate?: number[];
+    renotify?: boolean;
+    requireInteraction?: boolean;
+  } = {
+    body,
     tag: `bscw-checkout-alarm-${record.id}`,
-    vibrate: [320, 120, 320, 120, 500],
+    vibrate: [500, 150, 500, 150, 800, 200, 800],
     renotify: true,
+    requireInteraction: true,
   };
 
-  // Android Chrome requires ServiceWorkerRegistration.showNotification() instead of new Notification()
+  postMessageToAlarmSw({
+    type: 'SHOW_ALARM_NOTIFICATION',
+    recordId: record.id,
+    title,
+    body,
+  });
+
   if ('serviceWorker' in navigator && navigator.serviceWorker) {
     navigator.serviceWorker
       .getRegistration()
@@ -790,4 +1348,3 @@ export function triggerAdminSessionStartNotification(record: AttendanceRecord): 
     // Ignore notification restrictions
   }
 }
-

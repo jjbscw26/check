@@ -399,3 +399,84 @@ export function resolveDisciplineSelection(
     durationMinutes: ACTIVITY_TYPE_DEFAULT_MINUTES[inferredType],
   };
 }
+
+export interface TrainerSpecialtyOption {
+  name: string;
+  activityType: ActivityType;
+  durationMinutes: number;
+  modalityLabel: string;
+}
+
+function canonicalSpecialtyComparisonKey(raw: unknown): string {
+  const key = normalizeDisciplineKey(stripModalityPrefix(raw));
+  if (key === 'pausa activa') return 'pausas activas';
+  return key;
+}
+
+export function getAllowedSpecialtiesForTrainer(
+  trainer: Pick<Trainer, 'specialties'> | null | undefined,
+  activityCatalog: ActivityCatalogItem[]
+): TrainerSpecialtyOption[] {
+  if (!trainer || !Array.isArray(trainer.specialties)) return [];
+
+  const seen = new Set<string>();
+  const options: TrainerSpecialtyOption[] = [];
+
+  for (const rawSpec of trainer.specialties) {
+    const cleaned = cleanDisciplineLabel(rawSpec);
+    if (cleaned.length < 2) continue;
+    const key = normalizeDisciplineKey(cleaned);
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+
+    const catalogMatch = resolveCatalogMatchForDiscipline(cleaned, activityCatalog);
+    const activityType = catalogMatch
+      ? normalizeActivityType(catalogMatch.activityType)
+      : inferActivityTypeFromDiscipline(cleaned, 'clase_fitness');
+    const durationMinutes =
+      catalogMatch && catalogMatch.defaultDurationMinutes > 0
+        ? catalogMatch.defaultDurationMinutes
+        : ACTIVITY_TYPE_DEFAULT_MINUTES[activityType];
+
+    options.push({
+      name: cleaned,
+      activityType,
+      durationMinutes,
+      modalityLabel: ACTIVITY_TYPE_LABELS[activityType],
+    });
+  }
+
+  return options;
+}
+
+export function getAllowedActivityTypesForTrainer(
+  trainer: Pick<Trainer, 'specialties'> | null | undefined,
+  activityCatalog: ActivityCatalogItem[]
+): ActivityType[] {
+  const allowedOptions = getAllowedSpecialtiesForTrainer(trainer, activityCatalog);
+  const typeSet = new Set<ActivityType>(allowedOptions.map((opt) => opt.activityType));
+  return ALL_ACTIVITY_TYPES.filter((t) => typeSet.has(t));
+}
+
+export function isActivityAllowedForTrainer(
+  trainer: Pick<Trainer, 'specialties'> | null | undefined,
+  chosenActivityName: string
+): boolean {
+  if (!trainer || !Array.isArray(trainer.specialties) || trainer.specialties.length === 0) {
+    return false;
+  }
+  const targetFull = normalizeDisciplineKey(chosenActivityName);
+  const targetCanonical = canonicalSpecialtyComparisonKey(chosenActivityName);
+  if (!targetFull) return false;
+
+  return trainer.specialties.some((rawSpec) => {
+    const specFull = normalizeDisciplineKey(rawSpec);
+    const specCanonical = canonicalSpecialtyComparisonKey(rawSpec);
+    if (!specFull) return false;
+    return (
+      specFull === targetFull ||
+      (targetCanonical.length >= 2 && specCanonical === targetCanonical)
+    );
+  });
+}
+

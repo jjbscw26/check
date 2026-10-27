@@ -21,6 +21,8 @@ import {
   exportEvidenceRecordsToPdf,
 } from '../utils/evidenceExport';
 import { EvidencePhotoLightbox } from './EvidencePhotoLightbox';
+import { VirtualClassQuickShare } from './VirtualClassShareCard';
+import { Video } from 'lucide-react';
 
 interface RecordDetailModalProps {
   record: AttendanceRecord;
@@ -284,6 +286,14 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
                     {record.attendeesCount} colaboradores
                   </span>
                 </p>
+                {record.isVirtual && (
+                  <p>
+                    <span className="text-slate-500 font-medium">Impartición:</span>{' '}
+                    <span className="font-bold text-indigo-700">
+                      Clase Virtual · {record.virtualPlatform || 'En línea'}
+                    </span>
+                  </p>
+                )}
               </div>
 
               {/* Right Column: Trainer & Timestamps */}
@@ -337,6 +347,33 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
               </div>
             </div>
 
+            {/* Virtual Class Platform Details & Share Card */}
+            {record.isVirtual && record.virtualMeetingUrl && (
+              <div className="bg-indigo-50/50 p-4 rounded-2xl border border-indigo-200 text-xs space-y-2.5 print:bg-white print:border-slate-200">
+                <h4 className="font-bold text-slate-900 flex items-center gap-1.5">
+                  <Video className="w-4 h-4 text-indigo-600 shrink-0" />
+                  <span>Datos de Plataforma Virtual y Link de Acceso</span>
+                </h4>
+                <VirtualClassQuickShare
+                  payload={{
+                    activityName: record.activityName,
+                    activityTypeLabel:
+                      ACTIVITY_TYPE_LABELS[normalizeActivityType(record.activityType)],
+                    companyName: record.companyName,
+                    sedeName: record.sedeName,
+                    trainerName: record.trainerName,
+                    scheduleLabel: `Fecha ${record.date}`,
+                    time: record.scheduledTime,
+                    durationMinutes: record.durationMinutes || 45,
+                    virtualPlatform: record.virtualPlatform || 'Sala Virtual',
+                    virtualMeetingUrl: record.virtualMeetingUrl,
+                    virtualMeetingId: record.virtualMeetingId,
+                    virtualPasscode: record.virtualPasscode,
+                  }}
+                />
+              </div>
+            )}
+
             {/* GPS Verification Section */}
             <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 text-xs space-y-2">
               <h4 className="font-bold text-slate-900 flex items-center">
@@ -354,10 +391,12 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
                 </div>
                 <div className="p-2.5 bg-white rounded-xl border border-slate-200">
                   <span className="text-slate-500 block text-[10px] font-sans">
-                    Distancia al Punto Sede
+                    {record.isVirtual ? 'Modalidad de Impartición' : 'Distancia al Punto Sede'}
                   </span>
-                  <span className="text-red-600 font-black">
-                    {formatDistance(record.checkInGps.distanceToSedeMeters)}
+                  <span className={record.isVirtual ? 'text-indigo-700 font-black' : 'text-red-600 font-black'}>
+                    {record.isVirtual
+                      ? `Virtual (${record.virtualPlatform || 'En línea'})`
+                      : formatDistance(record.checkInGps.distanceToSedeMeters)}
                   </span>
                 </div>
                 <div className="p-2.5 bg-white rounded-xl border border-slate-200">
@@ -366,12 +405,16 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
                   </span>
                   <span
                     className={
-                      record.checkInGps.isWithinGeofence
+                      record.isVirtual
+                        ? 'text-indigo-700 font-bold'
+                        : record.checkInGps.isWithinGeofence
                         ? 'text-emerald-700 font-bold'
                         : 'text-rose-700 font-bold'
                     }
                   >
-                    {record.checkInGps.isWithinGeofence
+                    {record.isVirtual
+                      ? '✓ SESIÓN VIRTUAL EN LÍNEA'
+                      : record.checkInGps.isWithinGeofence
                       ? '✓ DENTRO DE GEOCERCA'
                       : '⚠ FUERA DE RANGO'}
                   </span>

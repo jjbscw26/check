@@ -195,6 +195,36 @@ service cloud.firestore {
         val in ['pausa_activa', 'clase_fitness', 'gimnasio_corporativo', 'masajes'];
     }
 
+    function hasValidVirtualClassFields(data) {
+      return (
+        !('isVirtual' in data) || data.isVirtual is bool
+      ) && (
+        !('virtualPlatform' in data) || (
+          data.virtualPlatform is string &&
+          data.virtualPlatform.size() >= 2 &&
+          data.virtualPlatform.size() <= 80 &&
+          data.virtualPlatform.matches('^\\S(.*\\S)?$')
+        )
+      ) && (
+        !('virtualMeetingUrl' in data) || (
+          data.virtualMeetingUrl is string &&
+          data.virtualMeetingUrl.size() >= 8 &&
+          data.virtualMeetingUrl.size() <= 500 &&
+          data.virtualMeetingUrl.matches('^https?://\\S+$')
+        )
+      ) && (
+        !('virtualMeetingId' in data) || (
+          data.virtualMeetingId is string &&
+          data.virtualMeetingId.size() <= 100
+        )
+      ) && (
+        !('virtualPasscode' in data) || (
+          data.virtualPasscode is string &&
+          data.virtualPasscode.size() <= 120
+        )
+      );
+    }
+
     // 1. Trainer Schema Validator (/trainers/{trainerId})
     function isValidTrainer(data) {
       return data is map &&
@@ -450,6 +480,11 @@ service cloud.firestore {
           'locationArea',
           'expectedAttendees',
           'notes',
+          'isVirtual',
+          'virtualPlatform',
+          'virtualMeetingUrl',
+          'virtualMeetingId',
+          'virtualPasscode',
           'active',
           'closed',
           'closedAt',
@@ -578,6 +613,14 @@ service cloud.firestore {
         (
           !('reopenedDates' in data) || isValidDateStringList(data.reopenedDates)
         ) &&
+        hasValidVirtualClassFields(data) &&
+        (
+          !('isVirtual' in data) ||
+          data.isVirtual == false || (
+            'virtualPlatform' in data &&
+            'virtualMeetingUrl' in data
+          )
+        ) &&
         hasValidAuditMetadata(data);
     }
 
@@ -636,6 +679,11 @@ service cloud.firestore {
           'attendeesCount',
           'locationArea',
           'observations',
+          'isVirtual',
+          'virtualPlatform',
+          'virtualMeetingUrl',
+          'virtualMeetingId',
+          'virtualPasscode',
           'checkInGps',
           'checkOutGps',
           'photoUrl',
@@ -783,6 +831,7 @@ service cloud.firestore {
             data.adminNotes.size() <= 1000
           )
         ) &&
+        hasValidVirtualClassFields(data) &&
         hasValidAuditMetadata(data);
     }
 
@@ -826,6 +875,180 @@ service cloud.firestore {
           )
         ) &&
         data.active is bool &&
+        hasValidAuditMetadata(data);
+    }
+
+    // 6B. TransitTracking Schema Validator (/transit_tracking/{trackingId})
+    function isValidTransitTracking(data) {
+      return data is map &&
+        data.keys().hasAll([
+          'trainerId',
+          'trainerName',
+          'companyId',
+          'companyName',
+          'sedeId',
+          'sedeName',
+          'sedeAddress',
+          'sedeLat',
+          'sedeLng',
+          'geofenceRadiusMeters',
+          'date',
+          'scheduledTime',
+          'activityName',
+          'trainerLat',
+          'trainerLng',
+          'accuracyMeters',
+          'straightDistanceMeters',
+          'routeDistanceMeters',
+          'estimatedDurationMinutes',
+          'estimatedArrivalHHMM',
+          'calculationSource',
+          'travelMode',
+          'status',
+          'isWithinGeofence',
+          'startedAtIso',
+          'lastUpdatedIso',
+          'createdByUid',
+          'createdByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        data.keys().hasOnly([
+          'trainerId',
+          'trainerName',
+          'assignmentId',
+          'companyId',
+          'companyName',
+          'sedeId',
+          'sedeName',
+          'sedeAddress',
+          'sedeLat',
+          'sedeLng',
+          'geofenceRadiusMeters',
+          'date',
+          'scheduledTime',
+          'activityName',
+          'trainerLat',
+          'trainerLng',
+          'accuracyMeters',
+          'speedMps',
+          'straightDistanceMeters',
+          'routeDistanceMeters',
+          'estimatedDurationMinutes',
+          'estimatedArrivalHHMM',
+          'calculationSource',
+          'travelMode',
+          'status',
+          'isWithinGeofence',
+          'startedAtIso',
+          'lastUpdatedIso',
+          'stoppedAtIso',
+          'createdByUid',
+          'createdByEmail',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        isValidId(data.trainerId) &&
+        data.trainerName is string &&
+        data.trainerName.size() >= 2 &&
+        data.trainerName.size() <= 120 &&
+        data.trainerName.matches('^\\S(.*\\S)?$') &&
+        (
+          !('assignmentId' in data) || isValidId(data.assignmentId)
+        ) &&
+        isValidId(data.companyId) &&
+        data.companyName is string &&
+        data.companyName.size() >= 2 &&
+        data.companyName.size() <= 150 &&
+        data.companyName.matches('^\\S(.*\\S)?$') &&
+        isValidId(data.sedeId) &&
+        data.sedeName is string &&
+        data.sedeName.size() >= 2 &&
+        data.sedeName.size() <= 150 &&
+        data.sedeName.matches('^\\S(.*\\S)?$') &&
+        data.sedeAddress is string &&
+        data.sedeAddress.size() >= 2 &&
+        data.sedeAddress.size() <= 250 &&
+        data.sedeAddress.matches('^\\S(.*\\S)?$') &&
+        data.sedeLat is number &&
+        !math.isNaN(data.sedeLat) &&
+        data.sedeLat >= -90 &&
+        data.sedeLat <= 90 &&
+        data.sedeLng is number &&
+        !math.isNaN(data.sedeLng) &&
+        data.sedeLng >= -180 &&
+        data.sedeLng <= 180 &&
+        data.geofenceRadiusMeters is number &&
+        !math.isNaN(data.geofenceRadiusMeters) &&
+        data.geofenceRadiusMeters >= 5 &&
+        data.geofenceRadiusMeters <= 50000 &&
+        data.date is string &&
+        data.date.size() == 10 &&
+        data.date.matches('^[0-9]{4}-[0-9]{2}-[0-9]{2}$') &&
+        data.scheduledTime is string &&
+        data.scheduledTime.size() == 5 &&
+        data.scheduledTime.matches('^[0-2][0-9]:[0-5][0-9]$') &&
+        data.activityName is string &&
+        data.activityName.size() >= 2 &&
+        data.activityName.size() <= 150 &&
+        data.activityName.matches('^\\S(.*\\S)?$') &&
+        data.trainerLat is number &&
+        !math.isNaN(data.trainerLat) &&
+        data.trainerLat >= -90 &&
+        data.trainerLat <= 90 &&
+        data.trainerLng is number &&
+        !math.isNaN(data.trainerLng) &&
+        data.trainerLng >= -180 &&
+        data.trainerLng <= 180 &&
+        data.accuracyMeters is number &&
+        !math.isNaN(data.accuracyMeters) &&
+        data.accuracyMeters >= 0 &&
+        data.accuracyMeters <= 100000 &&
+        (
+          !('speedMps' in data) || (
+            data.speedMps is number &&
+            !math.isNaN(data.speedMps) &&
+            data.speedMps >= 0 &&
+            data.speedMps <= 200
+          )
+        ) &&
+        data.straightDistanceMeters is number &&
+        !math.isNaN(data.straightDistanceMeters) &&
+        data.straightDistanceMeters >= 0 &&
+        data.straightDistanceMeters <= 25000000 &&
+        data.routeDistanceMeters is number &&
+        !math.isNaN(data.routeDistanceMeters) &&
+        data.routeDistanceMeters >= 0 &&
+        data.routeDistanceMeters <= 25000000 &&
+        data.estimatedDurationMinutes is number &&
+        !math.isNaN(data.estimatedDurationMinutes) &&
+        data.estimatedDurationMinutes >= 0 &&
+        data.estimatedDurationMinutes <= 10080 &&
+        data.estimatedArrivalHHMM is string &&
+        data.estimatedArrivalHHMM.size() == 5 &&
+        data.estimatedArrivalHHMM.matches('^[0-2][0-9]:[0-5][0-9]$') &&
+        data.calculationSource is string &&
+        data.calculationSource.size() <= 30 &&
+        data.calculationSource in ['google_routes', 'haversine_estimado'] &&
+        data.travelMode is string &&
+        data.travelMode.size() <= 20 &&
+        data.travelMode in ['DRIVING', 'TRANSIT', 'WALKING', 'TWO_WHEELER'] &&
+        data.status is string &&
+        data.status.size() <= 25 &&
+        data.status in ['en_camino', 'en_geocerca', 'llegada_confirmada', 'detenido'] &&
+        data.isWithinGeofence is bool &&
+        data.startedAtIso is string &&
+        data.startedAtIso.size() >= 10 &&
+        data.startedAtIso.size() <= 50 &&
+        data.lastUpdatedIso is string &&
+        data.lastUpdatedIso.size() >= 10 &&
+        data.lastUpdatedIso.size() <= 50 &&
+        (
+          !('stoppedAtIso' in data) || (
+            data.stoppedAtIso is string &&
+            data.stoppedAtIso.size() <= 50
+          )
+        ) &&
         hasValidAuditMetadata(data);
     }
 
@@ -1090,6 +1313,11 @@ service cloud.firestore {
           'locationArea',
           'expectedAttendees',
           'notes',
+          'isVirtual',
+          'virtualPlatform',
+          'virtualMeetingUrl',
+          'virtualMeetingId',
+          'virtualPasscode',
           'active',
           'closed',
           'closedAt',
@@ -1153,6 +1381,11 @@ service cloud.firestore {
           'attendeesCount',
           'locationArea',
           'observations',
+          'isVirtual',
+          'virtualPlatform',
+          'virtualMeetingUrl',
+          'virtualMeetingId',
+          'virtualPasscode',
           'checkInGps',
           'checkOutGps',
           'photoUrl',
@@ -1203,6 +1436,64 @@ service cloud.firestore {
       );
 
       allow delete: if isValidId(catalogId) &&
+        resource != null &&
+        isAccessibleOperationalDoc(existing());
+    }
+
+    // Collection 6B: /transit_tracking/{trackingId}
+    match /transit_tracking/{trackingId} {
+      allow get: if isValidId(trackingId) &&
+        (resource == null || isAccessibleOperationalDoc(existing()));
+
+      allow list: if resource.data.createdAt >= timestamp.date(2020, 1, 1);
+
+      allow create: if isValidId(trackingId) &&
+        isValidTransitTracking(incoming()) &&
+        incoming().createdAt == request.time &&
+        incoming().updatedAt == request.time;
+
+      allow update: if (
+        isValidId(trackingId) &&
+        isValidTransitTracking(incoming()) &&
+        incoming().createdByUid == existing().createdByUid &&
+        incoming().createdByEmail == existing().createdByEmail &&
+        incoming().createdAt == existing().createdAt &&
+        incoming().updatedAt == request.time &&
+        incoming().diff(existing()).affectedKeys().hasOnly([
+          'trainerId',
+          'trainerName',
+          'assignmentId',
+          'companyId',
+          'companyName',
+          'sedeId',
+          'sedeName',
+          'sedeAddress',
+          'sedeLat',
+          'sedeLng',
+          'geofenceRadiusMeters',
+          'date',
+          'scheduledTime',
+          'activityName',
+          'trainerLat',
+          'trainerLng',
+          'accuracyMeters',
+          'speedMps',
+          'straightDistanceMeters',
+          'routeDistanceMeters',
+          'estimatedDurationMinutes',
+          'estimatedArrivalHHMM',
+          'calculationSource',
+          'travelMode',
+          'status',
+          'isWithinGeofence',
+          'startedAtIso',
+          'lastUpdatedIso',
+          'stoppedAtIso',
+          'updatedAt'
+        ])
+      );
+
+      allow delete: if isValidId(trackingId) &&
         resource != null &&
         isAccessibleOperationalDoc(existing());
     }

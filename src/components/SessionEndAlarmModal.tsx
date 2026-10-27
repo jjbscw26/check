@@ -16,6 +16,7 @@ import {
   SessionAlarmStatus,
   formatSecondsClock,
   playAlarmPattern,
+  setSleepAlarmLocalMute,
   stopAlarmAudioImmediately,
   triggerBrowserCheckoutNotification,
   unlockMobileAlarmAudio,
@@ -43,6 +44,7 @@ export const SessionEndAlarmModal: React.FC<SessionEndAlarmModalProps> = ({
 
   const handleManualSoundActivation = useCallback(async () => {
     setIsMuted(false);
+    setSleepAlarmLocalMute(false);
     unlockMobileAlarmAudio();
     const ok = await playAlarmPattern({ fromUserGesture: true });
     if (ok) {
@@ -298,6 +300,7 @@ export const SessionEndAlarmModal: React.FC<SessionEndAlarmModalProps> = ({
                   onClick={() => {
                     setIsMuted((prev) => {
                       const next = !prev;
+                      setSleepAlarmLocalMute(next);
                       if (next) {
                         stopAlarmAudioImmediately();
                       } else {

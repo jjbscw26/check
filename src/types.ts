@@ -144,6 +144,11 @@ export interface ClassAssignment {
   locationArea: string;
   expectedAttendees?: number;
   notes?: string;
+  isVirtual?: boolean;
+  virtualPlatform?: string;
+  virtualMeetingUrl?: string;
+  virtualMeetingId?: string;
+  virtualPasscode?: string;
   active: boolean;
   closed?: boolean; // Bloqueada globalmente como completada y cerrada
   closedAt?: string;
@@ -181,6 +186,11 @@ export interface AttendanceRecord {
   attendeesCount: number;
   locationArea: string; // e.g. "Piso 5 - Sala de Capacitación"
   observations?: string;
+  isVirtual?: boolean;
+  virtualPlatform?: string;
+  virtualMeetingUrl?: string;
+  virtualMeetingId?: string;
+  virtualPasscode?: string;
   checkInGps: GpsData;
   checkOutGps?: GpsData;
   photoUrl: string; // Photo of presence with burned watermark
@@ -323,6 +333,62 @@ export interface FirestoreCompanyRecord {
   createdAtMs: number;
   updatedAtMs: number;
 }
+
+export type TransitTravelMode = 'DRIVING' | 'TRANSIT' | 'WALKING' | 'TWO_WHEELER';
+
+export type TransitTrackingStatus =
+  | 'en_camino'
+  | 'en_geocerca'
+  | 'llegada_confirmada'
+  | 'detenido';
+
+export const TRANSIT_TRAVEL_MODE_LABELS: Record<TransitTravelMode, string> = {
+  DRIVING: 'Automóvil',
+  TWO_WHEELER: 'Motocicleta',
+  TRANSIT: 'Transporte Público',
+  WALKING: 'Caminando',
+};
+
+export interface TrainerTransitTracking {
+  id: string; // e.g., trk_<trainerId>_<date>_<sedeId> or trk_<timestamp>
+  trainerId: string;
+  trainerName: string;
+  assignmentId?: string;
+  companyId: string;
+  companyName: string;
+  sedeId: string;
+  sedeName: string;
+  sedeAddress: string;
+  sedeLat: number;
+  sedeLng: number;
+  geofenceRadiusMeters: number;
+  date: string; // YYYY-MM-DD
+  scheduledTime: string; // HH:mm
+  activityName: string;
+  trainerLat: number;
+  trainerLng: number;
+  accuracyMeters: number;
+  speedMps?: number;
+  straightDistanceMeters: number;
+  routeDistanceMeters: number;
+  estimatedDurationMinutes: number;
+  estimatedArrivalHHMM: string;
+  calculationSource: 'google_routes' | 'haversine_estimado';
+  travelMode: TransitTravelMode;
+  status: TransitTrackingStatus;
+  isWithinGeofence: boolean;
+  startedAtIso: string;
+  lastUpdatedIso: string;
+  stoppedAtIso?: string;
+}
+
+export interface FirestoreTransitTrackingRecord extends TrainerTransitTracking {
+  createdByUid: string;
+  createdByEmail: string;
+  createdAtMs: number;
+  updatedAtMs: number;
+}
+
 
 
 

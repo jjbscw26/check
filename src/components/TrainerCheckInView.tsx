@@ -32,7 +32,10 @@ import {
   Timer,
   Lock,
   AlertTriangle,
-  Ban
+  Ban,
+  Video,
+  Navigation,
+  Square
 } from 'lucide-react';
 import { 
   ACTIVITY_TYPE_LABELS,
@@ -48,11 +51,17 @@ import {
   ActivityCatalogItem,
   normalizeActivityType,
   TrainerBiometricSession,
+  TrainerTransitTracking,
 } from '../types';
 import { GpsVisualizer } from './GpsVisualizer';
 import { CameraCapture } from './CameraCapture';
 import { TrainerCheckOutModal } from './TrainerCheckOutModal';
 import { SessionEndAlarmModal } from './SessionEndAlarmModal';
+import {
+  ActiveTrainerTransitState,
+  TrainerLiveTransitTracker,
+  TrainerLiveTransitTrackerHandle,
+} from './TrainerLiveTransitTracker';
 import {
   MAX_ASSIGNMENT_DURATION_MINUTES,
   MIN_ASSIGNMENT_DURATION_MINUTES,
@@ -71,6 +80,12 @@ import {
   unlockMobileAlarmAudio,
   requestSessionWakeLock,
   releaseSessionWakeLock,
+  registerAlarmServiceWorker,
+  subscribeToAlarmServiceWorkerActions,
+  syncSleepProofSessionAlarm,
+  armSleepProofSentinelFromGesture,
+  isSleepAlarmSentinelArmed,
+  subscribeSleepSentinelState,
 } from '../utils/sessionAlarm';
 import {
   getAssignmentOccurrenceStatus,
@@ -82,6 +97,8 @@ import {
   shiftYearMonth,
   WEEKDAY_MONDAY_SHORT_ES,
 } from '../utils/monthlyAssignmentHelper';
+import { buildSharePayloadFromAssignmentLike } from '../utils/virtualClassShare';
+import { VirtualClassQuickShare } from './VirtualClassShareCard';
 import confetti from 'canvas-confetti';
 
 interface TrainerCheckInViewProps {
@@ -92,6 +109,8 @@ interface TrainerCheckInViewProps {
   records: AttendanceRecord[];
   assignments?: ClassAssignment[];
   activityCatalog?: ActivityCatalogItem[];
+  transitTrackings?: TrainerTransitTracking[];
+  onUpsertTransitTracking?: (record: TrainerTransitTracking) => void;
   onSaveRecord: (newRecord: AttendanceRecord) => void;
   onUpdateRecord: (updatedRecord: AttendanceRecord) => void;
 }
@@ -226,6 +245,8 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
   records,
   assignments = [],
   activityCatalog = [],
+  transitTrackings = [],
+  onUpsertTransitTracking,
   onSaveRecord,
   onUpdateRecord,
 }) => {
@@ -238,11 +259,34 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
   // Check if this trainer has an active session in progress
   const activeSession = trainerRecords.find((r) => r.status === 'en_curso');
   const autoBlockedSessionIdsRef = React.useRef<Set<string>>(new Set());
+  const transitTrackerRef = React.useRef<TrainerLiveTransitTrackerHandle | null>(null);
+  const [activeTransitState, setActiveTransitState] = useState<ActiveTrainerTransitState | null>(
+    null
+  );
+
+  const handleTriggerVoyEnTrayecto = (asg: ClassAssignment) => {
+    if (asg.isVirtual) return;
+    if (
+      activeTransitState?.isLiveTracking &&
+      (activeTransitState.assignmentId === asg.id || activeTransitState.sedeId === asg.sedeId)
+    ) {
+      transitTrackerRef.current?.stopTransit();
+      return;
+    }
+    transitTrackerRef.current?.startTransitForAssignment(asg);
+    const trackerEl = document.getElementById('trainer-transit-tracker');
+    if (trackerEl) {
+      trackerEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+  };
 
   const [checkoutModalOpen, setCheckoutModalOpen] = useState(false);
   const [isTestAlarmModalOpen, setIsTestAlarmModalOpen] = useState(false);
   const [soundTestFeedback, setSoundTestFeedback] = useState<'idle' | 'ok' | 'blocked'>('idle');
   const [wakeLockActive, setWakeLockActive] = useState<boolean>(false);
+  const [sleepSentinelArmed, setSleepSentinelArmed] = useState<boolean>(() =>
+    isSleepAlarmSentinelArmed()
+  );
   const [nowMs, setNowMs] = useState<number>(() => Date.now());
   const [notifPermission, setNotifPermission] = useState<string>(() => {
     if (typeof window !== 'undefined' && 'Notification' in window) {
@@ -250,6 +294,17 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
     }
     return 'unsupported';
   });
+
+  // Register Service Worker for sleep-mode notifications & track sleep audio sentinel state
+  React.useEffect(() => {
+    void registerAlarmServiceWorker();
+    const unsub = subscribeSleepSentinelState((armed) => {
+      setSleepSentinelArmed(armed);
+    });
+    return () => {
+      unsub();
+    };
+  }, []);
 
   // Live 1-second tick + immediate wake catch-up for mobile screens
   React.useEffect(() => {
@@ -553,6 +608,7 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
     unlockMobileAlarmAudio();
     if (alarmEnabled) {
       requestSessionWakeLock().then((ok) => setWakeLockActive(ok));
+      void requestAlarmNotificationPermission().then((perm) => setNotifPermission(perm));
     }
 
     setIsSubmitting(true);
@@ -565,14 +621,24 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
       checkInDate
     );
 
-    const fallbackGps: GpsData = currentGps || {
-      lat: selectedSede.lat,
-      lng: selectedSede.lng,
-      accuracy: 6,
-      distanceToSedeMeters: 12,
-      isWithinGeofence: true,
-      capturedAt: checkInTime,
-    };
+    const isVirtualSession = Boolean(loadedAssignment.isVirtual);
+    const fallbackGps: GpsData = isVirtualSession
+      ? {
+          lat: currentGps?.lat ?? selectedSede.lat,
+          lng: currentGps?.lng ?? selectedSede.lng,
+          accuracy: currentGps?.accuracy ?? 10,
+          distanceToSedeMeters: 0,
+          isWithinGeofence: true,
+          capturedAt: currentGps?.capturedAt || checkInTime,
+        }
+      : currentGps || {
+          lat: selectedSede.lat,
+          lng: selectedSede.lng,
+          accuracy: 6,
+          distanceToSedeMeters: 12,
+          isWithinGeofence: true,
+          capturedAt: checkInTime,
+        };
 
     const parsedDuration = Math.max(
       1,
@@ -629,6 +695,23 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
       alarmEnabled,
       alarmSnoozedUntilIso: null,
       adminVerified: false,
+      ...(isVirtualSession
+        ? {
+            isVirtual: true,
+            ...(loadedAssignment.virtualPlatform
+              ? { virtualPlatform: loadedAssignment.virtualPlatform }
+              : {}),
+            ...(loadedAssignment.virtualMeetingUrl
+              ? { virtualMeetingUrl: loadedAssignment.virtualMeetingUrl }
+              : {}),
+            ...(loadedAssignment.virtualMeetingId
+              ? { virtualMeetingId: loadedAssignment.virtualMeetingId }
+              : {}),
+            ...(loadedAssignment.virtualPasscode
+              ? { virtualPasscode: loadedAssignment.virtualPasscode }
+              : {}),
+          }
+        : {}),
     };
 
     onSaveRecord(newRecord);
@@ -788,6 +871,58 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
     setNotifPermission(perm);
   };
 
+  // Synchronize active session with the sleep-proof background audio sentinel & Service Worker
+  React.useEffect(() => {
+    syncSleepProofSessionAlarm({
+      record: activeSession || null,
+      alarmStatus: activeSessionAlarm,
+      onLockScreenSnooze5m: () => handleSnoozeActiveAlarm(5),
+      onLockScreenStop: () => handleSnoozeActiveAlarm(3),
+    });
+  }, [
+    activeSession?.id,
+    activeSession?.alarmEnabled,
+    activeSession?.alarmSnoozedUntilIso,
+    activeSession?.plannedDurationMinutes,
+    activeSessionAlarm?.expectedEndMs,
+    activeSessionAlarm?.snoozedUntilMs,
+    activeSessionAlarm?.hasExceededUnclosedGrace,
+  ]);
+
+  // Auto-arm sleep-mode sentinel on first touch/click if page was cold-reloaded during an active session
+  React.useEffect(() => {
+    if (!activeSession || !activeSessionAlarm?.alarmEnabled || sleepSentinelArmed) return;
+
+    const armOnFirstGesture = () => {
+      armSleepProofSentinelFromGesture();
+    };
+
+    window.addEventListener('touchstart', armOnFirstGesture, { passive: true, once: true });
+    window.addEventListener('pointerdown', armOnFirstGesture, { passive: true, once: true });
+    window.addEventListener('click', armOnFirstGesture, { once: true });
+
+    return () => {
+      window.removeEventListener('touchstart', armOnFirstGesture);
+      window.removeEventListener('pointerdown', armOnFirstGesture);
+      window.removeEventListener('click', armOnFirstGesture);
+    };
+  }, [activeSession?.id, activeSessionAlarm?.alarmEnabled, sleepSentinelArmed]);
+
+  // Listen for lock-screen notification actions from /alarm-sw.js
+  React.useEffect(() => {
+    return subscribeToAlarmServiceWorkerActions((action) => {
+      if (!activeSession) return;
+      if (action === 'checkout') {
+        stopAlarmAudioImmediately();
+        setCheckoutModalOpen(true);
+      } else if (action === 'snooze_5m') {
+        handleSnoozeActiveAlarm(5);
+      } else if (action === 'sw_fired') {
+        setNowMs(Date.now());
+      }
+    });
+  }, [activeSession?.id, activeSessionAlarm]);
+
   return (
     <div className="w-full max-w-4xl mx-auto px-3.5 sm:px-6 py-5 sm:py-8 space-y-5 sm:space-y-6">
       {/* Notice if a pending exit reached 60 min after session end time and was terminated as No Cerrada */}
@@ -864,6 +999,9 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                 </h3>
                 <p className="text-xs text-red-100">
                   {activeSession.activityName} ({activeSession.locationArea})
+                  {activeSession.isVirtual
+                    ? ` · Clase Virtual (${activeSession.virtualPlatform || 'En línea'})`
+                    : ''}
                 </p>
               </div>
             </div>
@@ -878,9 +1016,32 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
               }`}
             >
               <LogOut className={`w-4 h-4 shrink-0 ${activeSessionAlarm.isOverdue ? 'text-red-700' : 'text-red-400'}`} />
-              <span>Registrar Salida de Sede</span>
+              <span>{activeSession.isVirtual ? 'Registrar Cierre de Clase' : 'Registrar Salida de Sede'}</span>
             </button>
           </div>
+
+          {activeSession.isVirtual && activeSession.virtualMeetingUrl && (
+            <div className="mt-3.5 bg-white text-slate-900 rounded-xl p-2.5 shadow-sm">
+              <VirtualClassQuickShare
+                compact
+                payload={{
+                  activityName: activeSession.activityName,
+                  activityTypeLabel:
+                    ACTIVITY_TYPE_LABELS[normalizeActivityType(activeSession.activityType)],
+                  companyName: activeSession.companyName,
+                  sedeName: activeSession.sedeName,
+                  trainerName: activeSession.trainerName,
+                  scheduleLabel: `Fecha ${activeSession.date}`,
+                  time: activeSession.scheduledTime,
+                  durationMinutes: activeSessionAlarm.plannedDurationMinutes,
+                  virtualPlatform: activeSession.virtualPlatform || 'Sala Virtual',
+                  virtualMeetingUrl: activeSession.virtualMeetingUrl,
+                  virtualMeetingId: activeSession.virtualMeetingId,
+                  virtualPasscode: activeSession.virtualPasscode,
+                }}
+              />
+            </div>
+          )}
 
           {/* Live Session Alarm & Countdown Bar */}
           <div className="mt-4 pt-3.5 border-t border-white/20 space-y-2.5">
@@ -975,22 +1136,45 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                 <button
                   type="button"
                   onClick={() => {
-                    unlockMobileAlarmAudio();
+                    armSleepProofSentinelFromGesture();
                     playAlarmPattern({ fromUserGesture: true });
                     setIsTestAlarmModalOpen(true);
                   }}
-                  className="min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold bg-white/15 hover:bg-white/25 border border-white/25 text-white flex items-center space-x-1 transition"
+                  className="min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold bg-white/15 hover:bg-white/25 border border-white/25 text-white flex items-center space-x-1 transition whitespace-nowrap"
                   title="Probar cómo suena y se muestra la alarma de salida en este celular"
                 >
                   <Volume2 className="w-3.5 h-3.5 text-amber-200" />
                   <span>Probar Alarma</span>
                 </button>
+
+                {activeSessionAlarm.alarmEnabled &&
+                  (sleepSentinelArmed ? (
+                    <span
+                      className="text-[11px] text-emerald-200 font-semibold px-2 py-1 rounded-lg bg-black/25 border border-emerald-300/30 whitespace-nowrap"
+                      title="El canal de audio en segundo plano está armado para sonar aun con la pantalla apagada o en reposo"
+                    >
+                      Alarma en Reposo Activa
+                    </span>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        armSleepProofSentinelFromGesture();
+                        void handleEnableBrowserNotif();
+                      }}
+                      className="min-h-[34px] px-2.5 py-1 rounded-lg text-[11px] font-bold bg-amber-300 hover:bg-amber-200 text-slate-950 transition whitespace-nowrap"
+                      title="Toca una vez para habilitar el sonido de alarma incluso cuando bloquees la pantalla"
+                    >
+                      Activar Sonido en Reposo
+                    </button>
+                  ))}
+
                 {wakeLockActive && (
                   <span
-                    className="text-[10px] text-emerald-200 font-semibold px-1.5"
-                    title="Pantalla activa para que el celular no suspenda la alarma durante la sesión"
+                    className="text-[10px] text-red-100 font-semibold px-1.5 whitespace-nowrap"
+                    title="Pantalla activa durante la sesión"
                   >
-                    ● Pantalla activa
+                    Pantalla activa
                   </span>
                 )}
               </div>
@@ -1089,6 +1273,21 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
         </div>
       </div>
 
+      {/* Real-Time Transit Tracking + "Voy en trayecto" Activation (Presencial only) */}
+      {onUpsertTransitTracking && !loadedAssignment?.isVirtual && !activeSession && (
+        <TrainerLiveTransitTracker
+          ref={transitTrackerRef}
+          currentTrainer={currentTrainer}
+          companies={companies}
+          assignments={assignments}
+          loadedAssignment={loadedAssignment}
+          activeSession={activeSession}
+          transitTrackings={transitTrackings}
+          onUpsertTransitTracking={onUpsertTransitTracking}
+          onActiveTransitStateChange={setActiveTransitState}
+        />
+      )}
+
       {/* Empty state if authenticated trainer currently has no assigned sessions */}
       {trainerAssignments.length === 0 && (
         <div className="bg-white border border-slate-200/90 rounded-2xl p-6 text-center space-y-2 shadow-sm">
@@ -1182,7 +1381,10 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
             const matchComp = assignment.companyName.toLowerCase().includes(q);
             const matchSede = assignment.sedeName.toLowerCase().includes(q);
             const matchDate = details.formattedLong.toLowerCase().includes(q) || details.dateStr.includes(q);
-            if (!matchAct && !matchComp && !matchSede && !matchDate) return false;
+            const matchVirt =
+              Boolean(assignment.isVirtual && 'virtual en linea online'.includes(q)) ||
+              Boolean(assignment.virtualPlatform && assignment.virtualPlatform.toLowerCase().includes(q));
+            if (!matchAct && !matchComp && !matchSede && !matchDate && !matchVirt) return false;
           }
           return true;
         });
@@ -1523,12 +1725,29 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                           {/* Address & Room */}
                           <div className="text-[11px] text-slate-500 mt-1 flex items-center justify-center sm:justify-start flex-wrap gap-x-2 gap-y-0.5">
                             <span className="flex items-center">
-                              <MapPin className="w-3 h-3 text-red-500 mr-0.5 shrink-0" />
-                              {asg.locationArea}
+                              {asg.isVirtual ? (
+                                <Video className="w-3 h-3 text-indigo-600 mr-1 shrink-0" />
+                              ) : (
+                                <MapPin className="w-3 h-3 text-red-500 mr-0.5 shrink-0" />
+                              )}
+                              {asg.isVirtual
+                                ? `Clase Virtual · ${asg.virtualPlatform || 'En línea'}`
+                                : asg.locationArea}
                             </span>
                             <span aria-hidden="true">·</span>
                             <span className="tabular-nums">~{asg.expectedAttendees || 15} participantes</span>
                           </div>
+
+                          {(() => {
+                            const sharePayload = asg.isVirtual
+                              ? buildSharePayloadFromAssignmentLike(asg)
+                              : null;
+                            return sharePayload ? (
+                              <div className="mt-2.5 text-left">
+                                <VirtualClassQuickShare compact payload={sharePayload} />
+                              </div>
+                            ) : null;
+                          })()}
 
                           {/* Non-Compliant / Closure / In-Progress Audit Seal */}
                           {isNonCompliant && (
@@ -1589,70 +1808,108 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                           )}
                         </div>
 
-                        {/* Action Button — Enforces Exact Day & [-30 min, +10 min] Load Window */}
-                        {lockInfo.isLocked ? (
-                          <button
-                            type="button"
-                            disabled
-                            className={`w-full min-h-[44px] py-2.5 px-3 rounded-xl font-bold text-xs border flex items-center justify-center gap-2 cursor-not-allowed select-none text-center ${
-                              isNonCompliant
-                                ? 'bg-rose-200/80 text-rose-900 border-rose-300'
-                                : isClosed
-                                  ? 'bg-slate-200/90 text-slate-600 border-slate-300'
-                                  : 'bg-amber-100 text-amber-900 border-amber-300'
-                            }`}
-                          >
-                            <Lock className="w-3.5 h-3.5 shrink-0" />
-                            <span className="leading-snug">
-                              {isNonCompliant
-                                ? lockInfo.nonComplianceReason === 'sin_cierre_30m'
-                                  ? 'Terminada (+60 min) — No Cerrada'
-                                  : 'Sesión Cerrada — No cargada (+10 min)'
-                                : isClosed
-                                  ? 'Bloqueada — Completada y Cerrada'
-                                  : 'Bloqueada — Sesión en Curso'}
-                            </span>
-                          </button>
-                        ) : !lockInfo.canLoadNow ? (
-                          <button
-                            type="button"
-                            disabled
-                            className="w-full min-h-[44px] py-2.5 px-3 rounded-xl font-bold text-xs border bg-slate-100 text-slate-500 border-slate-300 flex items-center justify-center gap-2 cursor-not-allowed select-none text-center"
-                          >
-                            {lockInfo.loadWindowState === 'antes_de_30m' ? (
-                              <>
-                                <Clock className="w-3.5 h-3.5 shrink-0 text-slate-500" />
-                                <span className="font-mono tabular-nums leading-snug">
-                                  Habilitada hoy {lockInfo.unlockTimeHHMM} hrs (en {formatSecondsClock(lockInfo.secondsUntilLoadOpen ?? 0)})
-                                </span>
-                              </>
-                            ) : (
-                              <>
-                                <Calendar className="w-3.5 h-3.5 shrink-0 text-slate-500" />
-                                <span className="leading-snug">
-                                  Solo el día exacto ({details.formattedShort})
-                                </span>
-                              </>
-                            )}
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => handleLoadAssignment(asg, details.dateStr)}
-                            className={`w-full min-h-[44px] py-2.5 px-3 rounded-xl font-bold text-xs shadow-xs transition flex items-center justify-center gap-2 text-center ${
-                              isLoaded
-                                ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-emerald-500/20'
-                                : 'bg-red-600 hover:bg-red-700 text-white shadow-red-500/20'
-                            }`}
-                          >
-                            <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                            <span className="tabular-nums leading-snug">
-                              {isLoaded
-                                ? '✓ Sesión Cargada en Registro'
-                                : `Cargar Sesión de Hoy (Cierra ${lockInfo.loadDeadlineHHMM} hrs)`}
-                            </span>
-                          </button>
-                        )}
+                        {/* Action Buttons — "Voy en trayecto" + [-30 min, +10 min] Load Window */}
+                        <div className="space-y-2">
+                          {onUpsertTransitTracking &&
+                            !asg.isVirtual &&
+                            !lockInfo.isLocked &&
+                            details.isToday &&
+                            !activeSession && (() => {
+                              const isThisInTransit = Boolean(
+                                activeTransitState?.isLiveTracking &&
+                                  (activeTransitState.assignmentId === asg.id ||
+                                    (!activeTransitState.assignmentId &&
+                                      activeTransitState.sedeId === asg.sedeId))
+                              );
+                              return (
+                                <button
+                                  type="button"
+                                  onClick={() => handleTriggerVoyEnTrayecto(asg)}
+                                  className={`w-full min-h-[42px] py-2 px-3 rounded-xl font-bold text-xs border transition flex items-center justify-center gap-2 whitespace-nowrap cursor-pointer ${
+                                    isThisInTransit
+                                      ? 'bg-emerald-950 hover:bg-slate-900 text-emerald-200 border-emerald-700'
+                                      : 'bg-slate-900 hover:bg-slate-800 text-white border-slate-900 shadow-xs'
+                                  }`}
+                                >
+                                  {isThisInTransit ? (
+                                    <>
+                                      <Square className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                                      <span>En trayecto activo · Detener</span>
+                                    </>
+                                  ) : (
+                                    <>
+                                      <Navigation className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                                      <span>Voy en trayecto</span>
+                                    </>
+                                  )}
+                                </button>
+                              );
+                            })()}
+
+                          {lockInfo.isLocked ? (
+                            <button
+                              type="button"
+                              disabled
+                              className={`w-full min-h-[44px] py-2.5 px-3 rounded-xl font-bold text-xs border flex items-center justify-center gap-2 cursor-not-allowed select-none text-center ${
+                                isNonCompliant
+                                  ? 'bg-rose-200/80 text-rose-900 border-rose-300'
+                                  : isClosed
+                                    ? 'bg-slate-200/90 text-slate-600 border-slate-300'
+                                    : 'bg-amber-100 text-amber-900 border-amber-300'
+                              }`}
+                            >
+                              <Lock className="w-3.5 h-3.5 shrink-0" />
+                              <span className="leading-snug">
+                                {isNonCompliant
+                                  ? lockInfo.nonComplianceReason === 'sin_cierre_30m'
+                                    ? 'Terminada (+60 min) — No Cerrada'
+                                    : 'Sesión Cerrada — No cargada (+10 min)'
+                                  : isClosed
+                                    ? 'Bloqueada — Completada y Cerrada'
+                                    : 'Bloqueada — Sesión en Curso'}
+                              </span>
+                            </button>
+                          ) : !lockInfo.canLoadNow ? (
+                            <button
+                              type="button"
+                              disabled
+                              className="w-full min-h-[44px] py-2.5 px-3 rounded-xl font-bold text-xs border bg-slate-100 text-slate-500 border-slate-300 flex items-center justify-center gap-2 cursor-not-allowed select-none text-center"
+                            >
+                              {lockInfo.loadWindowState === 'antes_de_30m' ? (
+                                <>
+                                  <Clock className="w-3.5 h-3.5 shrink-0 text-slate-500" />
+                                  <span className="font-mono tabular-nums leading-snug">
+                                    Habilitada hoy {lockInfo.unlockTimeHHMM} hrs (en {formatSecondsClock(lockInfo.secondsUntilLoadOpen ?? 0)})
+                                  </span>
+                                </>
+                              ) : (
+                                <>
+                                  <Calendar className="w-3.5 h-3.5 shrink-0 text-slate-500" />
+                                  <span className="leading-snug">
+                                    Solo el día exacto ({details.formattedShort})
+                                  </span>
+                                </>
+                              )}
+                            </button>
+                          ) : (
+                            <button
+                              type="button"
+                              onClick={() => handleLoadAssignment(asg, details.dateStr)}
+                              className={`w-full min-h-[44px] py-2.5 px-3 rounded-xl font-bold text-xs shadow-xs transition flex items-center justify-center gap-2 text-center ${
+                                isLoaded
+                                  ? 'bg-emerald-600 text-white hover:bg-emerald-700 shadow-emerald-500/20'
+                                  : 'bg-red-600 hover:bg-red-700 text-white shadow-red-500/20'
+                              }`}
+                            >
+                              <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                              <span className="tabular-nums leading-snug">
+                                {isLoaded
+                                  ? '✓ Sesión Cargada en Registro'
+                                  : `Cargar Sesión de Hoy (Cierra ${lockInfo.loadDeadlineHHMM} hrs)`}
+                              </span>
+                            </button>
+                          )}
+                        </div>
                       </div>
                     );
                   })
@@ -1958,51 +2215,105 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
                                       {asg.activityName}
                                     </div>
                                     <div className="text-[11px] text-slate-600">
-                                      {asg.companyName} · {asg.sedeName} · {asg.locationArea}
+                                      {asg.companyName} · {asg.sedeName} ·{' '}
+                                      {asg.isVirtual
+                                        ? `Clase Virtual (${asg.virtualPlatform || 'En línea'})`
+                                        : asg.locationArea}
                                     </div>
+                                    {(() => {
+                                      const sharePayload = asg.isVirtual
+                                        ? buildSharePayloadFromAssignmentLike(asg)
+                                        : null;
+                                      return sharePayload ? (
+                                        <div className="pt-1.5">
+                                          <VirtualClassQuickShare
+                                            compact
+                                            payload={sharePayload}
+                                          />
+                                        </div>
+                                      ) : null;
+                                    })()}
                                   </div>
 
-                                  {dayLock.isLocked ? (
-                                    <button
-                                      type="button"
-                                      disabled
-                                      className="w-full py-1.5 px-2.5 rounded-lg text-[11px] font-bold border bg-slate-100 border-slate-200 text-slate-500 flex items-center justify-center gap-1.5 cursor-not-allowed"
-                                    >
-                                      <Lock className="w-3 h-3 shrink-0" />
-                                      <span>{dayLock.shortLabel}</span>
-                                    </button>
-                                  ) : !dayLock.canLoadNow ? (
-                                    <button
-                                      type="button"
-                                      disabled
-                                      className="w-full py-1.5 px-2.5 rounded-lg text-[11px] font-bold border bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed tabular-nums"
-                                    >
-                                      {dayLock.loadWindowState === 'antes_de_30m'
-                                        ? `Habilita hoy a las ${dayLock.unlockTimeHHMM} hrs`
-                                        : dayLock.loadWindowState === 'otro_dia'
-                                          ? `Programada para el ${inspectedMonthCell.dateStr}`
-                                          : 'Ventana cerrada'}
-                                    </button>
-                                  ) : (
-                                    <button
-                                      type="button"
-                                      onClick={() =>
-                                        handleLoadAssignment(asg, inspectedMonthCell.dateStr)
-                                      }
-                                      className={`w-full py-2 px-3 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
-                                        isDayLoaded
-                                          ? 'bg-emerald-600 text-white hover:bg-emerald-700'
-                                          : 'bg-red-600 text-white hover:bg-red-700'
-                                      }`}
-                                    >
-                                      <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
-                                      <span>
-                                        {isDayLoaded
-                                          ? '✓ Sesión Cargada'
-                                          : `Cargar Sesión de Hoy (hasta ${dayLock.loadDeadlineHHMM} hrs)`}
-                                      </span>
-                                    </button>
-                                  )}
+                                  <div className="space-y-1.5">
+                                    {onUpsertTransitTracking &&
+                                      !asg.isVirtual &&
+                                      !dayLock.isLocked &&
+                                      inspectedMonthCell.dateStr === todayYMD &&
+                                      !activeSession && (() => {
+                                        const isThisInTransit = Boolean(
+                                          activeTransitState?.isLiveTracking &&
+                                            (activeTransitState.assignmentId === asg.id ||
+                                              (!activeTransitState.assignmentId &&
+                                                activeTransitState.sedeId === asg.sedeId))
+                                        );
+                                        return (
+                                          <button
+                                            type="button"
+                                            onClick={() => handleTriggerVoyEnTrayecto(asg)}
+                                            className={`w-full py-1.5 px-2.5 rounded-lg text-[11px] font-bold border transition flex items-center justify-center gap-1.5 whitespace-nowrap cursor-pointer ${
+                                              isThisInTransit
+                                                ? 'bg-emerald-950 hover:bg-slate-900 text-emerald-200 border-emerald-700'
+                                                : 'bg-slate-900 hover:bg-slate-800 text-white border-slate-900'
+                                            }`}
+                                          >
+                                            {isThisInTransit ? (
+                                              <>
+                                                <Square className="w-3 h-3 text-red-400 shrink-0" />
+                                                <span>En trayecto · Detener</span>
+                                              </>
+                                            ) : (
+                                              <>
+                                                <Navigation className="w-3 h-3 text-emerald-400 shrink-0" />
+                                                <span>Voy en trayecto</span>
+                                              </>
+                                            )}
+                                          </button>
+                                        );
+                                      })()}
+
+                                    {dayLock.isLocked ? (
+                                      <button
+                                        type="button"
+                                        disabled
+                                        className="w-full py-1.5 px-2.5 rounded-lg text-[11px] font-bold border bg-slate-100 border-slate-200 text-slate-500 flex items-center justify-center gap-1.5 cursor-not-allowed"
+                                      >
+                                        <Lock className="w-3 h-3 shrink-0" />
+                                        <span>{dayLock.shortLabel}</span>
+                                      </button>
+                                    ) : !dayLock.canLoadNow ? (
+                                      <button
+                                        type="button"
+                                        disabled
+                                        className="w-full py-1.5 px-2.5 rounded-lg text-[11px] font-bold border bg-slate-100 border-slate-200 text-slate-500 cursor-not-allowed tabular-nums"
+                                      >
+                                        {dayLock.loadWindowState === 'antes_de_30m'
+                                          ? `Habilita hoy a las ${dayLock.unlockTimeHHMM} hrs`
+                                          : dayLock.loadWindowState === 'otro_dia'
+                                            ? `Programada para el ${inspectedMonthCell.dateStr}`
+                                            : 'Ventana cerrada'}
+                                      </button>
+                                    ) : (
+                                      <button
+                                        type="button"
+                                        onClick={() =>
+                                          handleLoadAssignment(asg, inspectedMonthCell.dateStr)
+                                        }
+                                        className={`w-full py-2 px-3 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
+                                          isDayLoaded
+                                            ? 'bg-emerald-600 text-white hover:bg-emerald-700'
+                                            : 'bg-red-600 text-white hover:bg-red-700'
+                                        }`}
+                                      >
+                                        <CheckCircle2 className="w-3.5 h-3.5 shrink-0" />
+                                        <span>
+                                          {isDayLoaded
+                                            ? '✓ Sesión Cargada'
+                                            : `Cargar Sesión de Hoy (hasta ${dayLock.loadDeadlineHHMM} hrs)`}
+                                        </span>
+                                      </button>
+                                    )}
+                                  </div>
                                 </div>
                               );
                             })}
@@ -2217,44 +2528,65 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
 
         {/* Banner if class assignment from administration is loaded */}
         {loadedAssignment && loadedDateInfo && (
-          <div className="mb-6 p-4 rounded-xl bg-red-50/70 border border-red-200/90 shadow-xs flex flex-col sm:flex-row items-center sm:items-center justify-between gap-3 text-center sm:text-left animate-fadeIn">
-            <div className="flex flex-col sm:flex-row items-center sm:items-start gap-2.5 sm:gap-3">
-              <div className="w-9 h-9 rounded-xl bg-red-100 border border-red-200 flex items-center justify-center text-red-600 shrink-0 shadow-2xs mx-auto sm:mx-0">
-                <CheckCircle2 className="w-5 h-5" />
-              </div>
-              <div>
-                <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 text-xs">
-                  <span className="font-bold text-red-700">Sesión Oficial Cargada</span>
-                  <span className="text-slate-400" aria-hidden="true">·</span>
-                  <span className="text-slate-500 font-medium">Programación de Administración</span>
+          <div className="mb-6 p-4 rounded-xl bg-red-50/70 border border-red-200/90 shadow-xs space-y-3 animate-fadeIn">
+            <div className="flex flex-col sm:flex-row items-center sm:items-center justify-between gap-3 text-center sm:text-left">
+              <div className="flex flex-col sm:flex-row items-center sm:items-start gap-2.5 sm:gap-3">
+                <div className="w-9 h-9 rounded-xl bg-red-100 border border-red-200 flex items-center justify-center text-red-600 shrink-0 shadow-2xs mx-auto sm:mx-0">
+                  {loadedAssignment.isVirtual ? (
+                    <Video className="w-5 h-5 text-indigo-600" />
+                  ) : (
+                    <CheckCircle2 className="w-5 h-5" />
+                  )}
                 </div>
-                <p className="text-sm font-bold text-slate-900 mt-0.5">
-                  {loadedAssignment.activityName}
-                </p>
-                <div className="text-xs text-slate-600 flex flex-wrap items-center justify-center sm:justify-start gap-x-2 gap-y-1 mt-1">
-                  <span className="flex items-center font-bold text-red-700">
-                    <Calendar className="w-3.5 h-3.5 mr-1 shrink-0" />
-                    {loadedDateInfo.formattedLong}
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span className="flex items-center font-mono tabular-nums font-bold text-slate-800">
-                    <Clock className="w-3.5 h-3.5 mr-1 shrink-0" />
-                    {loadedAssignment.time} hrs ({formatDurationHoursMinutes(getAssignmentDurationMinutes(loadedAssignment, activityCatalog))})
-                  </span>
-                  <span aria-hidden="true">·</span>
-                  <span>{loadedAssignment.companyName} ({loadedAssignment.sedeName})</span>
+                <div>
+                  <div className="flex flex-wrap items-center justify-center sm:justify-start gap-2 text-xs">
+                    <span className="font-bold text-red-700">Sesión Oficial Cargada</span>
+                    <span className="text-slate-400" aria-hidden="true">·</span>
+                    <span className="text-slate-500 font-medium">
+                      {loadedAssignment.isVirtual
+                        ? `Clase Virtual · ${loadedAssignment.virtualPlatform || 'En línea'}`
+                        : 'Programación de Administración'}
+                    </span>
+                  </div>
+                  <p className="text-sm font-bold text-slate-900 mt-0.5">
+                    {loadedAssignment.activityName}
+                  </p>
+                  <div className="text-xs text-slate-600 flex flex-wrap items-center justify-center sm:justify-start gap-x-2 gap-y-1 mt-1">
+                    <span className="flex items-center font-bold text-red-700">
+                      <Calendar className="w-3.5 h-3.5 mr-1 shrink-0" />
+                      {loadedDateInfo.formattedLong}
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span className="flex items-center font-mono tabular-nums font-bold text-slate-800">
+                      <Clock className="w-3.5 h-3.5 mr-1 shrink-0" />
+                      {loadedAssignment.time} hrs ({formatDurationHoursMinutes(getAssignmentDurationMinutes(loadedAssignment, activityCatalog))})
+                    </span>
+                    <span aria-hidden="true">·</span>
+                    <span>{loadedAssignment.companyName} ({loadedAssignment.sedeName})</span>
+                  </div>
                 </div>
               </div>
+
+              <button
+                type="button"
+                onClick={clearCheckInFormFields}
+                className="w-full sm:w-auto min-h-[40px] sm:min-h-0 px-3.5 py-2 sm:py-1.5 text-xs font-semibold text-slate-600 hover:text-red-700 bg-white sm:bg-transparent hover:bg-white rounded-xl sm:rounded-lg border border-slate-200 transition whitespace-nowrap shrink-0"
+                title="Quitar sesión cargada y dejar campos en blanco"
+              >
+                Vaciar campos
+              </button>
             </div>
 
-            <button
-              type="button"
-              onClick={clearCheckInFormFields}
-              className="w-full sm:w-auto min-h-[40px] sm:min-h-0 px-3.5 py-2 sm:py-1.5 text-xs font-semibold text-slate-600 hover:text-red-700 bg-white sm:bg-transparent hover:bg-white rounded-xl sm:rounded-lg border border-slate-200 transition whitespace-nowrap shrink-0"
-              title="Quitar sesión cargada y dejar campos en blanco"
-            >
-              Vaciar campos
-            </button>
+            {(() => {
+              const sharePayload = loadedAssignment.isVirtual
+                ? buildSharePayloadFromAssignmentLike(loadedAssignment)
+                : null;
+              return sharePayload ? (
+                <div className="pt-2 border-t border-red-200/70 text-left">
+                  <VirtualClassQuickShare payload={sharePayload} />
+                </div>
+              ) : null;
+            })()}
           </div>
         )}
 
@@ -2729,13 +3061,33 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
               <span className="w-5 h-5 rounded-full bg-red-100 text-red-700 flex items-center justify-center mr-2 text-[11px] font-bold shrink-0">
                 3
               </span>
-              Verificación de Geolocalización GPS
+              {loadedAssignment?.isVirtual
+                ? 'Modalidad Virtual · Validación de Sesión en Línea'
+                : 'Verificación de Geolocalización GPS'}
             </h4>
-            <GpsVisualizer
-              selectedSede={selectedSede}
-              onGpsUpdate={(gps) => setCurrentGps(gps)}
-              currentGps={currentGps}
-            />
+            {loadedAssignment?.isVirtual ? (
+              <div className="p-3.5 rounded-xl bg-indigo-50/70 border border-indigo-200 text-xs text-slate-700 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                <div className="flex items-center gap-2">
+                  <Video className="w-4 h-4 text-indigo-600 shrink-0" />
+                  <span>
+                    <strong className="text-slate-900">Clase Virtual habilitada:</strong> Se imparte en{' '}
+                    <strong className="text-indigo-700">
+                      {loadedAssignment.virtualPlatform || 'Plataforma en línea'}
+                    </strong>
+                    ; no requiere geocerca física en sede.
+                  </span>
+                </div>
+                <span className="font-mono tabular-nums text-[11px] font-bold text-emerald-700 whitespace-nowrap shrink-0">
+                  ✓ Geocerca exenta (En línea)
+                </span>
+              </div>
+            ) : (
+              <GpsVisualizer
+                selectedSede={selectedSede}
+                onGpsUpdate={(gps) => setCurrentGps(gps)}
+                currentGps={currentGps}
+              />
+            )}
           </div>
 
           {/* Section 4: Mandatory Photo Evidence in the Salon */}
@@ -2744,7 +3096,9 @@ export const TrainerCheckInView: React.FC<TrainerCheckInViewProps> = ({
               <span className="w-5 h-5 rounded-full bg-red-100 text-red-700 flex items-center justify-center mr-2 text-[11px] font-bold shrink-0">
                 4
               </span>
-              Foto Obligatoria de Presencia en el Salón
+              {loadedAssignment?.isVirtual
+                ? 'Foto Obligatoria de Evidencia de Inicio en Sala Virtual'
+                : 'Foto Obligatoria de Presencia en el Salón'}
             </h4>
             <CameraCapture
               trainerName={currentTrainer.name}
