@@ -29,9 +29,11 @@ export class FirestoreErrorBoundary extends React.Component<
   render() {
     if (this.state.hasError) {
       let friendlyDetail = this.state.errorMessage;
+      let isFirestoreStructuredError = false;
       try {
         const parsed = JSON.parse(this.state.errorMessage);
         if (parsed && typeof parsed.error === 'string') {
+          isFirestoreStructuredError = true;
           friendlyDetail = parsed.error.includes('Quota exceeded')
             ? 'Se alcanzó el límite diario gratuito de Firestore. La cuota se restablecerá mañana.'
             : `Operación "${parsed.operationType}" rechazada en "${parsed.path}": ${parsed.error}`;
@@ -46,13 +48,15 @@ export class FirestoreErrorBoundary extends React.Component<
             <AlertTriangle className="w-6 h-6 text-red-600 shrink-0 mt-0.5" />
             <div className="flex-1 space-y-2">
               <h3 className="text-base font-bold text-slate-900">
-                Error de permisos o conexión con Firestore
+                {isFirestoreStructuredError
+                  ? 'Error de permisos o conexión con Firestore'
+                  : 'Ocurrió un problema inesperado al mostrar esta sección'}
               </h3>
               <p className="text-sm text-slate-600 break-words">{friendlyDetail}</p>
               <button
                 type="button"
                 onClick={() => this.setState({ hasError: false, errorMessage: '' })}
-                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 transition"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 rounded-lg bg-red-600 text-white text-xs font-semibold hover:bg-red-700 transition cursor-pointer"
               >
                 <RefreshCw className="w-3.5 h-3.5" />
                 Reintentar

@@ -55,6 +55,62 @@ export function formatDateYMD(d: Date): string {
   return `${y}-${m}-${day}`;
 }
 
+export function getUpcomingDefaultTimeHHMM(nowDate: Date = new Date()): string {
+  const candidate = new Date(nowDate.getTime() + 30 * 60 * 1000);
+  const origDay = nowDate.getDate();
+  const mins = candidate.getMinutes();
+  const rem = mins % 15;
+  if (rem !== 0) {
+    candidate.setMinutes(mins + (15 - rem), 0, 0);
+  } else {
+    candidate.setSeconds(0, 0);
+  }
+
+  if (candidate.getDate() !== origDay) {
+    if (nowDate.getHours() === 23 && nowDate.getMinutes() < 40) {
+      return '23:45';
+    }
+    return '09:00';
+  }
+
+  const hh = candidate.getHours();
+  if (hh < 6) {
+    return '09:00';
+  }
+  return `${String(hh).padStart(2, '0')}:${String(candidate.getMinutes()).padStart(2, '0')}`;
+}
+
+export function shouldAutoAuthorizeTodayNewAssignment(
+  dateStr: string,
+  timeHHMM: string,
+  nowDate: Date = new Date()
+): boolean {
+  const todayStr = formatDateYMD(nowDate);
+  if (dateStr !== todayStr) return false;
+  const parts = dateStr.split('-').map(Number);
+  const timeParts = (timeHHMM || '09:00').slice(0, 5).split(':').map(Number);
+  if (
+    parts.length !== 3 ||
+    parts.some((n) => !Number.isFinite(n)) ||
+    timeParts.length < 2 ||
+    timeParts.some((n) => !Number.isFinite(n))
+  ) {
+    return false;
+  }
+  const startMs = new Date(
+    parts[0],
+    parts[1] - 1,
+    parts[2],
+    timeParts[0],
+    timeParts[1],
+    0,
+    0
+  ).getTime();
+  const loadCloseMs = startMs + 10 * 60 * 1000;
+  // Auto-authorize if +10m load window already elapsed or is within 2 minutes of closing right on creation
+  return nowDate.getTime() + 2 * 60 * 1000 >= loadCloseMs;
+}
+
 export function shiftYearMonth(yearMonth: string, deltaMonths: number): string {
   const parts = yearMonth.split('-').map(Number);
   const year = Number.isFinite(parts[0]) ? parts[0] : new Date().getFullYear();
@@ -265,7 +321,8 @@ export function buildMonthlyBatchAssignments(params: {
   const resolvedSedeName = sede?.name || 'Sede Principal';
   const resolvedSedeAddress = sede?.address || 'Dirección Sede Corporativa';
   const normalizedTime = (time || '09:00').slice(0, 5);
-  const baseStamp = Date.now();
+  const nowDate = new Date();
+  const baseStamp = nowDate.getTime();
 
   const created: ClassAssignment[] = [];
   let skippedDuplicates = 0;
@@ -287,6 +344,11 @@ export function buildMonthlyBatchAssignments(params: {
 
     const compactDate = dateStr.replace(/-/g, '');
     const id = `asg_${baseStamp}_${index}_${compactDate}`;
+    const autoAuthorizeToday = shouldAutoAuthorizeTodayNewAssignment(
+      dateStr,
+      normalizedTime,
+      nowDate
+    );
 
     created.push({
       id,
@@ -322,7 +384,7 @@ export function buildMonthlyBatchAssignments(params: {
       completedDates: [],
       nonCompliant: false,
       missedDates: [],
-      reopenedDates: [],
+      reopenedDates: autoAuthorizeToday ? [dateStr] : [],
     });
   });
 

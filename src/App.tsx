@@ -179,11 +179,22 @@ function updateStateIfChanged<T>(
 
 function checkIsMobileOrTablet(): boolean {
   if (typeof window === 'undefined') return false;
-  const isTabletOrMobileWidth = window.innerWidth < 1024;
-  const isTouchTabletDevice =
-    window.innerWidth <= 1366 &&
+  const hasCoarseTouchPointer =
     window.matchMedia('(hover: none) and (pointer: coarse)').matches;
-  return isTabletOrMobileWidth || isTouchTabletDevice;
+  const hasFineMousePointer =
+    window.matchMedia('(hover: hover) and (pointer: fine)').matches;
+
+  // Smartphones and touch tablets stay restricted to Trainer portal
+  if (hasCoarseTouchPointer && window.innerWidth <= 1366) {
+    return true;
+  }
+
+  // Desktop/laptop browsers with mouse or trackpad remain enabled even in split-screen / preview panes (<1024px)
+  if (hasFineMousePointer && window.innerWidth >= 600) {
+    return false;
+  }
+
+  return window.innerWidth < 768;
 }
 
 export default function App() {
@@ -1802,30 +1813,32 @@ export default function App() {
 
       <main className="flex-1 w-full pb-12 sm:pb-16">
         {isTrainerPortalActive && (
-          authenticatedTrainer ? (
-            <TrainerCheckInView
-              currentTrainer={authenticatedTrainer}
-              trainerSession={trainerSession}
-              onLogoutTrainerSession={handleLogoutTrainerSession}
-              companies={companies}
-              records={isolatedTrainerRecords}
-              assignments={isolatedTrainerAssignments}
-              activityCatalog={activityCatalog}
-              transitTrackings={isolatedTrainerTransitTrackings}
-              onUpsertTransitTracking={handleUpsertTransitTracking}
-              onSaveRecord={handleSaveRecord}
-              onUpdateRecord={handleUpdateRecord}
-            />
-          ) : (
-            <TrainerFacialLoginView
-              trainers={trainers}
-              onSessionAuthenticated={handleTrainerSessionAuthenticated}
-            />
-          )
+          <FirestoreErrorBoundary>
+            {authenticatedTrainer ? (
+              <TrainerCheckInView
+                currentTrainer={authenticatedTrainer}
+                trainerSession={trainerSession}
+                onLogoutTrainerSession={handleLogoutTrainerSession}
+                companies={companies}
+                records={isolatedTrainerRecords}
+                assignments={isolatedTrainerAssignments}
+                activityCatalog={activityCatalog}
+                transitTrackings={isolatedTrainerTransitTrackings}
+                onUpsertTransitTracking={handleUpsertTransitTracking}
+                onSaveRecord={handleSaveRecord}
+                onUpdateRecord={handleUpdateRecord}
+              />
+            ) : (
+              <TrainerFacialLoginView
+                trainers={trainers}
+                onSessionAuthenticated={handleTrainerSessionAuthenticated}
+              />
+            )}
+          </FirestoreErrorBoundary>
         )}
 
         {!isMobileOrTablet && currentView === 'personnel' && (
-          <div className="hidden lg:block print:block">
+          <div className="block print:block">
             <FirestoreErrorBoundary>
               <PersonnelRegistryView onNavigateView={handleViewChange} />
             </FirestoreErrorBoundary>
@@ -1833,42 +1846,44 @@ export default function App() {
         )}
 
         {!isMobileOrTablet && currentView === 'admin' && (
-          <div className="hidden lg:block print:block">
-            <AdminDashboard
-              records={records}
-              companies={companies}
-              trainers={trainers}
-              assignments={assignments}
-              activityCatalog={activityCatalog}
-              transitTrackings={transitTrackings}
-              onDeleteTransitTracking={handleDeleteTransitTracking}
-              onUpdateRecord={handleUpdateRecord}
-              onDeleteRecord={handleDeleteRecord}
-              onAddCompany={handleAddCompany}
-              onUpdateCompany={handleUpdateCompany}
-              onDeleteCompany={handleDeleteCompany}
-              onAddSede={handleAddSede}
-              onUpdateSede={handleUpdateSede}
-              onDeleteSede={handleDeleteSede}
-              onAddTrainer={handleAddTrainer}
-              onUpdateTrainer={handleUpdateTrainer}
-              onDeleteTrainer={handleDeleteTrainer}
-              onAddAssignment={handleAddAssignment}
-              onAddAssignmentsBatch={handleAddAssignmentsBatch}
-              onUpdateAssignment={handleUpdateAssignment}
-              onDeleteAssignment={handleDeleteAssignment}
-              onAddCatalogItem={handleAddCatalogItem}
-              onUpdateCatalogItem={handleUpdateCatalogItem}
-              onDeleteCatalogItem={handleDeleteCatalogItem}
-              onResetData={handleResetData}
-              isDirectoryAuthenticated={isDirectoryAuthenticated}
-              adminStartAlerts={adminStartAlerts}
-              onDismissAdminAlert={handleDismissAdminAlert}
-              onClearAllAdminAlerts={handleClearAllAdminAlerts}
-              onReplayAlertChime={() => {
-                void playAdminSessionStartChime();
-              }}
-            />
+          <div className="block print:block">
+            <FirestoreErrorBoundary>
+              <AdminDashboard
+                records={records}
+                companies={companies}
+                trainers={trainers}
+                assignments={assignments}
+                activityCatalog={activityCatalog}
+                transitTrackings={transitTrackings}
+                onDeleteTransitTracking={handleDeleteTransitTracking}
+                onUpdateRecord={handleUpdateRecord}
+                onDeleteRecord={handleDeleteRecord}
+                onAddCompany={handleAddCompany}
+                onUpdateCompany={handleUpdateCompany}
+                onDeleteCompany={handleDeleteCompany}
+                onAddSede={handleAddSede}
+                onUpdateSede={handleUpdateSede}
+                onDeleteSede={handleDeleteSede}
+                onAddTrainer={handleAddTrainer}
+                onUpdateTrainer={handleUpdateTrainer}
+                onDeleteTrainer={handleDeleteTrainer}
+                onAddAssignment={handleAddAssignment}
+                onAddAssignmentsBatch={handleAddAssignmentsBatch}
+                onUpdateAssignment={handleUpdateAssignment}
+                onDeleteAssignment={handleDeleteAssignment}
+                onAddCatalogItem={handleAddCatalogItem}
+                onUpdateCatalogItem={handleUpdateCatalogItem}
+                onDeleteCatalogItem={handleDeleteCatalogItem}
+                onResetData={handleResetData}
+                isDirectoryAuthenticated={isDirectoryAuthenticated}
+                adminStartAlerts={adminStartAlerts}
+                onDismissAdminAlert={handleDismissAdminAlert}
+                onClearAllAdminAlerts={handleClearAllAdminAlerts}
+                onReplayAlertChime={() => {
+                  void playAdminSessionStartChime();
+                }}
+              />
+            </FirestoreErrorBoundary>
           </div>
         )}
       </main>

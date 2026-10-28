@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   ACTIVITY_TYPE_LABELS,
   ActivityCatalogItem,
@@ -49,8 +49,10 @@ import {
   buildMonthGridCells,
   buildMonthlyBatchAssignments,
   getMonthDatesByPattern,
+  getUpcomingDefaultTimeHHMM,
   hasMatchingAssignmentOnDate,
   shiftYearMonth,
+  shouldAutoAuthorizeTodayNewAssignment,
   toggleWeekdayDatesInMonth,
 } from '../utils/monthlyAssignmentHelper';
 import {
@@ -128,21 +130,6 @@ const KNOWN_PLATFORM_NAMES = new Set<string>([
   'Webex',
 ]);
 
-function getUpcomingDefaultTimeHHMM(): string {
-  const now = new Date();
-  now.setMinutes(now.getMinutes() + 30);
-  const roundedMinutes = now.getMinutes() <= 30 ? 30 : 60;
-  if (roundedMinutes === 60) {
-    now.setHours(now.getHours() + 1, 0, 0, 0);
-  } else {
-    now.setMinutes(30, 0, 0);
-  }
-  const hh = now.getHours();
-  if (hh < 7 || hh > 21) {
-    return '09:00';
-  }
-  return `${String(hh).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-}
 
 export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
   assignment,
@@ -163,7 +150,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
 
   const [trainerId, setTrainerId] = useState(trainers[0]?.id || '');
   const [companyId, setCompanyId] = useState(companies[0]?.id || '');
-  const [sedeId, setSedeId] = useState(companies[0]?.sedes[0]?.id || '');
+  const [sedeId, setSedeId] = useState(companies[0]?.sedes?.[0]?.id || '');
 
   const [scheduleMode, setScheduleMode] = useState<
     'semanal' | 'mensual' | 'fecha_unica' | 'dias_mes'
@@ -197,8 +184,21 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
   const [virtualMeetingId, setVirtualMeetingId] = useState<string>('');
   const [virtualPasscode, setVirtualPasscode] = useState<string>('');
 
+  const initializedSessionKeyRef = useRef<string | null>(null);
+  const validationBannerRef = useRef<HTMLDivElement | null>(null);
+
+  const selectableTrainers = useMemo(() => {
+    const activeOnes = trainers.filter(
+      (t) => t.active !== false || (assignment && t.id === assignment.trainerId)
+    );
+    return activeOnes.length > 0 ? activeOnes : trainers;
+  }, [trainers, assignment]);
+
   // Selected trainer & company
-  const selectedTrainer = trainers.find((t) => t.id === trainerId) || trainers[0];
+  const selectedTrainer =
+    selectableTrainers.find((t) => t.id === trainerId) ||
+    trainers.find((t) => t.id === trainerId) ||
+    selectableTrainers[0];
   const selectedCompany = companies.find((c) => c.id === companyId) || companies[0];
 
   const allowedTrainerSpecialties = useMemo(
@@ -217,6 +217,18 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
       : platformSelect;
 
   useEffect(() => {
+    if (!isOpen) {
+      initializedSessionKeyRef.current = null;
+      return;
+    }
+
+    const sessionKey = assignment ? `edit:${assignment.id}` : 'create';
+    if (initializedSessionKeyRef.current === sessionKey) {
+      // Do not overwrite user's in-progress form edits when background Firestore snapshots arrive
+      return;
+    }
+    initializedSessionKeyRef.current = sessionKey;
+
     const syncPlatformState = (rawPlatform?: string) => {
       const trimmed = (rawPlatform || '').trim();
       if (!trimmed) {
@@ -233,7 +245,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
 
     if (assignment) {
       const targetTrainer =
-        trainers.find((t) => t.id === assignment.trainerId) || trainers[0];
+        trainers.find((t) => t.id === assignment.trainerId) || selectableTrainers[0];
       const trainerSpecs = getAllowedSpecialtiesForTrainer(targetTrainer, activityCatalog);
 
       setTrainerId(targetTrainer?.id || assignment.trainerId);
@@ -288,10 +300,14 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
       setClosed(Boolean(assignment.closed));
       setNonCompliant(Boolean(assignment.nonCompliant));
     } else {
+      const preferredWithSpecialties = selectableTrainers.find(
+        (t) => getAllowedSpecialtiesForTrainer(t, activityCatalog).length > 0
+      );
       const targetTrainer =
         (initialPreset?.trainerId &&
-          trainers.find((t) => t.id === initialPreset.trainerId)) ||
-        trainers[0];
+          selectableTrainers.find((t) => t.id === initialPreset.trainerId)) ||
+        preferredWithSpecialties ||
+        selectableTrainers[0];
       const trainerSpecs = getAllowedSpecialtiesForTrainer(targetTrainer, activityCatalog);
 
       let initialActName = initialPreset?.activityName || '';
@@ -333,11 +349,12 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
       const presetComp =
         (initialPreset?.companyId && companies.find((c) => c.id === initialPreset.companyId)) ||
         companies[0];
+      const presetCompSedes = Array.isArray(presetComp?.sedes) ? presetComp.sedes : [];
       const resolvedPresetSedeId =
         (initialPreset?.sedeId &&
-          presetComp?.sedes.some((s) => s.id === initialPreset.sedeId) &&
+          presetCompSedes.some((s) => s.id === initialPreset.sedeId) &&
           initialPreset.sedeId) ||
-        presetComp?.sedes[0]?.id ||
+        presetCompSedes[0]?.id ||
         '';
       setCompanyId(presetComp?.id || '');
       setSedeId(resolvedPresetSedeId);
@@ -374,7 +391,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
           ? `Sala Virtual (${initialPreset?.virtualPlatform || 'Google Meet'})`
           : 'Piso 4 - Sala SUM'
       );
-      setExpectedAttendeesInput('0');
+      setExpectedAttendeesInput('15');
       setNotes('');
       setActive(true);
       setClosed(false);
@@ -382,7 +399,91 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
     }
     setMultiDayError(null);
     setFormValidationError(null);
-  }, [assignment, trainers, companies, isOpen, initialPreset, activityCatalog]);
+  }, [assignment, trainers, selectableTrainers, companies, isOpen, initialPreset, activityCatalog]);
+
+  // Safe late-hydration fallback if modal was opened before trainers/companies arrived from Firestore
+  useEffect(() => {
+    if (!isOpen) return;
+    if (!trainerId && selectableTrainers.length > 0) {
+      const preferred =
+        selectableTrainers.find(
+          (t) => getAllowedSpecialtiesForTrainer(t, activityCatalog).length > 0
+        ) || selectableTrainers[0];
+      setTrainerId(preferred.id);
+      const specs = getAllowedSpecialtiesForTrainer(preferred, activityCatalog);
+      if (!activityName && specs.length > 0) {
+        setActivityName(specs[0].name);
+        setActivityType(specs[0].activityType);
+        setDurationInput(String(specs[0].durationMinutes));
+      }
+    }
+    if (!companyId && companies.length > 0) {
+      setCompanyId(companies[0].id);
+      setSedeId(companies[0].sedes?.[0]?.id || '');
+    }
+  }, [isOpen, trainerId, companyId, selectableTrainers, companies, activityCatalog, activityName]);
+
+  const normalizedTime = (time || '09:00').slice(0, 5);
+  const resolvedDurationMinutes = Math.max(
+    MIN_ASSIGNMENT_DURATION_MINUTES,
+    Math.min(
+      MAX_ASSIGNMENT_DURATION_MINUTES,
+      parseInt(durationInput, 10) ||
+        getDefaultDurationMinutes(activityType, activityName, activityCatalog)
+    )
+  );
+
+  const liveVirtualSharePayload = useMemo(() => {
+    if (!isOpen || !isVirtual) return null;
+    const companySedes = Array.isArray(selectedCompany?.sedes) ? selectedCompany.sedes : [];
+    const sede = companySedes.find((s) => s.id === sedeId) || companySedes[0];
+    const previewFrequency: 'semanal' | 'mensual' | 'fecha_unica' =
+      scheduleMode === 'dias_mes' ? 'fecha_unica' : scheduleMode;
+    const previewDate =
+      scheduleMode === 'dias_mes'
+        ? selectedMonthDates[0] || `${targetMonth}-01`
+        : specificDate;
+
+    return buildSharePayloadFromAssignmentLike({
+      activityName: activityName || 'Clase Virtual Corporativa',
+      activityType,
+      companyName: selectedCompany?.name || 'Empresa Cliente',
+      sedeName: sede?.name,
+      trainerName: selectedTrainer?.name || 'Entrenador BSCW',
+      frequency: previewFrequency,
+      dayOfWeek: previewFrequency === 'semanal' ? dayOfWeek : undefined,
+      dayOfMonth: previewFrequency === 'mensual' ? dayOfMonth : undefined,
+      date: previewFrequency === 'fecha_unica' ? previewDate : undefined,
+      time: normalizedTime,
+      durationMinutes: resolvedDurationMinutes,
+      virtualPlatform: resolvedVirtualPlatform,
+      virtualMeetingUrl,
+      virtualMeetingId,
+      virtualPasscode,
+      notes,
+    });
+  }, [
+    isOpen,
+    isVirtual,
+    selectedCompany,
+    sedeId,
+    scheduleMode,
+    selectedMonthDates,
+    targetMonth,
+    specificDate,
+    activityName,
+    activityType,
+    selectedTrainer,
+    dayOfWeek,
+    dayOfMonth,
+    normalizedTime,
+    resolvedDurationMinutes,
+    resolvedVirtualPlatform,
+    virtualMeetingUrl,
+    virtualMeetingId,
+    virtualPasscode,
+    notes,
+  ]);
 
   if (!isOpen) return null;
 
@@ -409,7 +510,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
   const handleCompanyChange = (cId: string) => {
     setCompanyId(cId);
     const comp = companies.find((c) => c.id === cId);
-    setSedeId(comp?.sedes[0]?.id || '');
+    setSedeId(comp?.sedes?.[0]?.id || '');
   };
 
   const handleToggleVirtualModality = (nextVirtual: boolean) => {
@@ -424,15 +525,6 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
     }
   };
 
-  const normalizedTime = (time || '09:00').slice(0, 5);
-  const resolvedDurationMinutes = Math.max(
-    MIN_ASSIGNMENT_DURATION_MINUTES,
-    Math.min(
-      MAX_ASSIGNMENT_DURATION_MINUTES,
-      parseInt(durationInput, 10) ||
-        getDefaultDurationMinutes(activityType, activityName, activityCatalog)
-    )
-  );
   const { hours: durationHours, minutes: durationRemainderMinutes } =
     splitMinutesToHoursAndMinutes(resolvedDurationMinutes);
   const estimatedEndTime = calculateEndTimeHHMM(normalizedTime, resolvedDurationMinutes);
@@ -463,111 +555,90 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
     );
   };
 
-  const liveVirtualSharePayload = useMemo(() => {
-    if (!isVirtual) return null;
-    const sede = selectedCompany?.sedes.find((s) => s.id === sedeId) || selectedCompany?.sedes[0];
-    const previewFrequency: 'semanal' | 'mensual' | 'fecha_unica' =
-      scheduleMode === 'dias_mes' ? 'fecha_unica' : scheduleMode;
-    const previewDate =
-      scheduleMode === 'dias_mes'
-        ? selectedMonthDates[0] || `${targetMonth}-01`
-        : specificDate;
-
-    return buildSharePayloadFromAssignmentLike({
-      activityName: activityName || 'Clase Virtual Corporativa',
-      activityType,
-      companyName: selectedCompany?.name || 'Empresa Cliente',
-      sedeName: sede?.name,
-      trainerName: selectedTrainer?.name || 'Entrenador BSCW',
-      frequency: previewFrequency,
-      dayOfWeek: previewFrequency === 'semanal' ? dayOfWeek : undefined,
-      dayOfMonth: previewFrequency === 'mensual' ? dayOfMonth : undefined,
-      date: previewFrequency === 'fecha_unica' ? previewDate : undefined,
-      time: normalizedTime,
-      durationMinutes: resolvedDurationMinutes,
-      virtualPlatform: resolvedVirtualPlatform,
-      virtualMeetingUrl,
-      virtualMeetingId,
-      virtualPasscode,
-      notes,
+  const reportValidationError = (msg: string) => {
+    setFormValidationError(msg);
+    requestAnimationFrame(() => {
+      validationBannerRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
     });
-  }, [
-    isVirtual,
-    selectedCompany,
-    sedeId,
-    scheduleMode,
-    selectedMonthDates,
-    targetMonth,
-    specificDate,
-    activityName,
-    activityType,
-    selectedTrainer,
-    dayOfWeek,
-    dayOfMonth,
-    normalizedTime,
-    resolvedDurationMinutes,
-    resolvedVirtualPlatform,
-    virtualMeetingUrl,
-    virtualMeetingId,
-    virtualPasscode,
-    notes,
-  ]);
+  };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     setFormValidationError(null);
 
-    const trainer = trainers.find((t) => t.id === trainerId) || trainers[0];
+    const trainer =
+      selectableTrainers.find((t) => t.id === trainerId) ||
+      trainers.find((t) => t.id === trainerId) ||
+      selectableTrainers[0];
     const company = companies.find((c) => c.id === companyId) || companies[0];
-    if (!trainer || !company) return;
+
+    if (!trainer) {
+      reportValidationError(
+        'No hay ningún entrenador disponible. Registra o activa primero un entrenador en la pestaña Entrenadores.'
+      );
+      return;
+    }
+    if (!company) {
+      reportValidationError(
+        'No hay ninguna empresa cliente registrada. Registra primero una empresa y sede en la pestaña Empresas y Sedes.'
+      );
+      return;
+    }
 
     // Enforce strict specialty restriction
     if (!activityName.trim() || !isActivityAllowedForTrainer(trainer, activityName)) {
-      setFormValidationError(
+      reportValidationError(
         `Solo puedes asignar actividades registradas en las especialidades de ${trainer.name}. Selecciona una de sus especialidades o actualiza su perfil.`
       );
       return;
     }
 
+    if (!/^([01]\d|2[0-3]):[0-5]\d$/.test(normalizedTime)) {
+      reportValidationError(
+        'Ingresa una hora de inicio válida en formato HH:MM (por ejemplo 09:00).'
+      );
+      return;
+    }
+
+    if (scheduleMode === 'fecha_unica' && !/^\d{4}-\d{2}-\d{2}$/.test(specificDate)) {
+      reportValidationError('Selecciona una fecha específica válida para programar la clase.');
+      return;
+    }
+
     // Validate Virtual Class fields when enabled
     let normalizedMeetingUrl = '';
-    const finalPlatformName = resolvedVirtualPlatform.trim();
+    const finalPlatformName =
+      platformSelect === 'Otra Plataforma'
+        ? customPlatformName.trim()
+        : platformSelect.trim();
+
     if (isVirtual) {
       if (finalPlatformName.length < 2 || finalPlatformName.length > 80) {
-        setFormValidationError(
+        reportValidationError(
           'Indica el nombre de la plataforma donde se impartirá la clase virtual (ej. Google Meet, Zoom, Teams).'
         );
         return;
       }
       normalizedMeetingUrl = normalizeVirtualMeetingUrl(virtualMeetingUrl);
       if (!isValidVirtualMeetingUrl(normalizedMeetingUrl)) {
-        setFormValidationError(
+        reportValidationError(
           'Ingresa un link válido de la sala virtual (ej. https://meet.google.com/abc-defg-hij o https://zoom.us/j/...).'
         );
         return;
       }
     }
 
-    if (onAddCatalogItem && !isDisciplineRepresentedInCatalog(activityName, activityCatalog)) {
-      const autoCatalogItem = buildCatalogItemFromSpecialty(activityName, {
-        activityType,
-        durationMinutes: resolvedDurationMinutes,
-      });
-      if (autoCatalogItem) {
-        onAddCatalogItem(autoCatalogItem);
-      }
-    }
-
     // Batch mode: Marcar Días del Mes -> creates one ClassAssignment per marked day in the trainer's calendar
     if (!assignment && scheduleMode === 'dias_mes') {
       if (selectedMonthDates.length === 0) {
-        setMultiDayError(
-          'Marca al menos un día en el calendario mensual para cargar la actividad al entrenador.'
-        );
+        const msg =
+          'Marca al menos un día en el calendario mensual haciendo clic sobre las fechas o los botones rápidos antes de cargar.';
+        setMultiDayError(msg);
+        reportValidationError(msg);
         return;
       }
 
-      const { created } = buildMonthlyBatchAssignments({
+      const { created, skippedDuplicates } = buildMonthlyBatchAssignments({
         dates: selectedMonthDates,
         existingAssignments,
         trainer,
@@ -588,21 +659,47 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
         active,
       });
 
-      if (created.length > 0) {
-        if (onSaveBatch) {
-          onSaveBatch(created);
-        } else {
-          created.forEach((item) => onSave(item));
+      if (created.length === 0) {
+        reportValidationError(
+          `Los ${skippedDuplicates} días seleccionados ya tienen asignada exactamente la actividad "${activityName}" a las ${normalizedTime} hrs para ${trainer.name}.`
+        );
+        return;
+      }
+
+      if (onAddCatalogItem && !isDisciplineRepresentedInCatalog(activityName, activityCatalog)) {
+        const autoCatalogItem = buildCatalogItemFromSpecialty(activityName, {
+          activityType,
+          durationMinutes: resolvedDurationMinutes,
+        });
+        if (autoCatalogItem) {
+          onAddCatalogItem(autoCatalogItem);
         }
+      }
+
+      if (onSaveBatch) {
+        onSaveBatch(created);
+      } else {
+        created.forEach((item) => onSave(item));
       }
       onClose();
       return;
     }
 
+    if (onAddCatalogItem && !isDisciplineRepresentedInCatalog(activityName, activityCatalog)) {
+      const autoCatalogItem = buildCatalogItemFromSpecialty(activityName, {
+        activityType,
+        durationMinutes: resolvedDurationMinutes,
+      });
+      if (autoCatalogItem) {
+        onAddCatalogItem(autoCatalogItem);
+      }
+    }
+
     const frequency: 'semanal' | 'mensual' | 'fecha_unica' =
       scheduleMode === 'dias_mes' ? 'fecha_unica' : scheduleMode;
 
-    const sede = company.sedes.find((s) => s.id === sedeId) || company.sedes[0];
+    const companySedes = Array.isArray(company.sedes) ? company.sedes : [];
+    const sede = companySedes.find((s) => s.id === sedeId) || companySedes[0];
     const fallbackCompanySlug = company.id.replace(/[^a-zA-Z0-9_\-]/g, '_').slice(0, 80);
 
     const existingCompletedDates = new Set(assignment?.completedDates || []);
@@ -627,6 +724,38 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
       }
     }
 
+    // When creating a brand-new active assignment that applies to today (or a specific date) whose +10m start window already passed,
+    // automatically authorize it for that date so it does not immediately auto-lock as "Fuera de Horario" right after creation.
+    if (!assignment && !closed && !nonCompliant) {
+      const draftCheck: ClassAssignment = {
+        id: 'draft_check',
+        trainerId: trainer.id,
+        trainerName: trainer.name,
+        companyId: company.id,
+        companyName: company.name,
+        sedeId: sede?.id || `sede_principal_${fallbackCompanySlug}`,
+        sedeName: sede?.name || 'Sede Principal',
+        sedeAddress: sede?.address || 'Dirección Sede Corporativa',
+        frequency,
+        dayOfWeek: frequency === 'semanal' ? Number(dayOfWeek) : undefined,
+        dayOfMonth: frequency === 'mensual' ? Number(dayOfMonth) : undefined,
+        date: frequency === 'fecha_unica' ? specificDate : undefined,
+        time: normalizedTime,
+        durationMinutes: resolvedDurationMinutes,
+        activityType,
+        activityName,
+        locationArea: locationArea.trim() || 'Área Principal',
+        expectedAttendees: 0,
+        active,
+      };
+      if (
+        doesAssignmentApplyToDate(draftCheck, todayLocalStr) &&
+        shouldAutoAuthorizeTodayNewAssignment(todayLocalStr, normalizedTime)
+      ) {
+        existingReopenedDates.add(todayLocalStr);
+      }
+    }
+
     const nowTime = new Date().toLocaleTimeString('es-MX', { hour12: false });
 
     const saved: ClassAssignment = {
@@ -648,7 +777,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
       activityName,
       locationArea:
         locationArea.trim() ||
-        (isVirtual ? `Sala Virtual (${finalPlatformName})` : 'Área Principal'),
+        (isVirtual ? `Sala Virtual (${finalPlatformName || 'En línea'})` : 'Área Principal'),
       expectedAttendees: Math.max(0, parseInt(expectedAttendeesInput, 10) || 0),
       notes: notes.trim(),
       ...(isVirtual
@@ -711,6 +840,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
         </div>
 
         <form
+          noValidate
           onSubmit={handleSubmit}
           className="p-5 sm:p-6 space-y-4 text-slate-800 text-xs flex-1 overflow-y-auto"
         >
@@ -740,11 +870,21 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
               onChange={(e) => handleTrainerChange(e.target.value)}
               className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs font-semibold text-slate-900 focus:outline-none focus:border-red-500"
             >
-              {trainers.map((tr) => (
-                <option key={tr.id} value={tr.id}>
-                  {tr.name} ({tr.specialties.join(', ')})
-                </option>
-              ))}
+              {selectableTrainers.length === 0 ? (
+                <option value="">Sin entrenadores activos registrados</option>
+              ) : (
+                selectableTrainers.map((tr) => {
+                  const trSpecs = Array.isArray(tr.specialties) ? tr.specialties : [];
+                  return (
+                    <option key={tr.id} value={tr.id}>
+                      {tr.name}
+                      {trSpecs.length > 0
+                        ? ` (${trSpecs.join(', ')})`
+                        : ' (Sin especialidades registradas)'}
+                    </option>
+                  );
+                })
+              )}
             </select>
           </div>
 
@@ -778,7 +918,9 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                 onChange={(e) => setSedeId(e.target.value)}
                 className="w-full bg-slate-50 border border-slate-300 rounded-xl px-3 py-2 text-xs text-slate-900 focus:outline-none focus:border-red-500"
               >
-                {selectedCompany && selectedCompany.sedes.length > 0 ? (
+                {selectedCompany &&
+                Array.isArray(selectedCompany.sedes) &&
+                selectedCompany.sedes.length > 0 ? (
                   selectedCompany.sedes.map((s) => (
                     <option key={s.id} value={s.id}>
                       {s.name}
@@ -875,7 +1017,6 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                       </label>
                       <input
                         type="text"
-                        required
                         maxLength={80}
                         value={customPlatformName}
                         onChange={(e) => {
@@ -948,7 +1089,6 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                     </label>
                     <input
                       type="text"
-                      required={isVirtual}
                       maxLength={500}
                       value={virtualMeetingUrl}
                       onChange={(e) => {
@@ -1142,6 +1282,20 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                       type="button"
                       onClick={() => {
                         setMultiDayError(null);
+                        setFormValidationError(null);
+                        setSelectedMonthDates(
+                          getMonthDatesByPattern(targetMonth, 'from_today', todayLocalStr)
+                        );
+                      }}
+                      className="px-2.5 py-1 rounded-lg bg-red-50 hover:bg-red-100 border border-red-200 text-[11px] font-bold text-red-700 transition whitespace-nowrap shrink-0 cursor-pointer"
+                    >
+                      Desde hoy (Lun–Vie)
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setMultiDayError(null);
+                        setFormValidationError(null);
                         setSelectedMonthDates(
                           getMonthDatesByPattern(targetMonth, 'weekdays', todayLocalStr)
                         );
@@ -1316,7 +1470,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                               }`}
                             >
                               {isMarked
-                                ? ACTIVITY_TYPE_LABELS[activityType].split(' ')[0]
+                                ? (ACTIVITY_TYPE_LABELS[activityType] || 'Sesión').split(' ')[0]
                                 : alreadySameSlot
                                 ? 'Ya asig.'
                                 : trainerExistingCount > 0
@@ -1398,11 +1552,21 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
                   </label>
                   <input
                     type="time"
-                    required
                     value={time}
-                    onChange={(e) => setTime(e.target.value)}
-                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono tabular-nums focus:outline-none focus:border-red-500"
+                    onChange={(e) => {
+                      setTime(e.target.value);
+                      setFormValidationError(null);
+                    }}
+                    className="w-full bg-white border border-slate-300 rounded-xl px-3 py-1.5 text-xs text-slate-900 font-mono tabular-nums font-bold focus:outline-none focus:border-red-500"
                   />
+                  {!assignment &&
+                    scheduleMode === 'fecha_unica' &&
+                    specificDate === todayLocalStr &&
+                    shouldAutoAuthorizeTodayNewAssignment(todayLocalStr, normalizedTime) && (
+                      <p className="text-[10px] text-amber-800 mt-1">
+                        La hora seleccionada ya inició o transcurrió hoy: al confirmar quedará habilitada hoy para el entrenador.
+                      </p>
+                    )}
                 </div>
               </div>
             )}
@@ -1732,7 +1896,6 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
               </label>
               <input
                 type="text"
-                required
                 value={locationArea}
                 onChange={(e) => setLocationArea(e.target.value)}
                 placeholder={
@@ -1916,11 +2079,33 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
             </label>
           </div>
 
-          {formValidationError && (
-            <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 font-semibold text-xs">
-              {formValidationError}
-            </div>
-          )}
+          <div ref={validationBannerRef}>
+            {formValidationError && (
+              <div className="p-3 rounded-xl border border-rose-200 bg-rose-50 text-rose-800 font-semibold text-xs">
+                {formValidationError}
+              </div>
+            )}
+            {!formValidationError && allowedTrainerSpecialties.length === 0 && (
+              <div className="p-3 rounded-xl border border-amber-200 bg-amber-50 text-amber-900 text-xs flex flex-wrap items-center justify-between gap-2">
+                <span className="font-semibold">
+                  Registra al menos una especialidad en el perfil de{' '}
+                  {selectedTrainer?.name || 'este entrenador'} para poder confirmar la asignación.
+                </span>
+                {onEditTrainerSpecialties && selectedTrainer && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      onClose();
+                      onEditTrainerSpecialties(selectedTrainer);
+                    }}
+                    className="px-3 py-1.5 rounded-lg bg-amber-700 hover:bg-amber-800 text-white text-xs font-semibold whitespace-nowrap shrink-0 cursor-pointer"
+                  >
+                    Registrar especialidades
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
 
           <div className="pt-3 border-t border-slate-200 flex items-center justify-end space-x-2">
             <button
@@ -1932,8 +2117,7 @@ export const AdminAssignmentModal: React.FC<AdminAssignmentModalProps> = ({
             </button>
             <button
               type="submit"
-              disabled={allowedTrainerSpecialties.length === 0}
-              className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 disabled:opacity-50 text-white font-bold shadow-md shadow-red-500/20 whitespace-nowrap shrink-0 cursor-pointer"
+              className="px-5 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white font-bold shadow-md shadow-red-500/20 whitespace-nowrap shrink-0 cursor-pointer"
             >
               {assignment
                 ? 'Guardar Cambios'

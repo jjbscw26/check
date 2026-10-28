@@ -172,6 +172,23 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
     };
   }, []);
 
+  const allAvailableSpecialties = React.useMemo(() => {
+    const seen = new Set<string>();
+    const list: string[] = [];
+    const pushUnique = (raw: string) => {
+      const cleaned = cleanDisciplineLabel(raw).slice(0, 80).trim();
+      if (!cleaned) return;
+      const key = normalizeDisciplineKey(cleaned);
+      if (!key || seen.has(key)) return;
+      seen.add(key);
+      list.push(cleaned);
+    };
+    PRESET_SPECIALTIES.forEach(pushUnique);
+    (Array.isArray(existingSpecialties) ? existingSpecialties : []).forEach(pushUnique);
+    (Array.isArray(specialties) ? specialties : []).forEach(pushUnique);
+    return list;
+  }, [existingSpecialties, specialties]);
+
   if (!isOpen) return null;
 
   const verifyCapturedOrUploadedFace = async (imgUrl: string) => {
@@ -301,23 +318,6 @@ export const AdminTrainerModal: React.FC<AdminTrainerModalProps> = ({
     }
     setCustomSpecialty('');
   };
-
-  const allAvailableSpecialties = React.useMemo(() => {
-    const seen = new Set<string>();
-    const list: string[] = [];
-    const pushUnique = (raw: string) => {
-      const cleaned = cleanDisciplineLabel(raw).slice(0, 80).trim();
-      if (!cleaned) return;
-      const key = normalizeDisciplineKey(cleaned);
-      if (!key || seen.has(key)) return;
-      seen.add(key);
-      list.push(cleaned);
-    };
-    PRESET_SPECIALTIES.forEach(pushUnique);
-    existingSpecialties.forEach(pushUnique);
-    specialties.forEach(pushUnique);
-    return list;
-  }, [existingSpecialties, specialties]);
 
   const handleCloseModal = () => {
     stopCameraStream();

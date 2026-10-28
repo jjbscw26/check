@@ -50,6 +50,7 @@ import { getAssignmentOccurrenceStatus, toggleAssignmentDateLock } from '../util
 import {
   buildMonthlyBatchAssignments,
   getMonthDatesByPattern,
+  getUpcomingDefaultTimeHHMM,
   hasMatchingAssignmentOnDate,
   MonthSelectionPattern,
   toggleWeekdayDatesInMonth,
@@ -82,6 +83,11 @@ interface AdminScheduleViewProps {
   onDeleteAssignment: (assignmentId: string) => void;
   onEditTrainerSpecialties?: (trainer: Trainer) => void;
   onOpenPdfReport?: (trainerId?: string) => void;
+  lastSavedSignal?: {
+    stamp: number;
+    isEdit: boolean;
+    assignments: ClassAssignment[];
+  } | null;
 }
 
 const MONTH_NAMES = [
@@ -145,6 +151,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
   onDeleteAssignment,
   onEditTrainerSpecialties,
   onOpenPdfReport,
+  lastSavedSignal,
 }) => {
   // Calendar view mode: 'month' | 'week' | 'day'
   const [viewMode, setViewMode] = useState<'month' | 'week' | 'day'>('month');
@@ -181,7 +188,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
   const [bulkVirtualMeetingUrl, setBulkVirtualMeetingUrl] = useState<string>('');
   const [bulkVirtualMeetingId, setBulkVirtualMeetingId] = useState<string>('');
   const [bulkVirtualPasscode, setBulkVirtualPasscode] = useState<string>('');
-  const [bulkTime, setBulkTime] = useState<string>('09:00');
+  const [bulkTime, setBulkTime] = useState<string>(() => getUpcomingDefaultTimeHHMM());
   const [bulkDurationHours, setBulkDurationHours] = useState<number>(1);
   const [bulkDurationMinutesPart, setBulkDurationMinutesPart] = useState<number>(0);
   const [bulkExpectedAttendees, setBulkExpectedAttendees] = useState<number>(15);
@@ -198,12 +205,75 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
     return () => clearInterval(timer);
   }, []);
 
+  const handledSaveStampRef = React.useRef<number>(0);
+
+  // When a new or edited assignment is saved from AdminAssignmentModal, focus its date and clear any hiding filters
+  React.useEffect(() => {
+    if (!lastSavedSignal || lastSavedSignal.stamp === handledSaveStampRef.current) return;
+    handledSaveStampRef.current = lastSavedSignal.stamp;
+
+    const savedList = lastSavedSignal.assignments;
+    if (!savedList || savedList.length === 0) return;
+    const first = savedList[0];
+
+    if (filterTrainerId !== 'all' && !savedList.some((a) => a.trainerId === filterTrainerId)) {
+      setFilterTrainerId('all');
+    }
+    if (filterCompanyId !== 'all' && !savedList.some((a) => a.companyId === filterCompanyId)) {
+      setFilterCompanyId('all');
+    }
+    if (
+      filterActivityType !== 'all' &&
+      !savedList.some((a) => a.activityType === filterActivityType)
+    ) {
+      setFilterActivityType('all');
+    }
+    if (filterLockStatus !== 'all') {
+      setFilterLockStatus('all');
+    }
+    if (searchTerm.trim() !== '') {
+      setSearchTerm('');
+    }
+
+    if (first.frequency === 'fecha_unica' && first.date) {
+      const parts = first.date.split('-').map(Number);
+      if (parts.length === 3 && parts.every((n) => Number.isFinite(n))) {
+        const targetD = new Date(parts[0], parts[1] - 1, parts[2]);
+        setSelectedDate(targetD);
+        setCurrentDate(targetD);
+      }
+    }
+
+    setBulkFeedback({
+      type: 'success',
+      trainerId: first.trainerId,
+      message:
+        savedList.length > 1
+          ? `Se asignaron ${savedList.length} sesiones de "${first.activityName}" (${first.time} hrs) en el calendario de ${first.trainerName}.`
+          : lastSavedSignal.isEdit
+          ? `Asignación actualizada: "${first.activityName}" con ${first.trainerName} en ${first.companyName} (${first.time} hrs).`
+          : `Nueva clase asignada correctamente: "${first.activityName}" con ${first.trainerName} en ${first.companyName} (${first.time} hrs${first.isVirtual ? ` · Clase Virtual en ${first.virtualPlatform || 'línea'}` : ''}).`,
+    });
+  }, [
+    lastSavedSignal,
+    filterTrainerId,
+    filterCompanyId,
+    filterActivityType,
+    filterLockStatus,
+    searchTerm,
+  ]);
+
   // Keep default trainer/company valid when lists load from Firestore
   React.useEffect(() => {
-    if ((!bulkTrainerId || !trainers.some((t) => t.id === bulkTrainerId)) && trainers.length > 0) {
-      setBulkTrainerId(trainers[0].id);
+    const activeTrainers = trainers.filter((t) => t.active !== false);
+    const pool = activeTrainers.length > 0 ? activeTrainers : trainers;
+    if ((!bulkTrainerId || !pool.some((t) => t.id === bulkTrainerId)) && pool.length > 0) {
+      const withSpec =
+        pool.find((t) => getAllowedSpecialtiesForTrainer(t, activityCatalog).length > 0) ||
+        pool[0];
+      setBulkTrainerId(withSpec.id);
     }
-  }, [trainers, bulkTrainerId]);
+  }, [trainers, bulkTrainerId, activityCatalog]);
 
   React.useEffect(() => {
     if ((!bulkCompanyId || !companies.some((c) => c.id === bulkCompanyId)) && companies.length > 0) {
@@ -848,10 +918,12 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
             onClick={() => {
               const dow = getMondayIndexedDayOfWeek(selectedDate);
               onAddAssignment({
-                frequency: viewMode === 'week' ? 'semanal' : viewMode === 'month' ? 'fecha_unica' : 'fecha_unica',
+                frequency: viewMode === 'week' ? 'semanal' : 'fecha_unica',
                 dayOfWeek: dow,
                 dayOfMonth: selectedDate.getDate(),
                 date: formatYYYYMMDD(selectedDate),
+                trainerId: filterTrainerId !== 'all' ? filterTrainerId : undefined,
+                companyId: filterCompanyId !== 'all' ? filterCompanyId : undefined,
               });
             }}
             className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm shadow-red-500/20 transition flex items-center cursor-pointer whitespace-nowrap shrink-0"
@@ -1710,7 +1782,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                           <Check className="w-3.5 h-3.5" />
                         </span>
                       ) : (
-                        /* Quick Add Button on Cell Hover */
+                        /* Quick Add Button on Cell */
                         <button
                           type="button"
                           onClick={(e) => {
@@ -1721,9 +1793,11 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                               date: cell.dateStr,
                               dayOfWeek: cell.dayOfWeek,
                               dayOfMonth: cell.dayNumber,
+                              trainerId: filterTrainerId !== 'all' ? filterTrainerId : undefined,
+                              companyId: filterCompanyId !== 'all' ? filterCompanyId : undefined,
                             });
                           }}
-                          className="opacity-0 group-hover:opacity-100 p-1 rounded-md bg-red-50 hover:bg-red-600 text-red-600 hover:text-white transition shadow-xs"
+                          className="opacity-80 group-hover:opacity-100 p-1 rounded-md bg-red-50 hover:bg-red-600 text-red-600 hover:text-white transition shadow-xs cursor-pointer"
                           title={`Asignar clase el ${cell.dateStr}`}
                         >
                           <Plus className="w-3 h-3" />
@@ -1885,9 +1959,11 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                       date: formatYYYYMMDD(selectedDate),
                       dayOfWeek: dow,
                       dayOfMonth: selectedDate.getDate(),
+                      trainerId: filterTrainerId !== 'all' ? filterTrainerId : undefined,
+                      companyId: filterCompanyId !== 'all' ? filterCompanyId : undefined,
                     });
                   }}
-                  className="px-3.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold transition shadow-xs flex items-center"
+                  className="px-3.5 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold transition shadow-xs flex items-center cursor-pointer"
                 >
                   <Plus className="w-3.5 h-3.5 mr-1" />
                   Asignar Clase en este Día
@@ -2143,9 +2219,11 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                           dayOfWeek: day.dayIndex,
                           date: day.dateStr,
                           dayOfMonth: day.dayNumber,
+                          trainerId: filterTrainerId !== 'all' ? filterTrainerId : undefined,
+                          companyId: filterCompanyId !== 'all' ? filterCompanyId : undefined,
                         })
                       }
-                      className="p-1 rounded-md bg-white hover:bg-red-600 text-slate-600 hover:text-white border border-slate-300 transition shadow-xs"
+                      className="p-1 rounded-md bg-white hover:bg-red-600 text-slate-600 hover:text-white border border-slate-300 transition shadow-xs cursor-pointer"
                       title={`Asignar clase los ${day.dayName}`}
                     >
                       <Plus className="w-3 h-3" />
@@ -2166,9 +2244,11 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                             dayOfWeek: day.dayIndex,
                             date: day.dateStr,
                             dayOfMonth: day.dayNumber,
+                            trainerId: filterTrainerId !== 'all' ? filterTrainerId : undefined,
+                            companyId: filterCompanyId !== 'all' ? filterCompanyId : undefined,
                           })
                         }
-                        className="text-[11px] text-red-600 font-bold hover:underline"
+                        className="text-[11px] text-red-600 font-bold hover:underline cursor-pointer"
                       >
                         + Añadir aquí
                       </button>
@@ -2382,6 +2462,8 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                     date: formatYYYYMMDD(selectedDate),
                     dayOfWeek: dow,
                     dayOfMonth: selectedDate.getDate(),
+                    trainerId: filterTrainerId !== 'all' ? filterTrainerId : undefined,
+                    companyId: filterCompanyId !== 'all' ? filterCompanyId : undefined,
                   });
                 }}
                 className="px-4 py-2.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-md transition flex items-center shrink-0 cursor-pointer"
@@ -2413,9 +2495,11 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
                     date: formatYYYYMMDD(selectedDate),
                     dayOfWeek: dow,
                     dayOfMonth: selectedDate.getDate(),
+                    trainerId: filterTrainerId !== 'all' ? filterTrainerId : undefined,
+                    companyId: filterCompanyId !== 'all' ? filterCompanyId : undefined,
                   });
                 }}
-                className="inline-flex items-center px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm"
+                className="inline-flex items-center px-4 py-2 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold shadow-sm cursor-pointer"
               >
                 <Plus className="w-4 h-4 mr-1.5" />
                 Programar Clase para este Día

@@ -159,6 +159,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [isAssignmentModalOpen, setIsAssignmentModalOpen] = useState(false);
   const [editingAssignment, setEditingAssignment] = useState<ClassAssignment | null>(null);
   const [assignmentInitialPreset, setAssignmentInitialPreset] = useState<AssignmentPreset | null>(null);
+  const [lastSavedScheduleSignal, setLastSavedScheduleSignal] = useState<{
+    stamp: number;
+    isEdit: boolean;
+    assignments: ClassAssignment[];
+  } | null>(null);
 
   const [isPdfModalOpen, setIsPdfModalOpen] = useState(false);
   const [isPdfAssignmentsModalOpen, setIsPdfAssignmentsModalOpen] = useState(false);
@@ -1260,6 +1265,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           companies={companies}
           trainers={trainers}
           activityCatalog={activityCatalog}
+          lastSavedSignal={lastSavedScheduleSignal}
           onAddAssignment={(preset) => {
             setEditingAssignment(null);
             setAssignmentInitialPreset(preset || null);
@@ -2416,17 +2422,30 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           setAssignmentInitialPreset(null);
         }}
         onSave={(savedAsg) => {
-          if (editingAssignment) {
+          const wasEdit = Boolean(editingAssignment);
+          if (wasEdit) {
             onUpdateAssignment(savedAsg);
           } else {
             onAddAssignment(savedAsg);
           }
+          setLastSavedScheduleSignal({
+            stamp: Date.now(),
+            isEdit: wasEdit,
+            assignments: [savedAsg],
+          });
         }}
         onSaveBatch={(batchAsgs) => {
           if (onAddAssignmentsBatch) {
             onAddAssignmentsBatch(batchAsgs);
           } else {
             batchAsgs.forEach((item) => onAddAssignment(item));
+          }
+          if (batchAsgs.length > 0) {
+            setLastSavedScheduleSignal({
+              stamp: Date.now(),
+              isEdit: false,
+              assignments: batchAsgs,
+            });
           }
         }}
       />

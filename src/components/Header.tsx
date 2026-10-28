@@ -146,7 +146,7 @@ export const Header: React.FC<HeaderProps> = ({
           {/* Right: Desktop View Switcher & Biometric Session Action */}
           <div className="justify-self-end flex items-center justify-end gap-1.5 sm:gap-3">
             {!isMobileOrTablet && (
-              <div className="hidden lg:flex bg-slate-100 p-1 rounded-xl border border-slate-200 items-center text-xs sm:text-sm font-medium">
+              <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200 items-center text-xs sm:text-sm font-medium">
                 <button
                   type="button"
                   onClick={() => onViewChange('trainer')}
@@ -221,7 +221,7 @@ export const Header: React.FC<HeaderProps> = ({
               <button
                 type="button"
                 onClick={() => onViewChange('admin')}
-                className="hidden lg:inline-flex items-center px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-xl text-emerald-950 text-[11px] font-bold shadow-xs whitespace-nowrap shrink-0 tabular-nums transition"
+                className="inline-flex items-center px-2.5 py-1.5 bg-emerald-50 hover:bg-emerald-100 border border-emerald-300 rounded-xl text-emerald-950 text-[11px] font-bold shadow-xs whitespace-nowrap shrink-0 tabular-nums transition"
                 title="Un entrenador acaba de dar inicio a su asignación — clic para abrir Panel Admin"
               >
                 <BellRing className="w-3.5 h-3.5 text-emerald-600 mr-1.5 shrink-0" />
