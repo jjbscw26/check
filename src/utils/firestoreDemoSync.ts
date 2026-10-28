@@ -35,6 +35,8 @@ import {
   INITIAL_ASSIGNMENTS,
   INITIAL_COMPANIES,
   INITIAL_TRAINERS,
+  saveStoredAssignments,
+  saveStoredRecords,
 } from '../data/mockData';
 import {
   ACTIVITY_TYPE_DEFAULT_MINUTES,
@@ -53,6 +55,7 @@ import {
   Trainer,
   TrainerTransitTracking,
 } from '../types';
+import { reconcileAssignmentsAndRecords } from './assignmentLock';
 import { sanitizeTransitTrackingPayload } from './transitCalculations';
 import {
   isValidVirtualMeetingUrl,
@@ -1230,8 +1233,12 @@ function sanitizeAssignmentFields(asg: ClassAssignment): Record<string, unknown>
 
   const cleanDateList = (arr?: string[]) =>
     Array.isArray(arr)
-      ? arr
-          .filter((d) => typeof d === 'string' && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(d))
+      ? Array.from(
+          new Set(
+            arr.filter((d) => typeof d === 'string' && /^[0-9]{4}-[0-9]{2}-[0-9]{2}$/.test(d))
+          )
+        )
+          .sort()
           .slice(0, 366)
       : undefined;
 
@@ -1424,7 +1431,10 @@ export async function deleteAssignmentFromFirestore(assignmentId: string): Promi
 // 5. CALENDAR SESSION RECORDS (/records/{recordId})
 // ============================================================================
 
-function sanitizeGpsData(gps: GpsData | undefined): Record<string, unknown> {
+function sanitizeGpsData(
+  gps: GpsData | undefined,
+  fallbackCapturedAt = '2026-01-01 09:00:00'
+): Record<string, unknown> {
   const lat = Number.isFinite(gps?.lat) ? Math.min(90, Math.max(-90, Number(gps!.lat))) : 19.42694;
   const lng = Number.isFinite(gps?.lng)
     ? Math.min(180, Math.max(-180, Number(gps!.lng)))
@@ -1435,12 +1445,7 @@ function sanitizeGpsData(gps: GpsData | undefined): Record<string, unknown> {
   const distanceToSedeMeters = Number.isFinite(gps?.distanceToSedeMeters)
     ? Math.min(50000000, Math.max(0, Number(gps!.distanceToSedeMeters)))
     : 0;
-  const capturedAt = cleanBoundedText(
-    gps?.capturedAt,
-    new Date().toISOString().slice(0, 19),
-    1,
-    50
-  );
+  const capturedAt = cleanBoundedText(gps?.capturedAt, fallbackCapturedAt, 1, 50);
 
   return {
     lat,
@@ -1544,7 +1549,7 @@ async function sanitizeAttendanceRecordFields(
       ? Math.min(10000, Math.max(0, Math.round(rec.attendeesCount)))
       : 0,
     locationArea: cleanBoundedText(rec.locationArea, 'Área General', 1, 150),
-    checkInGps: sanitizeGpsData(rec.checkInGps),
+    checkInGps: sanitizeGpsData(rec.checkInGps, `${safeDate} ${safeCheckInTime}`),
     photoUrl:
       safePhotoUrl && safePhotoUrl.length >= 5 && safePhotoUrl.length <= 280000
         ? safePhotoUrl
@@ -1585,7 +1590,11 @@ async function sanitizeAttendanceRecordFields(
     payload.observations = rec.observations.slice(0, 1000);
   }
   if (rec.checkOutGps) {
-    payload.checkOutGps = sanitizeGpsData(rec.checkOutGps);
+    const fallbackOutTs =
+      typeof rec.checkOutTime === 'string' && rec.checkOutTime.trim()
+        ? `${safeDate} ${rec.checkOutTime.trim()}`
+        : `${safeDate} ${safeCheckInTime}`;
+    payload.checkOutGps = sanitizeGpsData(rec.checkOutGps, fallbackOutTs);
   }
   if (typeof rec.exitPhotoUrl === 'string' && rec.exitPhotoUrl.trim()) {
     const compressedExit = await compressEvidenceDataUrlIfNeeded(rec.exitPhotoUrl, 145000);
@@ -2193,6 +2202,224 @@ export async function syncDataSetsToFirestore(
   });
 }
 
+/**
+ * Ensures every AttendanceRecord with an assignmentId (or matching historical initial record)
+ * has a corresponding ClassAssignment in the assignments collection so completed, closed, and
+ * non-compliant sessions are always reflected in `/assignments` as well as `/records`.
+ */
+export function ensureAssignmentsCoverEvidenceRecords(
+  assignments: ClassAssignment[],
+  records: AttendanceRecord[]
+): { assignments: ClassAssignment[]; records: AttendanceRecord[] } {
+  const assignmentMap = new Map<string, ClassAssignment>();
+  for (const asg of assignments) {
+    assignmentMap.set(toSafeDocId(asg.id, 'asg'), asg);
+  }
+
+  const initialAsgMap = new Map<string, ClassAssignment>();
+  for (const initAsg of INITIAL_ASSIGNMENTS) {
+    initialAsgMap.set(toSafeDocId(initAsg.id, 'asg'), initAsg);
+  }
+
+  const initialRecAsgByRecId = new Map<string, string>();
+  for (const initRec of getInitialRecords()) {
+    if (initRec.assignmentId) {
+      initialRecAsgByRecId.set(
+        toSafeDocId(initRec.id, 'rec'),
+        toSafeDocId(initRec.assignmentId, 'asg')
+      );
+    }
+  }
+
+  const normalizedRecords: AttendanceRecord[] = records.map((rec) => {
+    const safeRecId = toSafeDocId(rec.id, 'rec');
+    const fallbackInitAsgId = initialRecAsgByRecId.get(safeRecId);
+    const resolvedAsgId = rec.assignmentId
+      ? toSafeDocId(rec.assignmentId, 'asg')
+      : fallbackInitAsgId;
+
+    if (!resolvedAsgId) {
+      return rec;
+    }
+
+    if (!assignmentMap.has(resolvedAsgId)) {
+      const knownInitial = initialAsgMap.get(resolvedAsgId);
+      if (knownInitial) {
+        assignmentMap.set(resolvedAsgId, {
+          ...knownInitial,
+          id: resolvedAsgId,
+          ...(knownInitial.frequency === 'fecha_unica' && rec.date
+            ? { date: rec.date }
+            : {}),
+        });
+      } else {
+        const synthesized: ClassAssignment = {
+          id: resolvedAsgId,
+          trainerId: rec.trainerId,
+          trainerName: rec.trainerName,
+          companyId: rec.companyId,
+          companyName: rec.companyName,
+          sedeId: rec.sedeId,
+          sedeName: rec.sedeName,
+          sedeAddress: rec.sedeAddress,
+          frequency: 'fecha_unica',
+          date: rec.date,
+          time: normalizeHHMM(rec.scheduledTime, '09:00'),
+          durationMinutes: rec.plannedDurationMinutes ?? rec.durationMinutes ?? 50,
+          activityType: rec.activityType,
+          activityName: rec.activityName,
+          locationArea: rec.locationArea,
+          expectedAttendees: rec.attendeesCount,
+          active: true,
+          ...(rec.isVirtual
+            ? {
+                isVirtual: true,
+                virtualPlatform: rec.virtualPlatform,
+                virtualMeetingUrl: rec.virtualMeetingUrl,
+                virtualMeetingId: rec.virtualMeetingId,
+                virtualPasscode: rec.virtualPasscode,
+              }
+            : {}),
+        };
+        assignmentMap.set(resolvedAsgId, synthesized);
+      }
+    }
+
+    return rec.assignmentId === resolvedAsgId ? rec : { ...rec, assignmentId: resolvedAsgId };
+  });
+
+  return {
+    assignments: Array.from(assignmentMap.values()),
+    records: normalizedRecords,
+  };
+}
+
+export interface DatabaseFullSyncSummary {
+  totalRecords: number;
+  recordsWrittenCount: number;
+  completedRecordsCount: number;
+  inProgressRecordsCount: number;
+  nonCompliantRecordsCount: number;
+  totalAssignments: number;
+  assignmentsWrittenCount: number;
+  completedClosedAssignmentsCount: number;
+  nonCompliantAssignmentsCount: number;
+  activeAssignmentsCount: number;
+}
+
+/**
+ * Reconciles and uploads the entire Bitácora de Evidencias (`/records`) together with
+ * all ClassAssignments (`/assignments` — including completadas, cerradas, incumplidas y activas)
+ * into Cloud Firestore.
+ */
+export async function syncEvidenceAndAssignmentsToFirestore(explicitData?: {
+  trainers?: Trainer[];
+  companies?: Company[];
+  activityCatalog?: ActivityCatalogItem[];
+  assignments?: ClassAssignment[];
+  records?: AttendanceRecord[];
+}): Promise<DatabaseFullSyncSummary> {
+  const storedTrainers = getStoredTrainers();
+  const storedCompanies = getStoredCompanies();
+  const storedCatalog = getStoredActivityCatalog();
+  const storedAssignments = getStoredAssignments();
+  const storedRecords = getStoredRecords();
+
+  const resolvedTrainers =
+    explicitData?.trainers && explicitData.trainers.length > 0
+      ? explicitData.trainers
+      : storedTrainers.length > 0
+      ? storedTrainers
+      : INITIAL_TRAINERS;
+
+  const resolvedCompanies =
+    explicitData?.companies && explicitData.companies.length > 0
+      ? explicitData.companies
+      : storedCompanies.length > 0
+      ? storedCompanies
+      : INITIAL_COMPANIES;
+
+  const resolvedCatalog =
+    explicitData?.activityCatalog && explicitData.activityCatalog.length > 0
+      ? explicitData.activityCatalog
+      : storedCatalog.length > 0
+      ? storedCatalog
+      : INITIAL_ACTIVITY_CATALOG;
+
+  const rawAssignments =
+    explicitData?.assignments && explicitData.assignments.length > 0
+      ? explicitData.assignments
+      : storedAssignments.length > 0
+      ? storedAssignments
+      : INITIAL_ASSIGNMENTS;
+
+  const rawRecords =
+    explicitData?.records && explicitData.records.length > 0
+      ? explicitData.records
+      : storedRecords.length > 0
+      ? storedRecords
+      : getInitialRecords();
+
+  const covered = ensureAssignmentsCoverEvidenceRecords(rawAssignments, rawRecords);
+  const reconciled = reconcileAssignmentsAndRecords({
+    assignments: covered.assignments,
+    records: covered.records,
+    catalog: resolvedCatalog,
+    nowMs: Date.now(),
+  });
+
+  saveStoredAssignments(reconciled.assignments);
+  saveStoredRecords(reconciled.records);
+
+  const syncResult = await syncDataSetsToFirestore(
+    {
+      trainers: resolvedTrainers,
+      companies: resolvedCompanies,
+      activityCatalog: resolvedCatalog,
+      assignments: reconciled.assignments,
+      records: reconciled.records,
+    },
+    {
+      upsertAssignments: true,
+      upsertCoreEntities: true,
+      upsertRecords: true,
+    }
+  );
+
+  const completedRecordsCount = reconciled.records.filter(
+    (r) => r.status === 'completado'
+  ).length;
+  const inProgressRecordsCount = reconciled.records.filter(
+    (r) => r.status === 'en_curso'
+  ).length;
+  const nonCompliantRecordsCount = reconciled.records.filter(
+    (r) => r.status === 'incumplido'
+  ).length;
+
+  const completedClosedAssignmentsCount = reconciled.assignments.filter(
+    (a) => Boolean(a.closed) || (a.completedDates?.length ?? 0) > 0
+  ).length;
+  const nonCompliantAssignmentsCount = reconciled.assignments.filter(
+    (a) => Boolean(a.nonCompliant) || (a.missedDates?.length ?? 0) > 0
+  ).length;
+  const activeAssignmentsCount = reconciled.assignments.filter(
+    (a) => a.active !== false && !a.closed && !a.nonCompliant
+  ).length;
+
+  return {
+    totalRecords: reconciled.records.length,
+    recordsWrittenCount: syncResult.recordsCount,
+    completedRecordsCount,
+    inProgressRecordsCount,
+    nonCompliantRecordsCount,
+    totalAssignments: reconciled.assignments.length,
+    assignmentsWrittenCount: syncResult.assignmentsCount,
+    completedClosedAssignmentsCount,
+    nonCompliantAssignmentsCount,
+    activeAssignmentsCount,
+  };
+}
+
 export async function seedDemoDataToFirestore(): Promise<{
   trainersCount: number;
   companiesCount: number;
@@ -2201,13 +2428,27 @@ export async function seedDemoDataToFirestore(): Promise<{
   assignmentsCount: number;
   recordsCount: number;
 }> {
-  return syncDataSetsToFirestore({
-    trainers: INITIAL_TRAINERS,
-    companies: INITIAL_COMPANIES,
-    activityCatalog: INITIAL_ACTIVITY_CATALOG,
-    assignments: INITIAL_ASSIGNMENTS,
-    records: getInitialRecords(),
+  const initialRecords = getInitialRecords();
+  const covered = ensureAssignmentsCoverEvidenceRecords(INITIAL_ASSIGNMENTS, initialRecords);
+  const reconciled = reconcileAssignmentsAndRecords({
+    assignments: covered.assignments,
+    records: covered.records,
+    catalog: INITIAL_ACTIVITY_CATALOG,
+    nowMs: Date.now(),
   });
+  saveStoredAssignments(reconciled.assignments);
+  saveStoredRecords(reconciled.records);
+
+  return syncDataSetsToFirestore(
+    {
+      trainers: INITIAL_TRAINERS,
+      companies: INITIAL_COMPANIES,
+      activityCatalog: INITIAL_ACTIVITY_CATALOG,
+      assignments: reconciled.assignments,
+      records: reconciled.records,
+    },
+    { upsertAssignments: true, upsertCoreEntities: true, upsertRecords: true }
+  );
 }
 
 /**
@@ -2228,13 +2469,28 @@ export async function syncWorkspaceDataToFirestore(): Promise<{
   const storedAssignments = getStoredAssignments();
   const storedRecords = getStoredRecords();
 
+  const resolvedCatalog = storedCatalog.length > 0 ? storedCatalog : INITIAL_ACTIVITY_CATALOG;
+  const baseAssignments = storedAssignments.length > 0 ? storedAssignments : INITIAL_ASSIGNMENTS;
+  const baseRecords = storedRecords.length > 0 ? storedRecords : getInitialRecords();
+
+  const covered = ensureAssignmentsCoverEvidenceRecords(baseAssignments, baseRecords);
+  const reconciled = reconcileAssignmentsAndRecords({
+    assignments: covered.assignments,
+    records: covered.records,
+    catalog: resolvedCatalog,
+    nowMs: Date.now(),
+  });
+
+  saveStoredAssignments(reconciled.assignments);
+  saveStoredRecords(reconciled.records);
+
   return syncDataSetsToFirestore(
     {
       trainers: storedTrainers.length > 0 ? storedTrainers : INITIAL_TRAINERS,
       companies: storedCompanies.length > 0 ? storedCompanies : INITIAL_COMPANIES,
-      activityCatalog: storedCatalog.length > 0 ? storedCatalog : INITIAL_ACTIVITY_CATALOG,
-      assignments: storedAssignments.length > 0 ? storedAssignments : INITIAL_ASSIGNMENTS,
-      records: storedRecords.length > 0 ? storedRecords : getInitialRecords(),
+      activityCatalog: resolvedCatalog,
+      assignments: reconciled.assignments,
+      records: reconciled.records,
     },
     { upsertAssignments: true, upsertCoreEntities: true, upsertRecords: true }
   );

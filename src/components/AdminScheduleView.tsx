@@ -40,6 +40,8 @@ import {
   X,
   Video,
   UserCog,
+  Database,
+  RefreshCw,
 } from 'lucide-react';
 import { AssignmentPreset } from './AdminAssignmentModal';
 import {
@@ -71,6 +73,7 @@ import {
 } from '../utils/virtualClassShare';
 import { VirtualClassQuickShare } from './VirtualClassShareCard';
 import { exportAssignmentsRoleToExcel } from '../utils/evidenceExport';
+import { DatabaseFullSyncSummary } from '../utils/firestoreDemoSync';
 
 interface AdminScheduleViewProps {
   assignments: ClassAssignment[];
@@ -85,6 +88,7 @@ interface AdminScheduleViewProps {
   onDeleteAssignment: (assignmentId: string) => void;
   onEditTrainerSpecialties?: (trainer: Trainer) => void;
   onOpenPdfReport?: (trainerId?: string) => void;
+  onSyncDatabaseNow?: () => Promise<DatabaseFullSyncSummary>;
   lastSavedSignal?: {
     stamp: number;
     isEdit: boolean;
@@ -153,6 +157,7 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
   onDeleteAssignment,
   onEditTrainerSpecialties,
   onOpenPdfReport,
+  onSyncDatabaseNow,
   lastSavedSignal,
 }) => {
   // Calendar view mode: 'month' | 'week' | 'day'
@@ -201,6 +206,26 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
     message: string;
     trainerId?: string;
   } | null>(null);
+  const [isSyncingScheduleDb, setIsSyncingScheduleDb] = useState<boolean>(false);
+
+  const handleSyncScheduleDatabase = async () => {
+    if (!onSyncDatabaseNow || isSyncingScheduleDb) return;
+    setIsSyncingScheduleDb(true);
+    try {
+      const summary = await onSyncDatabaseNow();
+      setBulkFeedback({
+        type: 'success',
+        message: `Cloud Firestore actualizado: ${summary.totalAssignments} asignaciones en /assignments (${summary.completedClosedAssignmentsCount} completadas y cerradas, ${summary.nonCompliantAssignmentsCount} incumplidas, ${summary.activeAssignmentsCount} activas) y ${summary.totalRecords} actas en Bitácora de Evidencias (/records).`,
+      });
+    } catch {
+      setBulkFeedback({
+        type: 'error',
+        message: 'No fue posible sincronizar las asignaciones y evidencias con Cloud Firestore.',
+      });
+    } finally {
+      setIsSyncingScheduleDb(false);
+    }
+  };
 
   React.useEffect(() => {
     const timer = setInterval(() => setScheduleNowMs(Date.now()), 5000);
@@ -887,6 +912,23 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
               <span>Día</span>
             </button>
           </div>
+
+          {onSyncDatabaseNow && (
+            <button
+              type="button"
+              onClick={() => void handleSyncScheduleDatabase()}
+              disabled={isSyncingScheduleDb}
+              className="px-3.5 py-2 rounded-xl bg-white hover:bg-slate-100 disabled:opacity-60 text-slate-800 border border-slate-300 text-xs font-bold shadow-sm transition flex items-center cursor-pointer whitespace-nowrap shrink-0"
+              title="Cargar en Base de Datos Cloud Firestore todas las asignaciones completadas, cerradas e incumplidas junto con la Bitácora de Evidencias"
+            >
+              {isSyncingScheduleDb ? (
+                <RefreshCw className="w-4 h-4 mr-1.5 text-red-600 animate-spin shrink-0" />
+              ) : (
+                <Database className="w-4 h-4 mr-1.5 text-red-600 shrink-0" />
+              )}
+              <span>{isSyncingScheduleDb ? 'Cargando BD...' : 'Cargar en BD'}</span>
+            </button>
+          )}
 
           {/* PDF Download Button */}
           <button

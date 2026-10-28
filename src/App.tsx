@@ -7,6 +7,8 @@ import {
   getStoredAssignments,
   getStoredActivityCatalog,
   INITIAL_ACTIVITY_CATALOG,
+  markStoredAssignmentsUserEmptied,
+  markStoredRecordsUserEmptied,
   saveStoredCompanies,
   saveStoredRecords,
   saveStoredTrainers,
@@ -43,12 +45,11 @@ import {
   unlockMobileAlarmAudio,
 } from './utils/sessionAlarm';
 import {
-  doesAssignmentApplyToDate,
   findMatchingAssignmentForRecord,
-  findMatchingRecordForAssignmentDate,
   formatLocalYYYYMMDD,
-  getAssignmentScheduledWindowMs,
   markAssignmentDateNonCompliant,
+  mergeAssignmentOperationalState,
+  reconcileAssignmentsAndRecords,
   toggleAssignmentDateLock,
 } from './utils/assignmentLock';
 import {
@@ -59,6 +60,7 @@ import {
 } from './firebase';
 import { useDirectoryAuth } from './hooks/useDirectoryAuth';
 import {
+  DatabaseFullSyncSummary,
   deleteActivityCatalogItemFromFirestore,
   deleteAssignmentFromFirestore,
   deleteCompanyAndSedesFromFirestore,
@@ -66,6 +68,7 @@ import {
   deleteSedeFromFirestore,
   deleteTrainerFromFirestore,
   deleteTransitTrackingFromFirestore,
+  ensureAssignmentsCoverEvidenceRecords,
   getStoredTransitTrackings,
   normalizeHHMM,
   parseFirestoreAttendanceRecord,
@@ -80,6 +83,7 @@ import {
   saveTransitTrackingToFirestore,
   seedDemoDataToFirestore,
   syncDataSetsToFirestore,
+  syncEvidenceAndAssignmentsToFirestore,
   syncWorkspaceDataToFirestore,
   toSafeDocId,
 } from './utils/firestoreDemoSync';
@@ -222,6 +226,7 @@ export default function App() {
   const { isAuthenticated: isDirectoryAuthenticated, user: directoryUser } = useDirectoryAuth();
 
   const autoSeedTriggeredRef = useRef<boolean>(false);
+  const initialReconcileDoneRef = useRef<boolean>(false);
   const reconciledInitialAssignmentsRef = useRef<boolean>(false);
   const reconciledInitialRecordsRef = useRef<boolean>(false);
   const pendingSedesByIdRef = useRef<Map<string, Sede>>(new Map());
@@ -619,25 +624,44 @@ export default function App() {
         serverEmpty.records &&
         serverEmpty.catalog
       ) {
-        syncWorkspaceDataToFirestore().catch(console.error);
+        syncWorkspaceDataToFirestore()
+          .catch(console.error)
+          .finally(() => {
+            initialReconcileDoneRef.current = true;
+          });
         return;
       }
 
-      // Only create missing documents on startup instead of rewriting every server document (prevents snapshot storms & UI flicker)
+      const coveredStartup = ensureAssignmentsCoverEvidenceRecords(
+        assignmentsToForce,
+        recordsToForce
+      );
+      const reconciledStartup = reconcileAssignmentsAndRecords({
+        assignments: coveredStartup.assignments,
+        records: coveredStartup.records,
+        catalog: catalogToForce,
+        nowMs: Date.now(),
+      });
+
+      // Upsert assignments and evidence records (upsertOperationalDoc skips unchanged docs automatically)
       syncDataSetsToFirestore(
         {
           trainers: trainersToForce,
           companies: companiesToForce,
           activityCatalog: catalogToForce,
-          assignments: assignmentsToForce,
-          records: recordsToForce,
+          assignments: reconciledStartup.assignments,
+          records: reconciledStartup.records,
         },
         {
-          upsertAssignments: false,
+          upsertAssignments: true,
           upsertCoreEntities: false,
-          upsertRecords: false,
+          upsertRecords: true,
         }
-      ).catch(console.error);
+      )
+        .catch(console.error)
+        .finally(() => {
+          initialReconcileDoneRef.current = true;
+        });
     };
 
     const syncCombinedCompanies = () => {
@@ -856,14 +880,34 @@ export default function App() {
           };
         });
 
-        // One-time upload of any previously unsynced local assignments when Firestore already has partial data
+        // One-time upload & state merge of local assignments (including completed, closed & non-compliant states)
         if (isServerSnapshot && !reconciledInitialAssignmentsRef.current && !snap.empty) {
           reconciledInitialAssignmentsRef.current = true;
-          const serverIds = new Set(fsAssignments.map((a) => a.id));
-          for (const localAsg of initialLocalAssignments) {
+          const coveredLocal = ensureAssignmentsCoverEvidenceRecords(
+            initialLocalAssignments,
+            initialLocalRecords
+          );
+          const reconciledLocal = reconcileAssignmentsAndRecords({
+            assignments: coveredLocal.assignments,
+            records: coveredLocal.records,
+            catalog: initialLocalCatalog,
+            nowMs: Date.now(),
+          });
+          const serverById = new Map(fsAssignments.map((a) => [a.id, a]));
+          for (const localAsg of reconciledLocal.assignments) {
             const safeLocalId = toSafeDocId(localAsg.id, 'asg');
-            if (!serverIds.has(safeLocalId) && !deletedAssignmentIdsRef.current.has(safeLocalId)) {
+            if (deletedAssignmentIdsRef.current.has(safeLocalId)) continue;
+            const serverMatch = serverById.get(safeLocalId);
+            if (!serverMatch) {
               persistAssignmentToFirestore(localAsg, initialLocalCompanies);
+            } else {
+              const { merged, hasStateDiffFromServer } = mergeAssignmentOperationalState(
+                serverMatch,
+                localAsg
+              );
+              if (hasStateDiffFromServer) {
+                persistAssignmentToFirestore(merged, initialLocalCompanies);
+              }
             }
           }
         }
@@ -871,8 +915,9 @@ export default function App() {
         if (snap.empty) {
           if (
             isServerSnapshot &&
-            autoSeedTriggeredRef.current &&
-            pendingAssignmentsByIdRef.current.size === 0
+            initialReconcileDoneRef.current &&
+            pendingAssignmentsByIdRef.current.size === 0 &&
+            unsyncedAssignmentsQueueRef.current.size === 0
           ) {
             reconciledInitialAssignmentsRef.current = true;
             updateStateIfChanged<ClassAssignment[]>(setAssignments, [], saveStoredAssignments);
@@ -928,27 +973,41 @@ export default function App() {
           checkCalendarReady();
           maybeReconcileEmptyServerCollections();
 
-          // One-time reconciliation of any local offline changes not yet reflected in /records
-          if (!reconciledInitialRecordsRef.current) {
+          // One-time reconciliation of Bitácora de Evidencias (/records) when Firestore has partial or stale records
+          if (!reconciledInitialRecordsRef.current && !snap.empty) {
             reconciledInitialRecordsRef.current = true;
+            const coveredLocal = ensureAssignmentsCoverEvidenceRecords(
+              initialLocalAssignments,
+              initialLocalRecords
+            );
             const serverById = new Map(fsRecords.map((r) => [r.id, r]));
-            for (const localRec of initialLocalRecords) {
+            for (const localRec of coveredLocal.records) {
               const safeId = toSafeDocId(localRec.id, 'rec');
               if (deletedRecordIdsRef.current.has(safeId)) continue;
               const serverMatch = serverById.get(safeId);
               if (!serverMatch) {
-                // Non-demo user records created while offline are pushed immediately; demo seed records are handled by maybeReconcileEmptyServerCollections
-                if (!snap.empty && !/^rec_10[1-9]$/.test(safeId)) {
-                  persistRecordToFirestore(localRec);
-                }
+                persistRecordToFirestore(localRec);
               } else {
                 const localHasExit = Boolean(localRec.exitPhotoUrl && !serverMatch.exitPhotoUrl);
                 const localClosed =
                   localRec.status !== 'en_curso' && serverMatch.status === 'en_curso';
+                const localBreachDiff = Boolean(
+                  localRec.nonComplianceReason &&
+                    localRec.nonComplianceReason !== serverMatch.nonComplianceReason
+                );
+                const localAsgLinkDiff = Boolean(
+                  localRec.assignmentId && !serverMatch.assignmentId
+                );
                 const localAudited =
                   (localRec.adminVerified && !serverMatch.adminVerified) ||
                   Boolean(localRec.adminNotes && localRec.adminNotes !== serverMatch.adminNotes);
-                if (localHasExit || localClosed || localAudited) {
+                if (
+                  localHasExit ||
+                  localClosed ||
+                  localBreachDiff ||
+                  localAsgLinkDiff ||
+                  localAudited
+                ) {
                   persistRecordToFirestore(localRec);
                 }
               }
@@ -959,10 +1018,11 @@ export default function App() {
         if (snap.empty) {
           if (
             isServerSnapshot &&
-            autoSeedTriggeredRef.current &&
+            initialReconcileDoneRef.current &&
             pendingRecordsByIdRef.current.size === 0 &&
             unsyncedRecordsQueueRef.current.size === 0
           ) {
+            reconciledInitialRecordsRef.current = true;
             updateStateIfChanged<AttendanceRecord[]>(setRecords, [], saveStoredRecords);
           } else if (pendingRecordsByIdRef.current.size > 0) {
             const optimisticOnly = Array.from(pendingRecordsByIdRef.current.values()).sort(
@@ -1135,116 +1195,79 @@ export default function App() {
     };
   }, [persistAssignmentToFirestore, persistRecordToFirestore, enqueueAdminStartAlert]);
 
-  // Automatic compliance sweep (persisted in real time to both /records and /assignments)
+  // Automatic compliance & completion reconciliation (persisted in real time to both /records and /assignments)
   useEffect(() => {
     if (!initialCalendarReady) return;
     if (assignments.length === 0 && records.length === 0) return;
 
-    let recordsChanged = false;
-    let assignmentsChanged = false;
-    const nowDate = new Date(nowTick);
-    const todayStr = formatLocalYYYYMMDD(nowDate);
-    const nowTimeStr = nowDate.toLocaleTimeString('es-MX', { hour12: false });
-
-    let nextAssignments = assignments;
-
-    const nextRecords: AttendanceRecord[] = records.map((rec) => {
-      if (rec.status !== 'en_curso' || rec.checkOutTime) return rec;
-      if ((inFlightRecordWritesRef.current.get(rec.id) || 0) > 0) return rec;
-      const alarm = getSessionAlarmStatus(rec, activityCatalog, nowTick);
-      if (!alarm.hasExceededUnclosedGrace) return rec;
-
-      recordsChanged = true;
-      stopAlarmAudioImmediately();
-      void releaseSessionWakeLock();
-
-      const autoNote = `[Sistema BSCW] Salida pendiente dada por TERMINADA a los 60 min después de la hora de término (${alarm.autoLockDeadlineFormatted} hrs) y calificada como NO CERRADA.`;
-      const rawMergedObs = rec.observations
-        ? rec.observations.includes('[Sistema BSCW]')
-          ? rec.observations
-          : `${rec.observations} | ${autoNote}`
-        : autoNote;
-      const mergedObs = rawMergedObs.slice(0, 950);
-
-      const breachedRecord: AttendanceRecord = {
-        ...rec,
-        status: 'incumplido',
-        nonComplianceReason: 'sin_cierre_30m',
-        markedNonCompliantAt: alarm.autoLockDeadlineFormatted || nowTimeStr,
-        durationMinutes: rec.durationMinutes ?? alarm.plannedDurationMinutes,
-        alarmEnabled: false,
-        alarmSnoozedUntilIso: null,
-        observations: mergedObs,
-      };
-
-      const matchedAsg = findMatchingAssignmentForRecord(breachedRecord, nextAssignments);
-      if (matchedAsg) {
-        const updatedAsg = markAssignmentDateNonCompliant(
-          matchedAsg,
-          breachedRecord.date,
-          'sin_cierre_30m'
-        );
-        nextAssignments = nextAssignments.map((a) => (a.id === updatedAsg.id ? updatedAsg : a));
-        assignmentsChanged = true;
-      }
-
-      return breachedRecord;
+    const inFlightRecSet = new Set<string>();
+    inFlightRecordWritesRef.current.forEach((count, id) => {
+      if (count > 0) inFlightRecSet.add(id);
     });
 
-    nextAssignments = nextAssignments.map((asg) => {
-      if (asg.active === false || asg.closed) return asg;
-      // Skip assignments whose create/update write is still in-flight so initial writes finish cleanly first
-      if ((inFlightAssignmentWritesRef.current.get(asg.id) || 0) > 0) return asg;
-
-      const candidateDates: string[] = [];
-      if (asg.frequency === 'fecha_unica' && asg.date) {
-        candidateDates.push(asg.date);
-      } else if (doesAssignmentApplyToDate(asg, todayStr)) {
-        candidateDates.push(todayStr);
-      }
-
-      let currentAsg = asg;
-      for (const checkDate of candidateDates) {
-        if (currentAsg.completedDates?.includes(checkDate)) continue;
-        if (currentAsg.reopenedDates?.includes(checkDate)) continue;
-        if (
-          currentAsg.missedDates?.includes(checkDate) &&
-          (currentAsg.frequency !== 'fecha_unica' || currentAsg.nonCompliant)
-        ) {
-          continue;
-        }
-
-        const matchedRec = findMatchingRecordForAssignmentDate(currentAsg, checkDate, nextRecords);
-        if (matchedRec) continue;
-
-        const win = getAssignmentScheduledWindowMs(currentAsg, checkDate, activityCatalog);
-        // Close & lock session if 10 minutes have elapsed since start time without loading/check-in (or past date)
-        if ((win && nowTick > win.loadCloseMs) || checkDate < todayStr) {
-          currentAsg = markAssignmentDateNonCompliant(currentAsg, checkDate, 'fuera_de_horario');
-          assignmentsChanged = true;
-        }
-      }
-
-      return currentAsg;
+    const inFlightAsgSet = new Set<string>();
+    inFlightAssignmentWritesRef.current.forEach((count, id) => {
+      if (count > 0) inFlightAsgSet.add(id);
     });
 
-    if (recordsChanged) {
-      setRecords(nextRecords);
-      saveStoredRecords(nextRecords);
-      nextRecords.forEach((updatedRec, idx) => {
-        if (updatedRec !== records[idx]) {
+    const covered = ensureAssignmentsCoverEvidenceRecords(assignments, records);
+    const existingAsgIds = new Set(assignments.map((a) => a.id));
+
+    const reconciled = reconcileAssignmentsAndRecords({
+      assignments: covered.assignments,
+      records: covered.records,
+      catalog: activityCatalog,
+      nowMs: nowTick,
+      skipInFlightRecordIds: inFlightRecSet,
+      skipInFlightAssignmentIds: inFlightAsgSet,
+    });
+
+    // Any newly synthesized/covered assignment not previously in `assignments` should also be persisted
+    for (const asg of reconciled.assignments) {
+      if (!existingAsgIds.has(asg.id)) {
+        reconciled.changedAssignmentIds.add(asg.id);
+      }
+    }
+    covered.records.forEach((covRec, idx) => {
+      if (covRec !== records[idx]) {
+        reconciled.changedRecordIds.add(covRec.id);
+      }
+    });
+
+    if (reconciled.changedRecordIds.size > 0) {
+      const prevById = new Map(records.map((r) => [r.id, r]));
+      let anyAutoTerminated = false;
+      for (const updatedRec of reconciled.records) {
+        if (!reconciled.changedRecordIds.has(updatedRec.id)) continue;
+        const prev = prevById.get(updatedRec.id);
+        if (prev?.status === 'en_curso' && updatedRec.status === 'incumplido') {
+          anyAutoTerminated = true;
+        }
+      }
+      if (anyAutoTerminated) {
+        stopAlarmAudioImmediately();
+        void releaseSessionWakeLock();
+      }
+
+      recordsRef.current = reconciled.records;
+      setRecords(reconciled.records);
+      saveStoredRecords(reconciled.records);
+      for (const updatedRec of reconciled.records) {
+        if (reconciled.changedRecordIds.has(updatedRec.id)) {
           persistRecordToFirestore(updatedRec);
         }
-      });
+      }
     }
-    if (assignmentsChanged) {
-      setAssignments(nextAssignments);
-      saveStoredAssignments(nextAssignments);
-      nextAssignments.forEach((updatedAsg, idx) => {
-        if (updatedAsg !== assignments[idx]) {
+
+    if (reconciled.changedAssignmentIds.size > 0) {
+      assignmentsRef.current = reconciled.assignments;
+      setAssignments(reconciled.assignments);
+      saveStoredAssignments(reconciled.assignments);
+      for (const updatedAsg of reconciled.assignments) {
+        if (reconciled.changedAssignmentIds.has(updatedAsg.id)) {
           persistAssignmentToFirestore(updatedAsg);
         }
-      });
+      }
     }
   }, [
     initialCalendarReady,
@@ -1389,7 +1412,9 @@ export default function App() {
     setAdminStartAlerts((prev) => prev.filter((a) => a.recordId !== recordId && a.recordId !== safeId));
 
     const updated = records.filter((r) => r.id !== recordId && r.id !== safeId);
+    recordsRef.current = updated;
     setRecords(updated);
+    markStoredRecordsUserEmptied(updated.length === 0);
     saveStoredRecords(updated);
     deleteRecordFromFirestore(safeId)
       .catch(console.error)
@@ -1644,7 +1669,9 @@ export default function App() {
     deletedAssignmentIdsRef.current.add(safeId);
 
     const updated = assignments.filter((a) => a.id !== assignmentId && a.id !== safeId);
+    assignmentsRef.current = updated;
     setAssignments(updated);
+    markStoredAssignmentsUserEmptied(updated.length === 0);
     saveStoredAssignments(updated);
 
     deleteAssignmentFromFirestore(safeId)
@@ -1750,6 +1777,28 @@ export default function App() {
       });
   }, []);
 
+  // Explicit full reconciliation & upload of Bitácora de Evidencias (/records) and Assignments (/assignments)
+  const handleSyncDatabaseNow = useCallback(async (): Promise<DatabaseFullSyncSummary> => {
+    const summary = await syncEvidenceAndAssignmentsToFirestore({
+      trainers: trainersRef.current,
+      companies: companiesRef.current,
+      activityCatalog: activityCatalogRef.current,
+      assignments: assignmentsRef.current,
+      records: recordsRef.current,
+    });
+    const refreshedAssignments = getStoredAssignments();
+    const refreshedRecords = getStoredRecords();
+    if (refreshedAssignments.length > 0) {
+      assignmentsRef.current = refreshedAssignments;
+      setAssignments(refreshedAssignments);
+    }
+    if (refreshedRecords.length > 0) {
+      recordsRef.current = refreshedRecords;
+      setRecords(refreshedRecords);
+    }
+    return summary;
+  }, []);
+
   // Global reset (also re-seeds demo data into Firestore automatically)
   const handleResetData = () => {
     seededNewModalitiesRef.current = false;
@@ -1842,7 +1891,10 @@ export default function App() {
         {!isMobileOrTablet && currentView === 'personnel' && (
           <div className="block print:block">
             <FirestoreErrorBoundary>
-              <PersonnelRegistryView onNavigateView={handleViewChange} />
+              <PersonnelRegistryView
+                onNavigateView={handleViewChange}
+                onSyncDatabaseNow={handleSyncDatabaseNow}
+              />
             </FirestoreErrorBoundary>
           </div>
         )}
@@ -1877,6 +1929,7 @@ export default function App() {
                 onUpdateCatalogItem={handleUpdateCatalogItem}
                 onDeleteCatalogItem={handleDeleteCatalogItem}
                 onResetData={handleResetData}
+                onSyncDatabaseNow={handleSyncDatabaseNow}
                 isDirectoryAuthenticated={isDirectoryAuthenticated}
                 adminStartAlerts={adminStartAlerts}
                 onDismissAdminAlert={handleDismissAdminAlert}

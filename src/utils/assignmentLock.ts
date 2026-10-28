@@ -494,12 +494,19 @@ export function toggleAssignmentDateLock(
     const nowTime = new Date().toLocaleTimeString('es-MX', { hour12: false });
     return {
       ...assignment,
-      completedDates: Array.from(existingCompleted),
-      missedDates: Array.from(existingMissed),
-      reopenedDates: Array.from(existingReopened),
+      completedDates: Array.from(existingCompleted).sort(),
+      missedDates: Array.from(existingMissed).sort(),
+      reopenedDates: Array.from(existingReopened).sort(),
       nonCompliant: assignment.frequency === 'fecha_unica' ? false : assignment.nonCompliant,
+      nonCompliantReason:
+        assignment.frequency === 'fecha_unica' ? undefined : assignment.nonCompliantReason,
+      nonCompliantAt:
+        assignment.frequency === 'fecha_unica' ? undefined : assignment.nonCompliantAt,
       closed: assignment.frequency === 'fecha_unica' ? true : assignment.closed,
-      closedAt: assignment.frequency === 'fecha_unica' ? `${dateStr} ${nowTime}` : assignment.closedAt,
+      closedAt:
+        assignment.frequency === 'fecha_unica'
+          ? assignment.closedAt || `${dateStr} ${nowTime}`.trim()
+          : assignment.closedAt,
     };
   } else {
     if (dateStr) {
@@ -509,9 +516,9 @@ export function toggleAssignmentDateLock(
     }
     return {
       ...assignment,
-      completedDates: Array.from(existingCompleted),
-      missedDates: Array.from(existingMissed),
-      reopenedDates: Array.from(existingReopened),
+      completedDates: Array.from(existingCompleted).sort(),
+      missedDates: Array.from(existingMissed).sort(),
+      reopenedDates: Array.from(existingReopened).sort(),
       closed: false,
       closedAt: undefined,
       nonCompliant: false,
@@ -538,10 +545,385 @@ export function markAssignmentDateNonCompliant(
   const nowTime = new Date().toLocaleTimeString('es-MX', { hour12: false });
   return {
     ...assignment,
-    missedDates: Array.from(existingMissed),
-    reopenedDates: Array.from(existingReopened),
+    missedDates: Array.from(existingMissed).sort(),
+    reopenedDates: Array.from(existingReopened).sort(),
     nonCompliant: assignment.frequency === 'fecha_unica' ? true : assignment.nonCompliant,
     nonCompliantReason: reason,
-    nonCompliantAt: `${dateStr} ${nowTime}`,
+    nonCompliantAt: assignment.nonCompliantAt || `${dateStr} ${nowTime}`.trim(),
   };
 }
+
+function areStringArraysEqual(a?: string[], b?: string[]): boolean {
+  const arrA = a || [];
+  const arrB = b || [];
+  if (arrA.length !== arrB.length) return false;
+  for (let i = 0; i < arrA.length; i++) {
+    if (arrA[i] !== arrB[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Merges completion, closure, and non-compliance states from a local ClassAssignment onto a server ClassAssignment
+ * so previously completed, closed, or non-compliant assignments are never lost before syncing to Firestore.
+ */
+export function mergeAssignmentOperationalState(
+  serverAsg: ClassAssignment,
+  localAsg: ClassAssignment
+): { merged: ClassAssignment; hasStateDiffFromServer: boolean } {
+  const reopenedSet = new Set<string>([
+    ...(serverAsg.reopenedDates || []),
+    ...(localAsg.reopenedDates || []),
+  ]);
+
+  const completedSet = new Set<string>([
+    ...(serverAsg.completedDates || []),
+    ...(localAsg.completedDates || []),
+  ]);
+  reopenedSet.forEach((d) => completedSet.delete(d));
+
+  const missedSet = new Set<string>([
+    ...(serverAsg.missedDates || []),
+    ...(localAsg.missedDates || []),
+  ]);
+  completedSet.forEach((d) => missedSet.delete(d));
+  reopenedSet.forEach((d) => missedSet.delete(d));
+
+  const completedDates = Array.from(completedSet).sort();
+  const missedDates = Array.from(missedSet).sort();
+  const reopenedDates = Array.from(reopenedSet).sort();
+
+  const isExplicitlyReopenedSingle =
+    serverAsg.frequency === 'fecha_unica' &&
+    Boolean(serverAsg.date && reopenedSet.has(serverAsg.date));
+
+  const closed = isExplicitlyReopenedSingle
+    ? false
+    : Boolean(
+        serverAsg.closed ||
+          localAsg.closed ||
+          (serverAsg.frequency === 'fecha_unica' && completedDates.length > 0)
+      );
+
+  const closedAt = closed ? serverAsg.closedAt || localAsg.closedAt : undefined;
+
+  const nonCompliant =
+    closed || isExplicitlyReopenedSingle
+      ? false
+      : Boolean(
+          serverAsg.nonCompliant ||
+            localAsg.nonCompliant ||
+            (serverAsg.frequency === 'fecha_unica' && missedDates.length > 0)
+        );
+
+  const nonCompliantReason =
+    closed || isExplicitlyReopenedSingle
+      ? undefined
+      : serverAsg.nonCompliantReason ||
+        localAsg.nonCompliantReason ||
+        (missedDates.length > 0 ? 'fuera_de_horario' : undefined);
+
+  const nonCompliantAt =
+    closed || isExplicitlyReopenedSingle
+      ? undefined
+      : serverAsg.nonCompliantAt || localAsg.nonCompliantAt;
+
+  const merged: ClassAssignment = {
+    ...serverAsg,
+    ...(completedDates.length > 0 || serverAsg.completedDates
+      ? { completedDates }
+      : {}),
+    ...(missedDates.length > 0 || serverAsg.missedDates ? { missedDates } : {}),
+    ...(reopenedDates.length > 0 || serverAsg.reopenedDates
+      ? { reopenedDates }
+      : {}),
+    ...(closed || typeof serverAsg.closed === 'boolean' ? { closed } : {}),
+    ...(closedAt ? { closedAt } : {}),
+    ...(nonCompliant || typeof serverAsg.nonCompliant === 'boolean'
+      ? { nonCompliant }
+      : {}),
+    ...(nonCompliantReason ? { nonCompliantReason } : {}),
+    ...(nonCompliantAt ? { nonCompliantAt } : {}),
+  };
+
+  const hasStateDiffFromServer =
+    Boolean(merged.closed) !== Boolean(serverAsg.closed) ||
+    (merged.closedAt || '') !== (serverAsg.closedAt || '') ||
+    Boolean(merged.nonCompliant) !== Boolean(serverAsg.nonCompliant) ||
+    (merged.nonCompliantReason || '') !== (serverAsg.nonCompliantReason || '') ||
+    (merged.nonCompliantAt || '') !== (serverAsg.nonCompliantAt || '') ||
+    !areStringArraysEqual(merged.completedDates, serverAsg.completedDates) ||
+    !areStringArraysEqual(merged.missedDates, serverAsg.missedDates) ||
+    !areStringArraysEqual(merged.reopenedDates, serverAsg.reopenedDates);
+
+  return { merged, hasStateDiffFromServer };
+}
+
+function getElapsedMonthDateStrings(todayStr: string): string[] {
+  const parts = todayStr.split('-').map(Number);
+  if (parts.length !== 3 || parts.some(Number.isNaN)) return [todayStr];
+  const [year, month, day] = parts;
+  const dates: string[] = [];
+  const prefix = `${year}-${String(month).padStart(2, '0')}-`;
+  for (let d = 1; d <= day; d++) {
+    dates.push(`${prefix}${String(d).padStart(2, '0')}`);
+  }
+  return dates;
+}
+
+/**
+ * Reconciles all AttendanceRecords (Bitácora de Evidencias) and ClassAssignments so that:
+ * 1. Overdue 'en_curso' records (+60 min past session end) transition to 'incumplido' ('sin_cierre_30m').
+ * 2. Records missing assignmentId are linked to their matching ClassAssignment.
+ * 3. Assignments with 'completado' records have their completedDates (and closed/closedAt for fecha_unica) populated.
+ * 4. Assignments with 'incumplido' records or expired load windows (+10 min / past dates without check-in)
+ *    have their missedDates, nonCompliant, nonCompliantReason, and nonCompliantAt populated.
+ */
+export function reconcileAssignmentsAndRecords(params: {
+  assignments: ClassAssignment[];
+  records: AttendanceRecord[];
+  catalog?: ActivityCatalogItem[];
+  nowMs?: number;
+  skipInFlightRecordIds?: ReadonlySet<string>;
+  skipInFlightAssignmentIds?: ReadonlySet<string>;
+}): {
+  assignments: ClassAssignment[];
+  records: AttendanceRecord[];
+  changedAssignmentIds: Set<string>;
+  changedRecordIds: Set<string>;
+} {
+  const {
+    assignments,
+    records,
+    catalog = [],
+    nowMs = Date.now(),
+    skipInFlightRecordIds,
+    skipInFlightAssignmentIds,
+  } = params;
+
+  const nowDate = new Date(nowMs);
+  const todayStr = formatLocalYYYYMMDD(nowDate);
+  const nowTimeStr = nowDate.toLocaleTimeString('es-MX', { hour12: false });
+  const elapsedMonthDates = getElapsedMonthDateStrings(todayStr);
+
+  const changedRecordIds = new Set<string>();
+  const changedAssignmentIds = new Set<string>();
+
+  // Step 1: Reconcile records (+60m grace expiration & assignmentId linkage)
+  const reconciledRecords: AttendanceRecord[] = records.map((rec) => {
+    if (skipInFlightRecordIds?.has(rec.id)) {
+      return rec;
+    }
+
+    let nextRec = rec;
+    let mutated = false;
+
+    const matchedAsg = findMatchingAssignmentForRecord(nextRec, assignments);
+    if (matchedAsg && !nextRec.assignmentId) {
+      nextRec = { ...nextRec, assignmentId: matchedAsg.id };
+      mutated = true;
+    }
+
+    if (nextRec.status === 'en_curso' && !nextRec.checkOutTime) {
+      const alarm = getSessionAlarmStatus(nextRec, catalog, nowMs);
+      if (alarm.hasExceededUnclosedGrace) {
+        const autoNote = `[Sistema BSCW] Salida pendiente dada por TERMINADA a los 60 min después de la hora de término (${alarm.autoLockDeadlineFormatted} hrs) y calificada como NO CERRADA.`;
+        const rawMergedObs = nextRec.observations
+          ? nextRec.observations.includes('[Sistema BSCW]')
+            ? nextRec.observations
+            : `${nextRec.observations} | ${autoNote}`
+          : autoNote;
+
+        nextRec = {
+          ...nextRec,
+          status: 'incumplido',
+          nonComplianceReason: 'sin_cierre_30m',
+          markedNonCompliantAt: alarm.autoLockDeadlineFormatted || nowTimeStr,
+          durationMinutes: nextRec.durationMinutes ?? alarm.plannedDurationMinutes,
+          alarmEnabled: false,
+          alarmSnoozedUntilIso: null,
+          observations: rawMergedObs.slice(0, 950),
+        };
+        mutated = true;
+      }
+    }
+
+    if (mutated) {
+      changedRecordIds.add(nextRec.id);
+    }
+    return nextRec;
+  });
+
+  // Step 2: Reconcile assignments (completadas, cerradas e incumplidas)
+  const reconciledAssignments: ClassAssignment[] = assignments.map((asg) => {
+    if (skipInFlightAssignmentIds?.has(asg.id)) {
+      return asg;
+    }
+
+    const completedSet = new Set<string>(asg.completedDates || []);
+    const missedSet = new Set<string>(asg.missedDates || []);
+    const reopenedSet = new Set<string>(asg.reopenedDates || []);
+
+    let closed = Boolean(asg.closed);
+    let closedAt = asg.closedAt;
+    let nonCompliant = Boolean(asg.nonCompliant);
+    let nonCompliantReason = asg.nonCompliantReason;
+    let nonCompliantAt = asg.nonCompliantAt;
+
+    // 2A. Apply evidence records linked to this assignment
+    for (const rec of reconciledRecords) {
+      const matchesDirectly = Boolean(rec.assignmentId && rec.assignmentId === asg.id);
+      const matchesByAttributes =
+        !rec.assignmentId &&
+        rec.trainerId === asg.trainerId &&
+        rec.companyId === asg.companyId &&
+        rec.sedeId === asg.sedeId &&
+        doesAssignmentApplyToDate(asg, rec.date) &&
+        (rec.scheduledTime === asg.time || rec.activityName === asg.activityName);
+
+      if (!matchesDirectly && !matchesByAttributes) continue;
+      if (!rec.date) continue;
+
+      if (rec.status === 'completado') {
+        completedSet.add(rec.date);
+        missedSet.delete(rec.date);
+        reopenedSet.delete(rec.date);
+        if (asg.frequency === 'fecha_unica') {
+          closed = true;
+          closedAt =
+            closedAt ||
+            (rec.checkOutTime ? `${rec.date} ${rec.checkOutTime}` : `${rec.date} ${nowTimeStr}`);
+          nonCompliant = false;
+          nonCompliantReason = undefined;
+          nonCompliantAt = undefined;
+        }
+      } else if (rec.status === 'incumplido') {
+        if (!completedSet.has(rec.date) && !reopenedSet.has(rec.date)) {
+          missedSet.add(rec.date);
+          nonCompliantReason = rec.nonComplianceReason || nonCompliantReason || 'sin_cierre_30m';
+          nonCompliantAt =
+            nonCompliantAt ||
+            (rec.markedNonCompliantAt
+              ? `${rec.date} ${rec.markedNonCompliantAt}`
+              : `${rec.date} ${nowTimeStr}`);
+          if (asg.frequency === 'fecha_unica') {
+            nonCompliant = true;
+          }
+        }
+      }
+    }
+
+    // 2B. Apply expired schedule windows (+10 min post-start or elapsed dates without check-in)
+    if (asg.active !== false && !closed) {
+      const candidateDates: string[] = [];
+      if (asg.frequency === 'fecha_unica' && asg.date) {
+        candidateDates.push(asg.date);
+      } else if (asg.frequency === 'semanal' || asg.frequency === 'mensual') {
+        for (const dStr of elapsedMonthDates) {
+          if (doesAssignmentApplyToDate(asg, dStr)) {
+            candidateDates.push(dStr);
+          }
+        }
+      }
+
+      for (const checkDate of candidateDates) {
+        if (completedSet.has(checkDate) || reopenedSet.has(checkDate)) continue;
+        if (
+          missedSet.has(checkDate) &&
+          (asg.frequency !== 'fecha_unica' || (nonCompliant && Boolean(nonCompliantReason)))
+        ) {
+          continue;
+        }
+
+        const matchedRec = findMatchingRecordForAssignmentDate(asg, checkDate, reconciledRecords);
+        if (matchedRec) continue;
+
+        const win = getAssignmentScheduledWindowMs(asg, checkDate, catalog);
+        if ((win && nowMs > win.loadCloseMs) || checkDate < todayStr) {
+          missedSet.add(checkDate);
+          nonCompliantReason = nonCompliantReason || 'fuera_de_horario';
+          nonCompliantAt =
+            nonCompliantAt ||
+            `${checkDate} ${win?.loadCloseHHMM ? `${win.loadCloseHHMM}:00` : nowTimeStr}`;
+          if (asg.frequency === 'fecha_unica') {
+            nonCompliant = true;
+          }
+        }
+      }
+    }
+
+    // Ensure single-date consistency if completedDates already had the date
+    if (asg.frequency === 'fecha_unica' && completedSet.size > 0 && !reopenedSet.has(asg.date || '')) {
+      closed = true;
+      closedAt = closedAt || `${asg.date || todayStr} ${nowTimeStr}`;
+      nonCompliant = false;
+      nonCompliantReason = undefined;
+      nonCompliantAt = undefined;
+    }
+
+    const nextCompletedDates = Array.from(completedSet).sort();
+    const nextMissedDates = Array.from(missedSet).sort();
+    const nextReopenedDates = Array.from(reopenedSet).sort();
+
+    const changed =
+      closed !== Boolean(asg.closed) ||
+      (closedAt || '') !== (asg.closedAt || '') ||
+      nonCompliant !== Boolean(asg.nonCompliant) ||
+      (nonCompliantReason || '') !== (asg.nonCompliantReason || '') ||
+      (nonCompliantAt || '') !== (asg.nonCompliantAt || '') ||
+      !areStringArraysEqual(
+        nextCompletedDates,
+        asg.completedDates ? [...asg.completedDates].sort() : []
+      ) ||
+      !areStringArraysEqual(
+        nextMissedDates,
+        asg.missedDates ? [...asg.missedDates].sort() : []
+      ) ||
+      !areStringArraysEqual(
+        nextReopenedDates,
+        asg.reopenedDates ? [...asg.reopenedDates].sort() : []
+      );
+
+    if (!changed) {
+      return asg;
+    }
+
+    changedAssignmentIds.add(asg.id);
+
+    const updatedAsg: ClassAssignment = {
+      ...asg,
+      ...(nextCompletedDates.length > 0 || asg.completedDates
+        ? { completedDates: nextCompletedDates }
+        : {}),
+      ...(nextMissedDates.length > 0 || asg.missedDates
+        ? { missedDates: nextMissedDates }
+        : {}),
+      ...(nextReopenedDates.length > 0 || asg.reopenedDates
+        ? { reopenedDates: nextReopenedDates }
+        : {}),
+      ...(closed || typeof asg.closed === 'boolean' ? { closed } : {}),
+      ...(closed && closedAt ? { closedAt } : {}),
+      ...(nonCompliant || typeof asg.nonCompliant === 'boolean' ? { nonCompliant } : {}),
+      ...(nonCompliantReason ? { nonCompliantReason } : {}),
+      ...(nonCompliantAt ? { nonCompliantAt } : {}),
+    };
+
+    if (!closed) {
+      delete updatedAsg.closedAt;
+    }
+    if (!nonCompliant && nextMissedDates.length === 0) {
+      delete updatedAsg.nonCompliantReason;
+      delete updatedAsg.nonCompliantAt;
+    }
+
+    return updatedAsg;
+  });
+
+  return {
+    assignments: reconciledAssignments,
+    records: reconciledRecords,
+    changedAssignmentIds,
+    changedRecordIds,
+  };
+}
+

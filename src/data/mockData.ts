@@ -430,6 +430,7 @@ export function getInitialRecords(): AttendanceRecord[] {
     // Yesterday records
     {
       id: 'rec_104',
+      assignmentId: 'asg_mariana_cerrada_ayer',
       trainerId: 'tr_4',
       trainerName: 'Mariana Gómez',
       companyId: 'comp_4',
@@ -472,6 +473,7 @@ export function getInitialRecords(): AttendanceRecord[] {
     },
     {
       id: 'rec_105',
+      assignmentId: 'asg_carlos_tlalnepantla_ayer',
       trainerId: 'tr_1',
       trainerName: 'Carlos Mendoza',
       companyId: 'comp_2',
@@ -514,6 +516,7 @@ export function getInitialRecords(): AttendanceRecord[] {
     // Past days records for monthly reports
     {
       id: 'rec_106',
+      assignmentId: 'asg_valentina_santafe_d2',
       trainerId: 'tr_2',
       trainerName: 'Valentina Ríos',
       companyId: 'comp_1',
@@ -555,6 +558,7 @@ export function getInitialRecords(): AttendanceRecord[] {
     },
     {
       id: 'rec_107',
+      assignmentId: 'asg_andres_techhub_d3',
       trainerId: 'tr_3',
       trainerName: 'Andrés Silva',
       companyId: 'comp_3',
@@ -597,6 +601,7 @@ export function getInitialRecords(): AttendanceRecord[] {
     },
     {
       id: 'rec_108',
+      assignmentId: 'asg_mariana_reforma_d4',
       trainerId: 'tr_4',
       trainerName: 'Mariana Gómez',
       companyId: 'comp_1',
@@ -691,6 +696,15 @@ const _seedTodayYMD = formatLocalDateYMD(_seedNow);
 const _seedYesterday = new Date(_seedNow);
 _seedYesterday.setDate(_seedYesterday.getDate() - 1);
 const _seedYesterdayYMD = formatLocalDateYMD(_seedYesterday);
+const _seedD2 = new Date(_seedNow);
+_seedD2.setDate(_seedD2.getDate() - 2);
+const _seedD2YMD = formatLocalDateYMD(_seedD2);
+const _seedD3 = new Date(_seedNow);
+_seedD3.setDate(_seedD3.getDate() - 5);
+const _seedD3YMD = formatLocalDateYMD(_seedD3);
+const _seedD4 = new Date(_seedNow);
+_seedD4.setDate(_seedD4.getDate() - 12);
+const _seedD4YMD = formatLocalDateYMD(_seedD4);
 const _futureHour = Math.min(23, Math.max(19, _seedNow.getHours() + 2));
 const _upcomingTodayTime = `${String(_futureHour).padStart(2, '0')}:30`;
 const _expiredTodayOrYesterdayDate = _seedNow.getHours() >= 8 ? _seedTodayYMD : _seedYesterdayYMD;
@@ -931,6 +945,121 @@ export const INITIAL_ASSIGNMENTS: ClassAssignment[] = [
     notes: 'Circuito funcional cardio-fuerza.',
     active: true,
   },
+  {
+    id: 'asg_mariana_cerrada_ayer',
+    trainerId: 'tr_4',
+    trainerName: 'Mariana Gómez',
+    companyId: 'comp_4',
+    companyName: 'Consultoría Deloitte Global',
+    sedeId: 'sede_4_1',
+    sedeName: 'Torre Diana Reforma',
+    sedeAddress: 'Río Lerma 232, Cuauhtémoc, CDMX',
+    frequency: 'fecha_unica',
+    date: _seedYesterdayYMD,
+    time: '09:00',
+    durationMinutes: 48,
+    activityType: 'pausa_activa',
+    activityName: 'Pausa Activa: Movilidad Articular y Postura',
+    locationArea: 'Piso 18 - Open Space Auditoría',
+    expectedAttendees: 30,
+    notes: 'Sesión completada y cerrada en islas de auditoría.',
+    active: true,
+    closed: true,
+    closedAt: `${_seedYesterdayYMD} 09:40:00`,
+    completedDates: [_seedYesterdayYMD],
+  },
+  {
+    id: 'asg_carlos_tlalnepantla_ayer',
+    trainerId: 'tr_1',
+    trainerName: 'Carlos Mendoza',
+    companyId: 'comp_2',
+    companyName: 'Nestlé México',
+    sedeId: 'sede_2_2',
+    sedeName: 'Centro de Distribución Tlalnepantla',
+    sedeAddress: 'Vía Gustavo Baz 120, Edomex',
+    frequency: 'fecha_unica',
+    date: _seedYesterdayYMD,
+    time: '14:00',
+    durationMinutes: 52,
+    activityType: 'pausa_activa',
+    activityName: 'Pausa Activa: Ergonomía y Estiramientos',
+    locationArea: 'Nave Logística y Almacén Central',
+    expectedAttendees: 28,
+    notes: 'Pausa ergonómica completada y cerrada en almacén central.',
+    active: true,
+    closed: true,
+    closedAt: `${_seedYesterdayYMD} 14:50:10`,
+    completedDates: [_seedYesterdayYMD],
+  },
+  {
+    id: 'asg_valentina_santafe_d2',
+    trainerId: 'tr_2',
+    trainerName: 'Valentina Ríos',
+    companyId: 'comp_1',
+    companyName: 'Banco Santander Corporativo',
+    sedeId: 'sede_1_2',
+    sedeName: 'Centro Operativo Santa Fe',
+    sedeAddress: 'Av. Vasco de Quiroga 3900',
+    frequency: 'fecha_unica',
+    date: _seedD2YMD,
+    time: '16:00',
+    durationMinutes: 64,
+    activityType: 'clase_fitness',
+    activityName: 'Clase Fitness: Pilates Mat',
+    locationArea: 'Sala de Bienestar - Piso 2',
+    expectedAttendees: 20,
+    notes: 'Sesión de Pilates Mat completada y cerrada.',
+    active: true,
+    closed: true,
+    closedAt: `${_seedD2YMD} 17:05:00`,
+    completedDates: [_seedD2YMD],
+  },
+  {
+    id: 'asg_andres_techhub_d3',
+    trainerId: 'tr_3',
+    trainerName: 'Andrés Silva',
+    companyId: 'comp_3',
+    companyName: 'TechHub Latin America',
+    sedeId: 'sede_3_1',
+    sedeName: 'Campus Insurgentes Sur',
+    sedeAddress: 'Av. Insurgentes Sur 1602',
+    frequency: 'fecha_unica',
+    date: _seedD3YMD,
+    time: '17:30',
+    durationMinutes: 57,
+    activityType: 'clase_fitness',
+    activityName: 'Clase Fitness: Zumba y Ritmos Latinos',
+    locationArea: 'Terraza Principal - Piso 4',
+    expectedAttendees: 25,
+    notes: 'Sesión cardiovascular completada y cerrada.',
+    active: true,
+    closed: true,
+    closedAt: `${_seedD3YMD} 18:45:00`,
+    completedDates: [_seedD3YMD],
+  },
+  {
+    id: 'asg_mariana_reforma_d4',
+    trainerId: 'tr_4',
+    trainerName: 'Mariana Gómez',
+    companyId: 'comp_1',
+    companyName: 'Banco Santander Corporativo',
+    sedeId: 'sede_1_1',
+    sedeName: 'Torre Corporativa Reforma',
+    sedeAddress: 'Paseo de la Reforma 500, CDMX',
+    frequency: 'fecha_unica',
+    date: _seedD4YMD,
+    time: '10:00',
+    durationMinutes: 49,
+    activityType: 'pausa_activa',
+    activityName: 'Pausa Activa: Gimnasia Cerebral y Respiración',
+    locationArea: 'Piso 15 - Torre Reforma',
+    expectedAttendees: 28,
+    notes: 'Dinámicas neuromotoras completadas y cerradas.',
+    active: true,
+    closed: true,
+    closedAt: `${_seedD4YMD} 10:45:00`,
+    completedDates: [_seedD4YMD],
+  },
 ];
 
 export const INITIAL_ACTIVITY_CATALOG: ActivityCatalogItem[] = [
@@ -1050,9 +1179,11 @@ export const INITIAL_ACTIVITY_CATALOG: ActivityCatalogItem[] = [
 
 const STORAGE_KEYS = {
   RECORDS: 'bscw_records_v3',
+  RECORDS_USER_EMPTIED: 'bscw_records_user_emptied_v1',
   TRAINERS: 'bscw_trainers_v3',
   COMPANIES: 'bscw_companies_v3',
   ASSIGNMENTS: 'bscw_assignments_v3',
+  ASSIGNMENTS_USER_EMPTIED: 'bscw_assignments_user_emptied_v1',
   ACTIVITY_CATALOG: 'bscw_activity_catalog_v1',
   ACTIVE_TRAINER_ID: 'bscw_active_trainer_id',
 };
@@ -1116,14 +1247,39 @@ export function getStoredRecords(): AttendanceRecord[] {
       return initial;
     }
     const parsed: AttendanceRecord[] = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : getInitialRecords();
+    if (!Array.isArray(parsed)) {
+      const initial = getInitialRecords();
+      saveStoredRecords(initial);
+      return initial;
+    }
+    if (parsed.length === 0 && localStorage.getItem(STORAGE_KEYS.RECORDS_USER_EMPTIED) !== '1') {
+      const initial = getInitialRecords();
+      saveStoredRecords(initial);
+      return initial;
+    }
+    return parsed;
   } catch {
     return getInitialRecords();
   }
 }
 
+export function markStoredRecordsUserEmptied(isEmptied: boolean): void {
+  try {
+    if (isEmptied) {
+      localStorage.setItem(STORAGE_KEYS.RECORDS_USER_EMPTIED, '1');
+    } else {
+      localStorage.removeItem(STORAGE_KEYS.RECORDS_USER_EMPTIED);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
 export function saveStoredRecords(records: AttendanceRecord[]): void {
   try {
+    if (records.length > 0) {
+      localStorage.removeItem(STORAGE_KEYS.RECORDS_USER_EMPTIED);
+    }
     localStorage.setItem(STORAGE_KEYS.RECORDS, JSON.stringify(records));
   } catch {
     // If mobile localStorage hits quota due to multiple base64 photos, store compact cache for older entries
@@ -1217,14 +1373,40 @@ export function getStoredAssignments(): ClassAssignment[] {
       return INITIAL_ASSIGNMENTS;
     }
     const parsed: ClassAssignment[] = JSON.parse(raw);
-    return Array.isArray(parsed) ? parsed : INITIAL_ASSIGNMENTS;
+    if (!Array.isArray(parsed)) {
+      saveStoredAssignments(INITIAL_ASSIGNMENTS);
+      return INITIAL_ASSIGNMENTS;
+    }
+    if (
+      parsed.length === 0 &&
+      localStorage.getItem(STORAGE_KEYS.ASSIGNMENTS_USER_EMPTIED) !== '1'
+    ) {
+      saveStoredAssignments(INITIAL_ASSIGNMENTS);
+      return INITIAL_ASSIGNMENTS;
+    }
+    return parsed;
   } catch {
     return INITIAL_ASSIGNMENTS;
   }
 }
 
+export function markStoredAssignmentsUserEmptied(isEmptied: boolean): void {
+  try {
+    if (isEmptied) {
+      localStorage.setItem(STORAGE_KEYS.ASSIGNMENTS_USER_EMPTIED, '1');
+    } else {
+      localStorage.removeItem(STORAGE_KEYS.ASSIGNMENTS_USER_EMPTIED);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
 export function saveStoredAssignments(assignments: ClassAssignment[]): void {
   try {
+    if (assignments.length > 0) {
+      localStorage.removeItem(STORAGE_KEYS.ASSIGNMENTS_USER_EMPTIED);
+    }
     localStorage.setItem(STORAGE_KEYS.ASSIGNMENTS, JSON.stringify(assignments));
   } catch {
     // Ignore localStorage quota issues
@@ -1233,9 +1415,11 @@ export function saveStoredAssignments(assignments: ClassAssignment[]): void {
 
 export function resetAllDataToDefault(): void {
   localStorage.removeItem(STORAGE_KEYS.RECORDS);
+  localStorage.removeItem(STORAGE_KEYS.RECORDS_USER_EMPTIED);
   localStorage.removeItem(STORAGE_KEYS.TRAINERS);
   localStorage.removeItem(STORAGE_KEYS.COMPANIES);
   localStorage.removeItem(STORAGE_KEYS.ASSIGNMENTS);
+  localStorage.removeItem(STORAGE_KEYS.ASSIGNMENTS_USER_EMPTIED);
   localStorage.removeItem(STORAGE_KEYS.ACTIVITY_CATALOG);
   getStoredCompanies();
   getStoredTrainers();

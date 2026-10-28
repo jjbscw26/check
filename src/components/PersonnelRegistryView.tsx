@@ -14,6 +14,8 @@ import {
 } from 'firebase/firestore';
 import {
   AlertCircle,
+  AlertTriangle,
+  Ban,
   BarChart3,
   Briefcase,
   Building2,
@@ -52,6 +54,7 @@ import {
   UserCheck,
   UserCircle2,
   Users,
+  Video,
   X,
   ZoomIn,
 } from 'lucide-react';
@@ -103,6 +106,7 @@ import {
   validateTrainerInput,
 } from '../utils/personnelValidation';
 import {
+  DatabaseFullSyncSummary,
   deleteActivityCatalogItemFromFirestore,
   deleteAssignmentFromFirestore,
   deleteCompanyAndSedesFromFirestore,
@@ -115,6 +119,7 @@ import {
   saveRecordToFirestore,
   saveSedeToFirestore,
   saveTrainerToFirestore,
+  syncEvidenceAndAssignmentsToFirestore,
 } from '../utils/firestoreDemoSync';
 import {
   cleanDisciplineLabel,
@@ -390,6 +395,7 @@ export interface PersonnelRegistryViewProps {
   embeddedInAdmin?: boolean;
   onNavigateView?: (view: 'trainer' | 'personnel' | 'admin') => void;
   onExitEmbeddedDirectory?: () => void;
+  onSyncDatabaseNow?: () => Promise<DatabaseFullSyncSummary>;
 }
 
 interface PersonnelRegistryWorkspaceProps {
@@ -397,6 +403,7 @@ interface PersonnelRegistryWorkspaceProps {
   authenticatedUser: User;
   isAdminUser: boolean;
   onSignOut: () => Promise<void>;
+  onSyncDatabaseNow?: () => Promise<DatabaseFullSyncSummary>;
 }
 
 const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
@@ -404,8 +411,18 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
   authenticatedUser,
   isAdminUser,
   onSignOut,
+  onSyncDatabaseNow,
 }) => {
   const [activeCategory, setActiveCategory] = useState<FirestoreDirectoryCategory>('trainers');
+  const [assignmentStatusFilter, setAssignmentStatusFilter] = useState<
+    'all' | 'activas' | 'completadas_cerradas' | 'incumplidas'
+  >('all');
+  const [isSyncingAllDb, setIsSyncingAllDb] = useState<boolean>(false);
+  const [globalSyncBanner, setGlobalSyncBanner] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
+  const autoSyncedOnMountRef = useRef<boolean>(false);
 
   // Form states per collection
   const [trainerForm, setTrainerForm] = useState<TrainerFormInput>(EMPTY_TRAINER_FORM);
@@ -580,6 +597,39 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
   if (fatalFirestoreError) {
     throw fatalFirestoreError;
   }
+
+  const handleManualSyncAllToFirestore = useCallback(async () => {
+    setIsSyncingAllDb(true);
+    setGlobalSyncBanner(null);
+    try {
+      const summary = onSyncDatabaseNow
+        ? await onSyncDatabaseNow()
+        : await syncEvidenceAndAssignmentsToFirestore();
+      setGlobalSyncBanner({
+        type: 'success',
+        message: `Cargados en Cloud Firestore: ${summary.totalRecords} actas en Bitácora (/records: ${summary.completedRecordsCount} completadas, ${summary.inProgressRecordsCount} en curso, ${summary.nonCompliantRecordsCount} incumplidas) y ${summary.totalAssignments} asignaciones en /assignments (${summary.completedClosedAssignmentsCount} completadas/cerradas, ${summary.nonCompliantAssignmentsCount} incumplidas).`,
+      });
+    } catch {
+      setGlobalSyncBanner({
+        type: 'error',
+        message: 'No se pudo completar la carga de evidencias y asignaciones en Cloud Firestore.',
+      });
+    } finally {
+      setIsSyncingAllDb(false);
+    }
+  }, [onSyncDatabaseNow]);
+
+  // Automatic reconciliation on mount so Bitácora (/records) and completed/closed/non-compliant (/assignments) are always loaded in Firestore
+  useEffect(() => {
+    if (autoSyncedOnMountRef.current) return;
+    autoSyncedOnMountRef.current = true;
+    const run = onSyncDatabaseNow
+      ? onSyncDatabaseNow()
+      : syncEvidenceAndAssignmentsToFirestore();
+    void run.catch((err) => {
+      console.warn('Silent directory sync warning:', err);
+    });
+  }, [onSyncDatabaseNow]);
 
   // Real-time listeners attached ONLY after verified authentication in Directorio
   useEffect(() => {
@@ -823,6 +873,19 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
               ? { expectedAttendees: d.expectedAttendees }
               : {}),
             ...(typeof d.notes === 'string' ? { notes: d.notes } : {}),
+            ...(typeof d.isVirtual === 'boolean' ? { isVirtual: d.isVirtual } : {}),
+            ...(typeof d.virtualPlatform === 'string' && d.virtualPlatform
+              ? { virtualPlatform: d.virtualPlatform }
+              : {}),
+            ...(typeof d.virtualMeetingUrl === 'string' && d.virtualMeetingUrl
+              ? { virtualMeetingUrl: d.virtualMeetingUrl }
+              : {}),
+            ...(typeof d.virtualMeetingId === 'string' && d.virtualMeetingId
+              ? { virtualMeetingId: d.virtualMeetingId }
+              : {}),
+            ...(typeof d.virtualPasscode === 'string' && d.virtualPasscode
+              ? { virtualPasscode: d.virtualPasscode }
+              : {}),
             active: d.active !== false,
             ...(typeof d.closed === 'boolean' ? { closed: d.closed } : {}),
             ...(typeof d.closedAt === 'string' ? { closedAt: d.closedAt } : {}),
@@ -1534,10 +1597,36 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
     );
   }, [catalogList, searchQuery]);
 
+  const assignmentStateSummary = useMemo(() => {
+    const completedClosed = assignmentsList.filter(
+      (a) => Boolean(a.closed) || (a.completedDates?.length ?? 0) > 0
+    ).length;
+    const nonCompliant = assignmentsList.filter(
+      (a) => Boolean(a.nonCompliant) || (a.missedDates?.length ?? 0) > 0
+    ).length;
+    const activeOnly = assignmentsList.filter(
+      (a) => a.active !== false && !a.closed && !a.nonCompliant
+    ).length;
+    return { completedClosed, nonCompliant, activeOnly };
+  }, [assignmentsList]);
+
   const filteredAssignments = useMemo(() => {
-    if (!searchQuery) return assignmentsList;
-    return assignmentsList.filter((a) =>
-      [
+    return assignmentsList.filter((a) => {
+      const isCompletedOrClosed = Boolean(a.closed) || (a.completedDates?.length ?? 0) > 0;
+      const isBreached = Boolean(a.nonCompliant) || (a.missedDates?.length ?? 0) > 0;
+
+      if (assignmentStatusFilter === 'completadas_cerradas' && !isCompletedOrClosed) {
+        return false;
+      }
+      if (assignmentStatusFilter === 'incumplidas' && !isBreached) {
+        return false;
+      }
+      if (assignmentStatusFilter === 'activas' && (a.closed || a.nonCompliant || !a.active)) {
+        return false;
+      }
+
+      if (!searchQuery) return true;
+      return [
         a.activityName,
         ACTIVITY_TYPE_LABELS[a.activityType],
         a.companyName,
@@ -1547,13 +1636,15 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
         a.frequency,
         a.time,
         a.date || '',
+        a.closed ? 'cerrada completada' : '',
+        a.nonCompliant ? 'incumplida' : '',
         a.dayOfWeek !== undefined ? WEEKDAY_NAMES[a.dayOfWeek] || '' : '',
       ]
         .join(' ')
         .toLowerCase()
-        .includes(searchQuery)
-    );
-  }, [assignmentsList, searchQuery]);
+        .includes(searchQuery);
+    });
+  }, [assignmentsList, searchQuery, assignmentStatusFilter]);
 
   const filteredRecords = useMemo(() => {
     return recordsList.filter((r) => {
@@ -1854,6 +1945,23 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
         </div>
 
         <div className="flex flex-wrap items-center gap-2.5 shrink-0">
+          <button
+            type="button"
+            onClick={() => void handleManualSyncAllToFirestore()}
+            disabled={isSyncingAllDb}
+            className="px-3.5 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition cursor-pointer whitespace-nowrap"
+            title="Cargar Bitácora de Evidencias (/records) y Asignaciones completadas, cerradas e incumplidas (/assignments) en Cloud Firestore"
+          >
+            <RefreshCw
+              className={`w-3.5 h-3.5 text-emerald-400 ${isSyncingAllDb ? 'animate-spin' : ''}`}
+            />
+            <span>
+              {isSyncingAllDb
+                ? 'Sincronizando BD...'
+                : 'Cargar Bitácora y Asignaciones en BD'}
+            </span>
+          </button>
+
           <div className="flex items-center gap-2 px-3 py-1.5 rounded-xl bg-slate-50 border border-slate-200">
             <img
               src={
@@ -1887,6 +1995,32 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
           </button>
         </div>
       </div>
+
+      {globalSyncBanner && (
+        <div
+          className={`rounded-2xl px-4 py-3 text-xs font-semibold flex items-start justify-between gap-3 border ${
+            globalSyncBanner.type === 'success'
+              ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+              : 'bg-rose-50 border-rose-300 text-rose-950'
+          }`}
+        >
+          <div className="flex items-start gap-2">
+            {globalSyncBanner.type === 'success' ? (
+              <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+            ) : (
+              <AlertCircle className="w-4 h-4 text-rose-700 shrink-0 mt-0.5" />
+            )}
+            <span className="leading-relaxed">{globalSyncBanner.message}</span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setGlobalSyncBanner(null)}
+            className="text-slate-500 hover:text-slate-900 font-bold shrink-0 cursor-pointer"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Main Layout: Sidebar Navigation + Form & List Workspace */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
@@ -2041,49 +2175,64 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
 
             {activeCategory === 'calendar' && (
               <div className="space-y-4">
-                <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-3">
                   <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
                     <div className="flex items-center justify-between text-xs font-bold text-slate-700">
                       <span className="flex items-center gap-1.5">
                         <Calendar className="w-4 h-4 text-red-600" />
-                        Asignaciones Programadas
+                        Total Asignaciones
                       </span>
                       <span className="font-mono tabular-nums text-sm text-slate-900">
                         {assignmentsList.length}
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-500">
-                      Colección <strong className="font-mono">/assignments</strong> (semanales, mensuales, fecha única, cierres e incumplimientos).
+                      Colección <strong className="font-mono">/assignments</strong> ({assignmentStateSummary.activeOnly} vigentes en calendario).
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-emerald-50/70 border border-emerald-200 space-y-1">
+                    <div className="flex items-center justify-between text-xs font-bold text-emerald-900">
+                      <span className="flex items-center gap-1.5">
+                        <CheckCircle2 className="w-4 h-4 text-emerald-600" />
+                        Completadas y Cerradas
+                      </span>
+                      <span className="font-mono tabular-nums text-sm text-emerald-900">
+                        {assignmentStateSummary.completedClosed}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-emerald-800/80">
+                      Asignaciones con cierre oficial (<strong className="font-mono">closed</strong> / <strong className="font-mono">completedDates</strong>).
+                    </p>
+                  </div>
+
+                  <div className="p-3.5 rounded-xl bg-rose-50/70 border border-rose-200 space-y-1">
+                    <div className="flex items-center justify-between text-xs font-bold text-rose-900">
+                      <span className="flex items-center gap-1.5">
+                        <Ban className="w-4 h-4 text-rose-600" />
+                        Asignaciones Incumplidas
+                      </span>
+                      <span className="font-mono tabular-nums text-sm text-rose-900">
+                        {assignmentStateSummary.nonCompliant}
+                      </span>
+                    </div>
+                    <p className="text-[11px] text-rose-800/80">
+                      No cargadas (+10m) o sin cierre (+60m) (<strong className="font-mono">nonCompliant</strong> / <strong className="font-mono">missedDates</strong>).
                     </p>
                   </div>
 
                   <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
                     <div className="flex items-center justify-between text-xs font-bold text-slate-700">
                       <span className="flex items-center gap-1.5">
-                        <Clock className="w-4 h-4 text-emerald-600" />
-                        Ejecuciones y Check-ins
+                        <Camera className="w-4 h-4 text-blue-600" />
+                        Bitácora de Evidencias
                       </span>
                       <span className="font-mono tabular-nums text-sm text-slate-900">
                         {recordsList.length}
                       </span>
                     </div>
                     <p className="text-[11px] text-slate-500">
-                      Colección <strong className="font-mono">/records</strong> sincronizada con la pestaña Bitácora de Evidencias.
-                    </p>
-                  </div>
-
-                  <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
-                    <div className="flex items-center justify-between text-xs font-bold text-slate-700">
-                      <span className="flex items-center gap-1.5">
-                        <Layers className="w-4 h-4 text-blue-600" />
-                        Catálogo de Disciplinas
-                      </span>
-                      <span className="font-mono tabular-nums text-sm text-slate-900">
-                        {catalogList.length}
-                      </span>
-                    </div>
-                    <p className="text-[11px] text-slate-500">
-                      Colección <strong className="font-mono">/activity_catalog</strong> (Pausa Activa, Clase Fitness, Gimnasio Corporativo y Masajes).
+                      Colección <strong className="font-mono">/records</strong> ({recordsList.filter((r) => r.status === 'completado').length} completadas · {recordsList.filter((r) => r.status === 'incumplido').length} incumplidas).
                     </p>
                   </div>
                 </div>
@@ -4100,10 +4249,44 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                 {activeCategory === 'calendar' && (
                   <div className="space-y-5">
                     {/* Scheduled Assignments */}
-                    <div className="space-y-2">
-                      <h5 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
-                        Programación de Asignaciones (`/assignments`: {filteredAssignments.length})
-                      </h5>
+                    <div className="space-y-2.5">
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <h5 className="text-xs font-extrabold uppercase tracking-wider text-slate-600">
+                          Programación y Estado de Asignaciones (`/assignments`: {filteredAssignments.length} / {assignmentsList.length})
+                        </h5>
+                        <div className="inline-flex flex-wrap items-center p-1 bg-slate-100 border border-slate-200 rounded-xl gap-0.5">
+                          {(
+                            [
+                              { id: 'all', label: `Todas (${assignmentsList.length})` },
+                              {
+                                id: 'completadas_cerradas',
+                                label: `Completadas / Cerradas (${assignmentStateSummary.completedClosed})`,
+                              },
+                              {
+                                id: 'incumplidas',
+                                label: `Incumplidas (${assignmentStateSummary.nonCompliant})`,
+                              },
+                              {
+                                id: 'activas',
+                                label: `Activas (${assignmentStateSummary.activeOnly})`,
+                              },
+                            ] as const
+                          ).map((opt) => (
+                            <button
+                              key={opt.id}
+                              type="button"
+                              onClick={() => setAssignmentStatusFilter(opt.id)}
+                              className={`px-2.5 py-1 rounded-lg text-[11px] font-bold transition cursor-pointer whitespace-nowrap ${
+                                assignmentStatusFilter === opt.id
+                                  ? 'bg-white text-slate-900 shadow-xs'
+                                  : 'text-slate-600 hover:text-slate-900'
+                              }`}
+                            >
+                              {opt.label}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
                       <div className="divide-y divide-slate-200 border border-slate-200 rounded-xl overflow-hidden">
                         {filteredAssignments.map((asg) => {
                           const scheduleLabel =
@@ -4116,6 +4299,21 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                               : asg.frequency === 'mensual'
                               ? `Mensual · Día ${asg.dayOfMonth || 1}`
                               : `Fecha única · ${asg.date || ''}`;
+
+                          const hasCompletedDates = Boolean(
+                            asg.completedDates && asg.completedDates.length > 0
+                          );
+                          const hasMissedDates = Boolean(
+                            asg.missedDates && asg.missedDates.length > 0
+                          );
+                          const nonCompliantReasonLabel =
+                            asg.nonCompliantReason === 'sin_cierre_30m'
+                              ? 'Sin cierre (+60m)'
+                              : asg.nonCompliantReason === 'fuera_de_horario'
+                              ? 'No cargada (+10m)'
+                              : asg.nonCompliantReason === 'manual_admin'
+                              ? 'Marcada por Admin'
+                              : 'Incumplida';
 
                           return (
                             <div
@@ -4130,6 +4328,12 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                                   <span className="font-bold text-slate-900 text-xs sm:text-sm">
                                     {asg.activityName}
                                   </span>
+                                  {asg.isVirtual && (
+                                    <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200">
+                                      <Video className="w-3 h-3" />
+                                      Virtual ({asg.virtualPlatform || 'En línea'})
+                                    </span>
+                                  )}
                                   <span className="text-[11px] text-slate-500">
                                     {ACTIVITY_TYPE_LABELS[asg.activityType]} · {scheduleLabel}
                                   </span>
@@ -4144,15 +4348,23 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                                         ? 'bg-rose-50 text-rose-700 border-rose-200'
                                         : asg.closed
                                         ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                        : hasCompletedDates
+                                        ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                                        : hasMissedDates
+                                        ? 'bg-amber-50 text-amber-800 border-amber-200'
                                         : asg.active
                                         ? 'bg-blue-50 text-blue-700 border-blue-200'
                                         : 'bg-slate-100 text-slate-500 border-slate-200'
                                     }`}
                                   >
                                     {asg.nonCompliant
-                                      ? 'Incumplida'
+                                      ? `Incumplida · ${nonCompliantReasonLabel}`
                                       : asg.closed
-                                      ? 'Cerrada'
+                                      ? 'Completada y Cerrada'
+                                      : hasCompletedDates
+                                      ? `Con Ejecuciones Completadas (${asg.completedDates!.length})`
+                                      : hasMissedDates
+                                      ? `Con Fechas Incumplidas (${asg.missedDates!.length})`
                                       : asg.active
                                       ? 'Activa'
                                       : 'Pausada'}
@@ -4163,14 +4375,22 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                                 </div>
                                 <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-[11px] text-slate-500">
                                   <span>Entrenador: {asg.trainerName}</span>
+                                  {asg.closedAt && (
+                                    <span className="text-emerald-700 font-mono">
+                                      Cierre: {asg.closedAt}
+                                    </span>
+                                  )}
                                   {asg.completedDates && asg.completedDates.length > 0 && (
                                     <span className="text-emerald-700 font-mono">
-                                      Completadas: {asg.completedDates.length}
+                                      Fechas completadas ({asg.completedDates.length}):{' '}
+                                      {asg.completedDates.slice(-3).join(', ')}
                                     </span>
                                   )}
                                   {asg.missedDates && asg.missedDates.length > 0 && (
-                                    <span className="text-rose-700 font-mono">
-                                      Incumplidas: {asg.missedDates.length}
+                                    <span className="text-rose-700 font-mono inline-flex items-center gap-1">
+                                      <AlertTriangle className="w-3 h-3 shrink-0" />
+                                      Fechas incumplidas ({asg.missedDates.length}):{' '}
+                                      {asg.missedDates.slice(-3).join(', ')}
                                     </span>
                                   )}
                                 </div>
@@ -4210,7 +4430,7 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
                         })}
                         {filteredAssignments.length === 0 && (
                           <div className="p-4 text-xs text-slate-500 text-center">
-                            Sin asignaciones que coincidan con el filtro.
+                            Sin asignaciones que coincidan con el filtro seleccionado.
                           </div>
                         )}
                       </div>
@@ -4895,6 +5115,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
   embeddedInAdmin = false,
   onNavigateView,
   onExitEmbeddedDirectory,
+  onSyncDatabaseNow,
 }) => {
   const {
     user,
@@ -5081,6 +5302,7 @@ export const PersonnelRegistryView: React.FC<PersonnelRegistryViewProps> = ({
       authenticatedUser={user}
       isAdminUser={isAdminUser}
       onSignOut={signOutDirectory}
+      onSyncDatabaseNow={onSyncDatabaseNow}
     />
   );
 };

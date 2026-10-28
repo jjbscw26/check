@@ -75,6 +75,7 @@ import { FirestoreErrorBoundary } from './FirestoreErrorBoundary';
 import { AdminLiveTrackingView } from './AdminLiveTrackingView';
 import { collectAllSelectableSpecialties } from '../utils/specialtyDisciplines';
 import { formatDistanceMetric, formatTravelDuration } from '../utils/transitCalculations';
+import { DatabaseFullSyncSummary } from '../utils/firestoreDemoSync';
 
 interface AdminDashboardProps {
   records: AttendanceRecord[];
@@ -103,6 +104,7 @@ interface AdminDashboardProps {
   onUpdateCatalogItem: (item: ActivityCatalogItem, previousName?: string) => void;
   onDeleteCatalogItem: (id: string) => void;
   onResetData: () => void;
+  onSyncDatabaseNow?: () => Promise<DatabaseFullSyncSummary>;
   isDirectoryAuthenticated?: boolean;
   adminStartAlerts?: AdminSessionStartAlert[];
   onDismissAdminAlert?: (alertId: string) => void;
@@ -137,6 +139,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   onUpdateCatalogItem,
   onDeleteCatalogItem,
   onResetData,
+  onSyncDatabaseNow,
   isDirectoryAuthenticated = false,
   adminStartAlerts = [],
   onDismissAdminAlert,
@@ -211,10 +214,54 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   const [logViewMode, setLogViewMode] = useState<'table' | 'gallery'>('table');
   const [isEvidencePdfModalOpen, setIsEvidencePdfModalOpen] = useState<boolean>(false);
   const [isExportingLogPdf, setIsExportingLogPdf] = useState<boolean>(false);
+  const [isSyncingDatabase, setIsSyncingDatabase] = useState<boolean>(false);
+  const [dbSyncBanner, setDbSyncBanner] = useState<{
+    type: 'success' | 'error';
+    message: string;
+  } | null>(null);
   const [lightboxState, setLightboxState] = useState<{
     record: AttendanceRecord;
     slot: EvidencePhotoSlot;
   } | null>(null);
+
+  const dbStatusCounters = useMemo(() => {
+    const completedRecords = records.filter((r) => r.status === 'completado').length;
+    const inProgressRecords = records.filter((r) => r.status === 'en_curso').length;
+    const nonCompliantRecords = records.filter((r) => r.status === 'incumplido').length;
+    const completedClosedAssignments = assignments.filter(
+      (a) => Boolean(a.closed) || (a.completedDates?.length ?? 0) > 0
+    ).length;
+    const nonCompliantAssignments = assignments.filter(
+      (a) => Boolean(a.nonCompliant) || (a.missedDates?.length ?? 0) > 0
+    ).length;
+    return {
+      completedRecords,
+      inProgressRecords,
+      nonCompliantRecords,
+      completedClosedAssignments,
+      nonCompliantAssignments,
+    };
+  }, [records, assignments]);
+
+  const handleTriggerDatabaseSync = async () => {
+    if (!onSyncDatabaseNow || isSyncingDatabase) return;
+    setIsSyncingDatabase(true);
+    setDbSyncBanner(null);
+    try {
+      const summary = await onSyncDatabaseNow();
+      setDbSyncBanner({
+        type: 'success',
+        message: `Base de datos sincronizada: ${summary.totalRecords} actas en Bitácora (/records: ${summary.completedRecordsCount} completadas, ${summary.inProgressRecordsCount} en curso, ${summary.nonCompliantRecordsCount} incumplidas) y ${summary.totalAssignments} asignaciones en /assignments (${summary.completedClosedAssignmentsCount} completadas/cerradas, ${summary.nonCompliantAssignmentsCount} incumplidas).`,
+      });
+    } catch {
+      setDbSyncBanner({
+        type: 'error',
+        message: 'No se pudo completar la sincronización con Cloud Firestore. Intenta nuevamente.',
+      });
+    } finally {
+      setIsSyncingDatabase(false);
+    }
+  };
 
   const allDatabaseSpecialties = useMemo(
     () => collectAllSelectableSpecialties(trainers, activityCatalog),
@@ -1296,6 +1343,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
             setPdfAssignmentsTrainerTarget(trainerId || 'all');
             setIsPdfAssignmentsModalOpen(true);
           }}
+          onSyncDatabaseNow={onSyncDatabaseNow}
         />
       )}
 
@@ -1305,22 +1353,58 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           {/* Top Bar: Database Sync + View Mode + Print / PDF / Excel Exports */}
           <div className="bg-white border border-slate-200/90 rounded-2xl p-4 sm:p-5 shadow-sm space-y-4">
             <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3 pb-3 border-b border-slate-100">
-              <div className="space-y-0.5">
+              <div className="space-y-1.5">
                 <div className="flex flex-wrap items-center gap-2">
                   <Database className="w-4 h-4 text-red-600 shrink-0" />
                   <h3 className="text-sm sm:text-base font-extrabold text-slate-900">
                     Bitácora Oficial de Evidencias Fotográficas y Asistencia
                   </h3>
                   <span className="font-mono tabular-nums text-[11px] text-slate-500">
-                    · Cloud Firestore (`/records`) · {records.length} registros
+                    · Cloud Firestore (`/records` y `/assignments`)
                   </span>
                 </div>
                 <p className="text-xs text-slate-500">
-                  Respaldo en tiempo real de fotografías con sello GPS (entrada/salida), validación biométrica facial y actas auditables.
+                  Respaldo en tiempo real de fotografías con sello GPS (entrada/salida), validación biométrica facial y asignaciones completadas, cerradas e incumplidas.
                 </p>
+                <div className="flex flex-wrap items-center gap-1.5 pt-0.5 text-[11px] font-semibold">
+                  <span className="px-2 py-0.5 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200 font-mono tabular-nums">
+                    Evidencias Completadas: {dbStatusCounters.completedRecords}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md bg-blue-50 text-blue-800 border border-blue-200 font-mono tabular-nums">
+                    En Curso: {dbStatusCounters.inProgressRecords}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md bg-rose-50 text-rose-800 border border-rose-200 font-mono tabular-nums">
+                    Evidencias Incumplidas: {dbStatusCounters.nonCompliantRecords}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md bg-slate-100 text-slate-800 border border-slate-200 font-mono tabular-nums">
+                    Asignaciones Cerradas/Completadas: {dbStatusCounters.completedClosedAssignments}
+                  </span>
+                  <span className="px-2 py-0.5 rounded-md bg-amber-50 text-amber-900 border border-amber-200 font-mono tabular-nums">
+                    Asignaciones Incumplidas: {dbStatusCounters.nonCompliantAssignments}
+                  </span>
+                </div>
               </div>
 
               <div className="flex flex-wrap items-center gap-2 shrink-0">
+                {onSyncDatabaseNow && (
+                  <button
+                    type="button"
+                    onClick={() => void handleTriggerDatabaseSync()}
+                    disabled={isSyncingDatabase}
+                    className="px-3 py-2 rounded-xl bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-white text-xs font-bold flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
+                    title="Cargar y reconciliar Bitácora de Evidencias (/records) y Asignaciones completadas, cerradas e incumplidas (/assignments) en Cloud Firestore"
+                  >
+                    <RefreshCw
+                      className={`w-3.5 h-3.5 text-emerald-400 ${
+                        isSyncingDatabase ? 'animate-spin' : ''
+                      }`}
+                    />
+                    <span>
+                      {isSyncingDatabase ? 'Cargando en BD...' : 'Cargar / Sincronizar BD'}
+                    </span>
+                  </button>
+                )}
+
                 {/* View Mode Toggle: Tabla vs Galería de Fotos */}
                 <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl border border-slate-200">
                   <button
@@ -1385,6 +1469,32 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
                 </button>
               </div>
             </div>
+
+            {dbSyncBanner && (
+              <div
+                className={`rounded-xl px-3.5 py-2.5 border text-xs flex items-start justify-between gap-2.5 ${
+                  dbSyncBanner.type === 'success'
+                    ? 'bg-emerald-50 border-emerald-300 text-emerald-950'
+                    : 'bg-rose-50 border-rose-300 text-rose-950'
+                }`}
+              >
+                <div className="flex items-start gap-2">
+                  {dbSyncBanner.type === 'success' ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-700 shrink-0 mt-0.5" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 text-rose-700 shrink-0 mt-0.5" />
+                  )}
+                  <span className="font-semibold leading-relaxed">{dbSyncBanner.message}</span>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDbSyncBanner(null)}
+                  className="text-slate-500 hover:text-slate-900 font-bold shrink-0 cursor-pointer"
+                >
+                  <X className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            )}
 
             {/* Search & Filters */}
             <div className="flex flex-col gap-3">
@@ -2341,6 +2451,7 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
           <PersonnelRegistryView
             embeddedInAdmin
             onExitEmbeddedDirectory={() => setActiveTab('reports')}
+            onSyncDatabaseNow={onSyncDatabaseNow}
           />
         </FirestoreErrorBoundary>
       )}
