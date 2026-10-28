@@ -29,6 +29,7 @@ import {
   Search,
   Repeat,
   Printer,
+  FileSpreadsheet,
   Timer,
   Lock,
   Unlock,
@@ -69,6 +70,7 @@ import {
   VIRTUAL_PLATFORM_PRESETS,
 } from '../utils/virtualClassShare';
 import { VirtualClassQuickShare } from './VirtualClassShareCard';
+import { exportAssignmentsRoleToExcel } from '../utils/evidenceExport';
 
 interface AdminScheduleViewProps {
   assignments: ClassAssignment[];
@@ -895,6 +897,27 @@ export const AdminScheduleView: React.FC<AdminScheduleViewProps> = ({
           >
             <Printer className="w-4 h-4 mr-1.5 text-red-400 shrink-0" />
             <span>Descargar Horarios PDF</span>
+          </button>
+
+          {/* Excel Download Button */}
+          <button
+            type="button"
+            onClick={() => {
+              const trainerSlug =
+                filterTrainerId === 'all'
+                  ? 'Todos'
+                  : trainers.find((t) => t.id === filterTrainerId)?.name || filterTrainerId;
+              exportAssignmentsRoleToExcel(assignments, companies, trainers, activityCatalog, {
+                selectedMonth: currentYearMonth,
+                selectedTrainerId: filterTrainerId,
+                filenamePrefix: `Rol_Asignaciones_${currentYearMonth}_${trainerSlug}`,
+              });
+            }}
+            className="px-3.5 py-2 rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white text-xs font-bold shadow-sm transition flex items-center cursor-pointer whitespace-nowrap shrink-0"
+            title="Descargar Rol de Asignaciones Mensuales en Excel (.xlsx) con todas las tablas y calendario"
+          >
+            <FileSpreadsheet className="w-4 h-4 mr-1.5 shrink-0" />
+            <span>Descargar Horarios Excel</span>
           </button>
 
           {/* Toggle Direct Monthly Multi-Day Marking Mode */}

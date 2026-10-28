@@ -69,8 +69,9 @@ export const RecordDetailModal: React.FC<RecordDetailModalProps> = ({
 
   const handleDownloadExcel = () => {
     exportEvidenceRecordsToExcel([record], {
-      filenamePrefix: `Registro_Evidencia_${record.id}`,
-      periodLabel: `Registro individual ${record.id} (${record.date})`,
+      title: `Acta Oficial de Asistencia — ${record.companyName}`,
+      filenamePrefix: `Acta_Asistencia_${record.id}`,
+      periodLabel: `${record.sedeName} · Entrenador: ${record.trainerName} · Fecha: ${record.date} · ID: ${record.id}`,
     });
   };
 

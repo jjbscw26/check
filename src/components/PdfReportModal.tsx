@@ -1,24 +1,25 @@
 import React, { useState } from 'react';
 import { AttendanceRecord, Company, Trainer } from '../types';
-import { 
-  Printer, 
-  Download, 
-  ShieldCheck, 
-  CheckCheck, 
-  Clock, 
-  Calendar, 
-  Users, 
-  Building2, 
-  CheckCircle2, 
-  AlertTriangle,
+import {
+  Printer,
+  Download,
+  ShieldCheck,
+  CheckCheck,
+  Clock,
+  Building2,
   FileSpreadsheet,
   RefreshCw,
 } from 'lucide-react';
 import { formatDistance } from '../utils/geo';
 import {
-  exportEvidenceRecordsToExcel,
+  exportExecutiveReportToExcel,
   exportExecutiveReportToPdf,
 } from '../utils/evidenceExport';
+import {
+  computeCompanySummariesForReport,
+  computeTrainerSummariesForReport,
+  evaluateTrainerRatingLabel,
+} from '../utils/excelReportBuilder';
 
 interface PdfReportModalProps {
   isOpen: boolean;
@@ -49,10 +50,21 @@ export const PdfReportModal: React.FC<PdfReportModalProps> = ({
   const onTime = records.filter((r) => r.punctualityStatus === 'a_tiempo').length;
   const early = records.filter((r) => r.punctualityStatus === 'adelantado').length;
   const late = records.filter((r) => r.punctualityStatus === 'con_retraso').length;
+  const nonCompliantTotal = records.filter((r) => r.status === 'incumplido').length;
   const punctualityRate = total > 0 ? Math.round(((onTime + early) / total) * 100) : 100;
   const totalMinutes = records.reduce((acc, r) => acc + (r.durationMinutes || 45), 0);
   const totalHours = (totalMinutes / 60).toFixed(1);
   const totalAttendees = records.reduce((acc, r) => acc + (r.attendeesCount || 0), 0);
+
+  const trainerRows = computeTrainerSummariesForReport(records, trainers);
+  const companyRows = computeCompanySummariesForReport(records, companies);
+
+  const periodSuffix =
+    reportType === 'daily'
+      ? selectedDate
+      : reportType === 'monthly'
+      ? selectedMonth
+      : 'Consolidado';
 
   const periodLabel =
     reportType === 'daily'
@@ -70,13 +82,7 @@ export const PdfReportModal: React.FC<PdfReportModalProps> = ({
     try {
       await exportExecutiveReportToPdf(records, companies, trainers, {
         periodLabel,
-        filenamePrefix: `Reporte_BSCW_${reportType}_${
-          reportType === 'daily'
-            ? selectedDate
-            : reportType === 'monthly'
-            ? selectedMonth
-            : 'Consolidado'
-        }`,
+        filenamePrefix: `Reporte_BSCW_${reportType}_${periodSuffix}`,
         includePhotos: true,
       });
     } finally {
@@ -85,11 +91,9 @@ export const PdfReportModal: React.FC<PdfReportModalProps> = ({
   };
 
   const handleDownloadExcel = () => {
-    exportEvidenceRecordsToExcel(records, {
-      filenamePrefix: `Reporte_BSCW_${reportType}_${
-        reportType === 'daily' ? selectedDate : selectedMonth
-      }`,
+    exportExecutiveReportToExcel(records, companies, trainers, {
       periodLabel,
+      filenamePrefix: `Reporte_BSCW_${reportType}_${periodSuffix}`,
     });
   };
 
@@ -106,8 +110,10 @@ export const PdfReportModal: React.FC<PdfReportModalProps> = ({
               <CheckCheck className="w-5 h-5 text-white" />
             </span>
             <div>
-              <h3 className="font-bold text-xs sm:text-sm">Vista Previa de Reporte Oficial PDF</h3>
-              <p className="text-[10px] sm:text-[11px] text-slate-400">Listo para imprimir o descargar en PDF / Excel</p>
+              <h3 className="font-bold text-xs sm:text-sm">Vista Previa de Reporte Oficial PDF y Excel</h3>
+              <p className="text-[10px] sm:text-[11px] text-slate-400">
+                Incluye KPIs, tablas por entrenador y empresa, bitácora detallada y firmas oficiales
+              </p>
             </div>
           </div>
 
@@ -116,9 +122,10 @@ export const PdfReportModal: React.FC<PdfReportModalProps> = ({
               type="button"
               onClick={handleDownloadExcel}
               className="min-h-[40px] px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 transition whitespace-nowrap shrink-0 cursor-pointer"
+              title="Descargar Reporte Ejecutivo completo con todas las tablas en Excel (.xlsx)"
             >
               <FileSpreadsheet className="w-3.5 h-3.5 shrink-0" />
-              <span>Excel (.xlsx)</span>
+              <span>Descargar Excel (.xlsx)</span>
             </button>
             <button
               type="button"
@@ -177,7 +184,8 @@ export const PdfReportModal: React.FC<PdfReportModalProps> = ({
                 {periodLabel}
               </span>
               <p className="text-[10px] text-slate-400 mt-1">
-                Generado: {new Date().toLocaleDateString('es-MX')} {new Date().toLocaleTimeString('es-MX', { hour12: false })}
+                Generado: {new Date().toLocaleDateString('es-MX')}{' '}
+                {new Date().toLocaleTimeString('es-MX', { hour12: false })}
               </p>
             </div>
           </div>
@@ -205,181 +213,232 @@ export const PdfReportModal: React.FC<PdfReportModalProps> = ({
             </div>
           </div>
 
-          {/* Section: Resumen por Entrenador */}
+          {/* Section 1: Resumen por Entrenador */}
           <div className="space-y-2">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 border-b border-slate-200 pb-1 flex items-center">
               <Clock className="w-3.5 h-3.5 mr-1 text-red-600" />
               1. Desempeño y Puntualidad por Entrenador
             </h3>
-            <table className="w-full text-left text-xs border border-slate-200">
-              <thead className="bg-slate-100 text-slate-700 text-[10px] uppercase font-bold">
-                <tr>
-                  <th className="p-2 border-b border-slate-200">Entrenador</th>
-                  <th className="p-2 border-b border-slate-200 text-center">Sesiones</th>
-                  <th className="p-2 border-b border-slate-200 text-center">A Tiempo</th>
-                  <th className="p-2 border-b border-slate-200 text-center">Retrasos</th>
-                  <th className="p-2 border-b border-slate-200 text-center">% Puntualidad</th>
-                  <th className="p-2 border-b border-slate-200 text-center">Horas</th>
-                  <th className="p-2 border-b border-slate-200 text-right">Calificación</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-[11px]">
-                {trainers.map((tr) => {
-                  const trRecs = records.filter((r) => r.trainerId === tr.id);
-                  const trTotal = trRecs.length;
-                  const trOnTime = trRecs.filter((r) => r.punctualityStatus === 'a_tiempo' || r.punctualityStatus === 'adelantado').length;
-                  const trLate = trRecs.filter((r) => r.punctualityStatus === 'con_retraso').length;
-                  const trRate = trTotal > 0 ? Math.round((trOnTime / trTotal) * 100) : 100;
-                  const trHours = (trRecs.reduce((acc, r) => acc + (r.durationMinutes || 45), 0) / 60).toFixed(1);
-
-                  return (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border border-slate-200">
+                <thead className="bg-slate-100 text-slate-700 text-[10px] uppercase font-bold">
+                  <tr>
+                    <th className="p-2 border-b border-slate-200">Entrenador</th>
+                    <th className="p-2 border-b border-slate-200 text-center">Sesiones</th>
+                    <th className="p-2 border-b border-slate-200 text-center">A Tiempo</th>
+                    <th className="p-2 border-b border-slate-200 text-center">Retrasos</th>
+                    <th className="p-2 border-b border-slate-200 text-center">No Cerradas</th>
+                    <th className="p-2 border-b border-slate-200 text-center">% Puntualidad</th>
+                    <th className="p-2 border-b border-slate-200 text-center">Horas</th>
+                    <th className="p-2 border-b border-slate-200 text-center">Colab.</th>
+                    <th className="p-2 border-b border-slate-200 text-right">Calificación</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-[11px]">
+                  {trainerRows.map((tr) => (
                     <tr key={tr.id}>
                       <td className="p-2 font-bold text-slate-900">{tr.name}</td>
-                      <td className="p-2 text-center font-mono">{trTotal}</td>
-                      <td className="p-2 text-center font-mono text-emerald-700 font-bold">{trOnTime}</td>
-                      <td className="p-2 text-center font-mono text-red-600 font-bold">{trLate}</td>
-                      <td className="p-2 text-center font-mono font-bold">{trRate}%</td>
-                      <td className="p-2 text-center font-mono">{trHours} hrs</td>
-                      <td className="p-2 text-right font-bold text-slate-700">
-                        {trRate >= 95 ? 'Excelente' : trRate >= 80 ? 'Destacado' : 'Revisión'}
+                      <td className="p-2 text-center font-mono">{tr.totalSessions}</td>
+                      <td className="p-2 text-center font-mono text-emerald-700 font-bold">
+                        {tr.punctualTotal}
+                      </td>
+                      <td className="p-2 text-center font-mono text-red-600 font-bold">
+                        {tr.lateCount}
+                      </td>
+                      <td className="p-2 text-center font-mono font-bold">
+                        {tr.nonCompliantSessions > 0 ? (
+                          <span className="text-rose-700">{tr.nonCompliantSessions}</span>
+                        ) : (
+                          <span className="text-slate-400">0</span>
+                        )}
+                      </td>
+                      <td className="p-2 text-center font-mono font-bold">{tr.punctualityRate}%</td>
+                      <td className="p-2 text-center font-mono">{tr.hoursImparted} hrs</td>
+                      <td className="p-2 text-center font-mono font-semibold">{tr.attendeesTotal}</td>
+                      <td className="p-2 text-right font-bold text-slate-700">{tr.rating}</td>
+                    </tr>
+                  ))}
+                  {trainerRows.length > 0 && (
+                    <tr className="bg-slate-100/80 font-extrabold text-slate-900 border-t border-slate-300">
+                      <td className="p-2">TOTAL / PROMEDIO GENERAL</td>
+                      <td className="p-2 text-center font-mono">{total}</td>
+                      <td className="p-2 text-center font-mono text-emerald-700">
+                        {onTime + early}
+                      </td>
+                      <td className="p-2 text-center font-mono text-red-600">{late}</td>
+                      <td className="p-2 text-center font-mono text-rose-700">
+                        {nonCompliantTotal}
+                      </td>
+                      <td className="p-2 text-center font-mono text-red-600">{punctualityRate}%</td>
+                      <td className="p-2 text-center font-mono">{totalHours} hrs</td>
+                      <td className="p-2 text-center font-mono">{totalAttendees}</td>
+                      <td className="p-2 text-right">
+                        {evaluateTrainerRatingLabel(punctualityRate, nonCompliantTotal)}
                       </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
 
-          {/* Section: Resumen de Sedes y Clientes */}
+          {/* Section 2: Resumen de Sedes y Clientes */}
           <div className="space-y-2">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 border-b border-slate-200 pb-1 flex items-center">
               <Building2 className="w-3.5 h-3.5 mr-1 text-red-600" />
               2. Cobertura en Empresas Cliente
             </h3>
-            <table className="w-full text-left text-xs border border-slate-200">
-              <thead className="bg-slate-100 text-slate-700 text-[10px] uppercase font-bold">
-                <tr>
-                  <th className="p-2 border-b border-slate-200">Empresa</th>
-                  <th className="p-2 border-b border-slate-200">Giro</th>
-                  <th className="p-2 border-b border-slate-200 text-center">Sesiones</th>
-                  <th className="p-2 border-b border-slate-200 text-center">Pausas</th>
-                  <th className="p-2 border-b border-slate-200 text-center">Fitness</th>
-                  <th className="p-2 border-b border-slate-200 text-center">Gimnasio Corp.</th>
-                  <th className="p-2 border-b border-slate-200 text-center">Masajes</th>
-                  <th className="p-2 border-b border-slate-200 text-right">Colaboradores</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-[11px]">
-                {companies.map((c) => {
-                  const cRecs = records.filter((r) => r.companyId === c.id);
-                  const cTotal = cRecs.length;
-                  const cPausas = cRecs.filter(
-                    (r) => (r.activityType || 'pausa_activa') === 'pausa_activa'
-                  ).length;
-                  const cFitness = cRecs.filter((r) => r.activityType === 'clase_fitness').length;
-                  const cGimnasio = cRecs.filter(
-                    (r) => r.activityType === 'gimnasio_corporativo'
-                  ).length;
-                  const cMasajes = cRecs.filter((r) => r.activityType === 'masajes').length;
-                  const cAttendees = cRecs.reduce((acc, r) => acc + (r.attendeesCount || 0), 0);
-
-                  return (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border border-slate-200">
+                <thead className="bg-slate-100 text-slate-700 text-[10px] uppercase font-bold">
+                  <tr>
+                    <th className="p-2 border-b border-slate-200">Empresa</th>
+                    <th className="p-2 border-b border-slate-200">Giro</th>
+                    <th className="p-2 border-b border-slate-200 text-center">Sedes</th>
+                    <th className="p-2 border-b border-slate-200 text-center">Sesiones</th>
+                    <th className="p-2 border-b border-slate-200 text-center">Pausas</th>
+                    <th className="p-2 border-b border-slate-200 text-center">Fitness</th>
+                    <th className="p-2 border-b border-slate-200 text-center">Gimnasio Corp.</th>
+                    <th className="p-2 border-b border-slate-200 text-center">Masajes</th>
+                    <th className="p-2 border-b border-slate-200 text-right">Colaboradores</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-[11px]">
+                  {companyRows.map((c) => (
                     <tr key={c.id}>
                       <td className="p-2 font-bold text-slate-900">{c.name}</td>
                       <td className="p-2 text-slate-600">{c.industry}</td>
+                      <td className="p-2 text-center font-mono tabular-nums">{c.sedesCount}</td>
                       <td className="p-2 text-center font-mono tabular-nums font-bold text-red-600">
-                        {cTotal}
+                        {c.totalSessions}
                       </td>
-                      <td className="p-2 text-center font-mono tabular-nums">{cPausas}</td>
-                      <td className="p-2 text-center font-mono tabular-nums">{cFitness}</td>
-                      <td className="p-2 text-center font-mono tabular-nums">{cGimnasio}</td>
-                      <td className="p-2 text-center font-mono tabular-nums">{cMasajes}</td>
+                      <td className="p-2 text-center font-mono tabular-nums">{c.pausasCount}</td>
+                      <td className="p-2 text-center font-mono tabular-nums">{c.fitnessCount}</td>
+                      <td className="p-2 text-center font-mono tabular-nums">{c.gimnasioCount}</td>
+                      <td className="p-2 text-center font-mono tabular-nums">{c.masajesCount}</td>
                       <td className="p-2 text-right font-mono tabular-nums font-bold">
-                        {cAttendees}
+                        {c.attendeesTotal}
                       </td>
                     </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                  ))}
+                  {companyRows.length > 0 && (
+                    <tr className="bg-slate-100/80 font-extrabold text-slate-900 border-t border-slate-300">
+                      <td className="p-2">TOTAL GENERAL EMPRESAS</td>
+                      <td className="p-2 text-slate-600">{companyRows.length} empresa(s)</td>
+                      <td className="p-2 text-center font-mono tabular-nums">
+                        {companyRows.reduce((acc, c) => acc + c.sedesCount, 0)}
+                      </td>
+                      <td className="p-2 text-center font-mono tabular-nums text-red-600">
+                        {total}
+                      </td>
+                      <td className="p-2 text-center font-mono tabular-nums">
+                        {companyRows.reduce((acc, c) => acc + c.pausasCount, 0)}
+                      </td>
+                      <td className="p-2 text-center font-mono tabular-nums">
+                        {companyRows.reduce((acc, c) => acc + c.fitnessCount, 0)}
+                      </td>
+                      <td className="p-2 text-center font-mono tabular-nums">
+                        {companyRows.reduce((acc, c) => acc + c.gimnasioCount, 0)}
+                      </td>
+                      <td className="p-2 text-center font-mono tabular-nums">
+                        {companyRows.reduce((acc, c) => acc + c.masajesCount, 0)}
+                      </td>
+                      <td className="p-2 text-right font-mono tabular-nums">{totalAttendees}</td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
 
-          {/* Section: Detalle de Registros y Auditoría de Ubicación / Facial */}
+          {/* Section 3: Detalle de Registros y Auditoría de Ubicación / Facial */}
           <div className="space-y-2">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-700 border-b border-slate-200 pb-1 flex items-center">
               <ShieldCheck className="w-3.5 h-3.5 mr-1 text-red-600" />
               3. Bitácora Detallada de Visitas & Validación Biométrica
             </h3>
-            <table className="w-full text-left text-xs border border-slate-200">
-              <thead className="bg-slate-100 text-slate-700 text-[10px] uppercase font-bold">
-                <tr>
-                  <th className="p-2 border-b border-slate-200">Fecha / Horas</th>
-                  <th className="p-2 border-b border-slate-200">Entrenador</th>
-                  <th className="p-2 border-b border-slate-200">Empresa & Sede</th>
-                  <th className="p-2 border-b border-slate-200">Actividad</th>
-                  <th className="p-2 border-b border-slate-200 text-center">Puntualidad</th>
-                  <th className="p-2 border-b border-slate-200 text-center">GPS Sede</th>
-                  <th className="p-2 border-b border-slate-200 text-right">Rostro</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 text-[10px]">
-                {records.length === 0 ? (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs border border-slate-200">
+                <thead className="bg-slate-100 text-slate-700 text-[10px] uppercase font-bold">
                   <tr>
-                    <td colSpan={7} className="p-4 text-center text-slate-400 italic">
-                      Sin registros de visitas para el periodo seleccionado ({periodLabel}).
-                    </td>
+                    <th className="p-2 border-b border-slate-200">Fecha / Horas</th>
+                    <th className="p-2 border-b border-slate-200">Entrenador</th>
+                    <th className="p-2 border-b border-slate-200">Empresa & Sede</th>
+                    <th className="p-2 border-b border-slate-200">Actividad</th>
+                    <th className="p-2 border-b border-slate-200 text-center">Puntualidad</th>
+                    <th className="p-2 border-b border-slate-200 text-center">GPS / Modalidad</th>
+                    <th className="p-2 border-b border-slate-200 text-right">Rostro</th>
                   </tr>
-                ) : (
-                  records.slice(0, 100).map((r) => (
-                    <tr key={r.id}>
-                      <td className="p-2 font-mono whitespace-nowrap">
-                        <div>{r.date}</div>
-                        <div className="text-[9px] text-slate-500">
-                          {r.checkInTime}{' '}
-                          {r.checkOutTime
-                            ? `→ ${r.checkOutTime}`
-                            : r.status === 'incumplido'
-                              ? '→ Terminada +60m (No cerrada)'
-                              : '→ En curso'}
-                        </div>
-                      </td>
-                      <td className="p-2 font-semibold text-slate-900">{r.trainerName}</td>
-                      <td className="p-2">
-                        <div className="font-semibold text-slate-800">{r.companyName}</div>
-                        <div className="text-[9px] text-slate-500">{r.sedeName}</div>
-                      </td>
-                      <td className="p-2">
-                        <div className="font-medium text-slate-800">{r.activityName}</div>
-                        <div className="text-[9px] text-slate-500">{r.attendeesCount} participantes</div>
-                      </td>
-                      <td className="p-2 text-center">
-                        {r.status === 'incumplido' ? (
-                          <span className="font-bold text-rose-700">No Cerrada (+60m)</span>
-                        ) : (
-                          <span className={`font-bold ${
-                            r.punctualityStatus === 'con_retraso' ? 'text-red-600' : 'text-emerald-700'
-                          }`}>
-                            {r.punctualityStatus === 'con_retraso'
-                              ? `Retraso (${Math.abs(r.punctualityDiffMinutes)}m)`
-                              : 'A tiempo'}
-                          </span>
-                        )}
-                      </td>
-                      <td className="p-2 text-center font-mono text-[9px]">
-                        {formatDistance(r.checkInGps.distanceToSedeMeters)}
-                      </td>
-                      <td className="p-2 text-right">
-                        {r.facialVerification ? (
-                          <span className="font-bold text-emerald-700">✓ {r.facialVerification.confidenceScore}%</span>
-                        ) : (
-                          <span className="text-slate-400">Verificado</span>
-                        )}
+                </thead>
+                <tbody className="divide-y divide-slate-100 text-[10px]">
+                  {records.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="p-4 text-center text-slate-400 italic">
+                        Sin registros de visitas para el periodo seleccionado ({periodLabel}).
                       </td>
                     </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
+                  ) : (
+                    records.map((r) => (
+                      <tr key={r.id}>
+                        <td className="p-2 font-mono whitespace-nowrap">
+                          <div>{r.date}</div>
+                          <div className="text-[9px] text-slate-500">
+                            {r.checkInTime}{' '}
+                            {r.checkOutTime
+                              ? `→ ${r.checkOutTime}`
+                              : r.status === 'incumplido'
+                              ? '→ Terminada +60m (No cerrada)'
+                              : '→ En curso'}
+                          </div>
+                        </td>
+                        <td className="p-2 font-semibold text-slate-900">{r.trainerName}</td>
+                        <td className="p-2">
+                          <div className="font-semibold text-slate-800">{r.companyName}</div>
+                          <div className="text-[9px] text-slate-500">{r.sedeName}</div>
+                        </td>
+                        <td className="p-2">
+                          <div className="font-medium text-slate-800">{r.activityName}</div>
+                          <div className="text-[9px] text-slate-500">
+                            {r.attendeesCount} participantes
+                          </div>
+                        </td>
+                        <td className="p-2 text-center">
+                          {r.status === 'incumplido' ? (
+                            <span className="font-bold text-rose-700">No Cerrada (+60m)</span>
+                          ) : (
+                            <span
+                              className={`font-bold ${
+                                r.punctualityStatus === 'con_retraso'
+                                  ? 'text-red-600'
+                                  : 'text-emerald-700'
+                              }`}
+                            >
+                              {r.punctualityStatus === 'con_retraso'
+                                ? `Retraso (${Math.abs(r.punctualityDiffMinutes)}m)`
+                                : 'A tiempo'}
+                            </span>
+                          )}
+                        </td>
+                        <td className="p-2 text-center font-mono text-[9px]">
+                          {r.isVirtual
+                            ? `Virtual (${r.virtualPlatform || 'En línea'})`
+                            : formatDistance(r.checkInGps.distanceToSedeMeters)}
+                        </td>
+                        <td className="p-2 text-right">
+                          {r.facialVerification ? (
+                            <span className="font-bold text-emerald-700">
+                              ✓ {r.facialVerification.confidenceScore}%
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">Verificado</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
 
           {/* Authorization & Signature Sign-off Box */}
@@ -394,7 +453,9 @@ export const PdfReportModal: React.FC<PdfReportModalProps> = ({
               <div className="border-b border-slate-400 pb-1 mb-1 font-bold text-slate-800">
                 Sistemas y Auditoría Operativa BSCW
               </div>
-              <p className="text-[10px] text-slate-500">Certificación Criptográfica y Biométrica</p>
+              <p className="text-[10px] text-slate-500">
+                Certificación Geocerca GPS y Biometría Facial
+              </p>
             </div>
           </div>
         </div>

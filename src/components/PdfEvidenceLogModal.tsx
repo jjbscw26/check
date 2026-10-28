@@ -10,7 +10,7 @@ import {
   ShieldCheck,
   X,
 } from 'lucide-react';
-import { AttendanceRecord } from '../types';
+import { AttendanceRecord, Company, Trainer } from '../types';
 import { formatDistance } from '../utils/geo';
 import {
   EvidencePhotoSlot,
@@ -23,6 +23,8 @@ interface PdfEvidenceLogModalProps {
   onClose: () => void;
   records: AttendanceRecord[];
   filterSummaryLabel: string;
+  companies?: Company[];
+  trainers?: Trainer[];
   onInspectPhoto?: (record: AttendanceRecord, slot: EvidencePhotoSlot) => void;
 }
 
@@ -31,6 +33,8 @@ export const PdfEvidenceLogModal: React.FC<PdfEvidenceLogModalProps> = ({
   onClose,
   records,
   filterSummaryLabel,
+  companies,
+  trainers,
   onInspectPhoto,
 }) => {
   const [includePhotos, setIncludePhotos] = useState<boolean>(true);
@@ -68,8 +72,11 @@ export const PdfEvidenceLogModal: React.FC<PdfEvidenceLogModalProps> = ({
 
   const handleDownloadExcel = () => {
     exportEvidenceRecordsToExcel(records, {
+      title: 'Bitácora Oficial de Evidencias y Asistencia',
       filenamePrefix: 'Bitacora_Evidencias_BSCW',
       periodLabel: filterSummaryLabel,
+      companies,
+      trainers,
     });
   };
 

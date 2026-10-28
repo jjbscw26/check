@@ -12,6 +12,7 @@ import {
   Printer,
   CheckCheck,
   FileText,
+  FileSpreadsheet,
   Download,
   RefreshCw,
 } from 'lucide-react';
@@ -20,7 +21,10 @@ import {
   calculateEndTimeHHMM,
   formatDurationHoursMinutes,
 } from '../utils/sessionAlarm';
-import { exportAssignmentsRoleToPdf } from '../utils/evidenceExport';
+import {
+  exportAssignmentsRoleToExcel,
+  exportAssignmentsRoleToPdf,
+} from '../utils/evidenceExport';
 
 interface PdfAssignmentsModalProps {
   isOpen: boolean;
@@ -106,6 +110,18 @@ export const PdfAssignmentsModal: React.FC<PdfAssignmentsModalProps> = ({
     }
   };
 
+  const handleDownloadExcel = () => {
+    const trainerSlug =
+      selectedTrainerId === 'all'
+        ? 'Todos'
+        : trainers.find((t) => t.id === selectedTrainerId)?.name || selectedTrainerId;
+    exportAssignmentsRoleToExcel(assignments, companies, trainers, activityCatalog, {
+      selectedMonth,
+      selectedTrainerId,
+      filenamePrefix: `Rol_Asignaciones_${selectedMonth}_${trainerSlug}`,
+    });
+  };
+
   return (
     <div
       data-printable-modal="true"
@@ -150,6 +166,16 @@ export const PdfAssignmentsModal: React.FC<PdfAssignmentsModalProps> = ({
               onChange={(e) => setSelectedMonth(e.target.value)}
               className="bg-slate-800 border border-slate-700 text-white text-xs rounded-xl px-2.5 py-1.5 focus:outline-none focus:border-red-500 font-mono"
             />
+
+            <button
+              type="button"
+              onClick={handleDownloadExcel}
+              className="px-3.5 py-2 bg-emerald-600 hover:bg-emerald-700 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shadow-md transition whitespace-nowrap shrink-0 cursor-pointer"
+              title="Descargar Rol Mensual de Asignaciones en Excel (.xlsx) con todas las tablas y calendario"
+            >
+              <FileSpreadsheet className="w-4 h-4 shrink-0" />
+              <span>Descargar Excel (.xlsx)</span>
+            </button>
 
             <button
               type="button"
@@ -406,7 +432,13 @@ export const PdfAssignmentsModal: React.FC<PdfAssignmentsModalProps> = ({
                                 </td>
 
                                 <td className="py-3 px-3 text-slate-700 font-semibold text-[11px]">
-                                  {asg.locationArea}
+                                  {asg.isVirtual ? (
+                                    <span className="text-indigo-700 font-bold block">
+                                      Virtual · {asg.virtualPlatform || 'En línea'}
+                                    </span>
+                                  ) : (
+                                    asg.locationArea
+                                  )}
                                 </td>
 
                                 <td className="py-3 px-3">
@@ -418,6 +450,11 @@ export const PdfAssignmentsModal: React.FC<PdfAssignmentsModalProps> = ({
                                   <span className="font-bold text-slate-900 block text-[11px]">
                                     {asg.activityName}
                                   </span>
+                                  {asg.isVirtual && asg.virtualMeetingUrl && (
+                                    <span className="text-[10px] text-indigo-600 font-mono truncate max-w-[180px] block mt-0.5">
+                                      {asg.virtualMeetingUrl}
+                                    </span>
+                                  )}
                                   {(asg.nonCompliant || (asg.missedDates && asg.missedDates.length > 0)) ? (
                                     <span className="text-[10px] font-bold text-rose-700 block mt-0.5">
                                       ⛔ Incumplida • Bloqueada

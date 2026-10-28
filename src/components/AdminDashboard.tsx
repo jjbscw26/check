@@ -57,6 +57,7 @@ import {
   EvidencePhotoSlot,
   exportEvidenceRecordsToExcel,
   exportEvidenceRecordsToPdf,
+  exportExecutiveReportToExcel,
 } from '../utils/evidenceExport';
 import { RecordDetailModal } from './RecordDetailModal';
 import { AdminTrainerModal } from './AdminTrainerModal';
@@ -484,18 +485,22 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
     filteredLogRecords.length,
   ]);
 
-  // Export Reports Period to Real Excel (.xlsx)
+  // Export Reports Period to Real Excel (.xlsx) with 100% parity with the Executive PDF Report
   const exportToExcelReport = () => {
     const label =
       reportType === 'daily'
-        ? `Reporte Diario ${selectedDate}`
+        ? `Reporte Diario: ${selectedDate}`
         : reportType === 'monthly'
-        ? `Reporte Mensual ${selectedMonth}`
-        : 'Histórico Completo';
-    exportEvidenceRecordsToExcel(periodRecords, {
-      filenamePrefix: `Reporte_BSCW_${reportType}_${
-        reportType === 'daily' ? selectedDate : selectedMonth
-      }`,
+        ? `Reporte Mensual: ${selectedMonth}`
+        : 'Histórico Completo Consolidado';
+    const suffix =
+      reportType === 'daily'
+        ? selectedDate
+        : reportType === 'monthly'
+        ? selectedMonth
+        : 'Consolidado';
+    exportExecutiveReportToExcel(periodRecords, companies, trainers, {
+      filenamePrefix: `Reporte_BSCW_${reportType}_${suffix}`,
       periodLabel: label,
     });
   };
@@ -503,8 +508,11 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
   // Export Bitácora & Evidencias to Real Excel (.xlsx)
   const handleExportLogExcel = () => {
     exportEvidenceRecordsToExcel(filteredLogRecords, {
+      title: 'Bitácora Oficial de Evidencias y Asistencia',
       filenamePrefix: 'Bitacora_Evidencias_BSCW',
       periodLabel: logFilterSummaryLabel,
+      companies,
+      trainers,
     });
   };
 
@@ -2477,6 +2485,8 @@ export const AdminDashboard: React.FC<AdminDashboardProps> = ({
         onClose={() => setIsEvidencePdfModalOpen(false)}
         records={filteredLogRecords}
         filterSummaryLabel={logFilterSummaryLabel}
+        companies={companies}
+        trainers={trainers}
         onInspectPhoto={(rec, slot) => setLightboxState({ record: rec, slot })}
       />
 

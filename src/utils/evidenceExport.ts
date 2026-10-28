@@ -1,5 +1,4 @@
 import { jsPDF } from 'jspdf';
-import * as XLSX from 'xlsx';
 import {
   ACTIVITY_TYPE_LABELS,
   ActivityCatalogItem,
@@ -15,6 +14,16 @@ import {
   formatDurationHoursMinutes,
   getAssignmentDurationMinutes,
 } from './sessionAlarm';
+import {
+  buildEvidenceRecordsExcelWorkbook,
+  computeCompanySummariesForReport,
+  computeTrainerSummariesForReport,
+  evaluateTrainerRatingLabel,
+  exportAssignmentsRoleToExcel,
+  exportExecutiveReportToExcel,
+} from './excelReportBuilder';
+
+export { exportExecutiveReportToExcel, exportAssignmentsRoleToExcel };
 
 export type EvidencePhotoSlot = 'entry' | 'exit' | 'facial';
 
@@ -280,166 +289,20 @@ export async function downloadSingleEvidenceImage(
 }
 
 /**
- * Generates and downloads a real multi-sheet Excel (.xlsx) workbook with full audit
- * and evidence metadata for the provided AttendanceRecord list.
+ * Generates and downloads a real multi-sheet Excel (.xlsx) workbook with full audit,
+ * summary tables, KPIs, and evidence metadata matching the PDF report.
  */
 export function exportEvidenceRecordsToExcel(
   records: AttendanceRecord[],
   options?: {
     filenamePrefix?: string;
     periodLabel?: string;
+    title?: string;
+    companies?: Company[];
+    trainers?: Trainer[];
   }
 ): void {
-  const prefix = sanitizeFileSegment(options?.filenamePrefix || 'Bitacora_Evidencias_BSCW');
-  const todayStamp = new Date().toISOString().slice(0, 10);
-
-  const detailRows = records.map((r, index) => ({
-    '#': index + 1,
-    'ID Registro': r.id,
-    'ID Asignación': r.assignmentId || 'Manual / Libre',
-    Fecha: r.date,
-    'Hora Programada': r.scheduledTime,
-    'Hora Entrada Real': r.checkInTime,
-    'Hora Salida Real':
-      r.checkOutTime ||
-      (r.status === 'incumplido' ? 'TERMINADA (+60m - NO CERRADA)' : 'En curso'),
-    'Duración Efectiva': r.durationMinutes ? formatDurationHoursMinutes(r.durationMinutes) : '',
-    'Duración Planeada': r.plannedDurationMinutes
-      ? formatDurationHoursMinutes(r.plannedDurationMinutes)
-      : '',
-    'Duración Efectiva (min)': r.durationMinutes ?? '',
-    'Duración Planeada (min)': r.plannedDurationMinutes ?? '',
-    'Estado de Sesión': formatStatusLabel(r),
-    Puntualidad: formatPunctualityLabel(r),
-    'Desviación (min)': r.punctualityDiffMinutes,
-    Entrenador: r.trainerName,
-    'ID Entrenador': r.trainerId,
-    Empresa: r.companyName,
-    Sede: r.sedeName,
-    'Dirección Sede': r.sedeAddress,
-    'Salón / Área': r.locationArea,
-    'Tipo Actividad': ACTIVITY_TYPE_LABELS[normalizeActivityType(r.activityType)],
-    Actividad: r.activityName,
-    'Colaboradores Asistentes': r.attendeesCount,
-    'GPS Entrada Latitud': Number(r.checkInGps.lat.toFixed(6)),
-    'GPS Entrada Longitud': Number(r.checkInGps.lng.toFixed(6)),
-    'Distancia a Sede (m)': Math.round(r.checkInGps.distanceToSedeMeters),
-    'En Geocerca': r.checkInGps.isWithinGeofence ? 'SÍ' : 'NO',
-    'GPS Salida': r.checkOutGps
-      ? `${r.checkOutGps.lat.toFixed(6)}, ${r.checkOutGps.lng.toFixed(6)}`
-      : 'N/A',
-    'Foto Entrada en Sede': r.photoUrl ? 'SÍ (Con sello)' : 'NO',
-    'Foto Salida en Sede': r.exitPhotoUrl ? 'SÍ (Con sello)' : 'NO',
-    'Biometría Facial': r.facialVerification?.verified ? 'VERIFICADA' : 'N/A',
-    'Confianza Facial (%)': r.facialVerification?.confidenceScore ?? '',
-    'ID Biométrico': r.facialVerification?.biometricId || '',
-    'Auditado Admin': r.adminVerified ? 'SÍ' : 'NO',
-    'Notas Auditoría Admin': r.adminNotes || '',
-    Observaciones: r.observations || '',
-  }));
-
-  const total = records.length;
-  const completed = records.filter((r) => r.status === 'completado').length;
-  const inProgress = records.filter((r) => r.status === 'en_curso').length;
-  const nonCompliant = records.filter((r) => r.status === 'incumplido').length;
-  const onTimeOrEarly = records.filter(
-    (r) => r.punctualityStatus === 'a_tiempo' || r.punctualityStatus === 'adelantado'
-  ).length;
-  const late = records.filter((r) => r.punctualityStatus === 'con_retraso').length;
-  const punctualityRate = total > 0 ? Math.round((onTimeOrEarly / total) * 100) : 100;
-  const inGeofence = records.filter((r) => r.checkInGps.isWithinGeofence).length;
-  const withEntryPhoto = records.filter((r) => Boolean(r.photoUrl)).length;
-  const withExitPhoto = records.filter((r) => Boolean(r.exitPhotoUrl)).length;
-  const withFacial = records.filter((r) => Boolean(r.facialVerification?.facePhotoUrl)).length;
-  const audited = records.filter((r) => r.adminVerified).length;
-  const totalAttendees = records.reduce((acc, r) => acc + (r.attendeesCount || 0), 0);
-  const totalHours = Number(
-    (records.reduce((acc, r) => acc + (r.durationMinutes || 45), 0) / 60).toFixed(1)
-  );
-
-  const summaryRows = [
-    { Indicador: 'Sistema', Valor: 'BSCW Check - Bitácora Oficial de Evidencias' },
-    {
-      Indicador: 'Filtro / Periodo Exportado',
-      Valor: options?.periodLabel || 'Registros filtrados en Bitácora',
-    },
-    {
-      Indicador: 'Fecha de Generación',
-      Valor: `${new Date().toLocaleDateString('es-MX')} ${new Date().toLocaleTimeString('es-MX', {
-        hour12: false,
-      })}`,
-    },
-    { Indicador: 'Total de Registros en Bitácora', Valor: total },
-    { Indicador: 'Sesiones Completadas y Cerradas', Valor: completed },
-    { Indicador: 'Sesiones en Curso', Valor: inProgress },
-    { Indicador: 'Sesiones No Cerradas (Terminadas +60m)', Valor: nonCompliant },
-    { Indicador: 'Llegadas Puntuales o Anticipadas', Valor: onTimeOrEarly },
-    { Indicador: 'Llegadas con Retraso', Valor: late },
-    { Indicador: 'Tasa de Puntualidad (%)', Valor: `${punctualityRate}%` },
-    { Indicador: 'Check-ins dentro de Geocerca GPS', Valor: inGeofence },
-    { Indicador: 'Con Foto de Entrada en Sede', Valor: withEntryPhoto },
-    { Indicador: 'Con Foto de Salida en Sede', Valor: withExitPhoto },
-    { Indicador: 'Con Validación Biométrica Facial', Valor: withFacial },
-    { Indicador: 'Registros Auditados por Administración', Valor: audited },
-    { Indicador: 'Total Colaboradores Participantes', Valor: totalAttendees },
-    { Indicador: 'Horas Efectivas Impartidas', Valor: totalHours },
-  ];
-
-  const wb = XLSX.utils.book_new();
-
-  const wsDetail =
-    detailRows.length > 0
-      ? XLSX.utils.json_to_sheet(detailRows)
-      : XLSX.utils.aoa_to_sheet([['Sin registros para los criterios seleccionados']]);
-
-  wsDetail['!cols'] = [
-    { wch: 5 },
-    { wch: 20 },
-    { wch: 18 },
-    { wch: 12 },
-    { wch: 15 },
-    { wch: 16 },
-    { wch: 18 },
-    { wch: 20 },
-    { wch: 20 },
-    { wch: 26 },
-    { wch: 24 },
-    { wch: 15 },
-    { wch: 24 },
-    { wch: 15 },
-    { wch: 26 },
-    { wch: 24 },
-    { wch: 34 },
-    { wch: 24 },
-    { wch: 16 },
-    { wch: 26 },
-    { wch: 22 },
-    { wch: 18 },
-    { wch: 18 },
-    { wch: 18 },
-    { wch: 13 },
-    { wch: 24 },
-    { wch: 20 },
-    { wch: 20 },
-    { wch: 16 },
-    { wch: 18 },
-    { wch: 22 },
-    { wch: 14 },
-    { wch: 32 },
-    { wch: 42 },
-  ];
-
-  const wsSummary = XLSX.utils.json_to_sheet(summaryRows);
-  wsSummary['!cols'] = [{ wch: 38 }, { wch: 44 }];
-
-  XLSX.utils.book_append_sheet(wb, wsDetail, 'Bitacora_Evidencias');
-  XLSX.utils.book_append_sheet(wb, wsSummary, 'Resumen_Auditoria');
-
-  const wbBuffer = XLSX.write(wb, { bookType: 'xlsx', type: 'array' });
-  const blob = new Blob([wbBuffer], {
-    type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-  });
-  triggerBlobDownload(blob, `${prefix}_${todayStamp}.xlsx`);
+  buildEvidenceRecordsExcelWorkbook(records, options);
 }
 
 /**
@@ -605,13 +468,17 @@ async function renderEvidenceCardsIntoPdf(
 
     const row3Y = row2Y + 5;
     doc.setFont('helvetica', 'bold');
-    doc.text('GPS Entrada:', col1X, row3Y);
+    doc.text(rec.isVirtual ? 'Modalidad:' : 'GPS Entrada:', col1X, row3Y);
     doc.setFont('helvetica', 'normal');
     doc.text(
       sanitizePdfText(
-        `${rec.checkInGps.lat.toFixed(5)}, ${rec.checkInGps.lng.toFixed(5)} (${formatDistance(
-          rec.checkInGps.distanceToSedeMeters
-        )} · ${rec.checkInGps.isWithinGeofence ? 'En geocerca' : 'Fuera de rango'})`
+        rec.isVirtual
+          ? `Virtual · ${rec.virtualPlatform || 'En línea'}${
+              rec.virtualMeetingUrl ? ` (${rec.virtualMeetingUrl})` : ''
+            }`
+          : `${rec.checkInGps.lat.toFixed(5)}, ${rec.checkInGps.lng.toFixed(5)} (${formatDistance(
+              rec.checkInGps.distanceToSedeMeters
+            )} · ${rec.checkInGps.isWithinGeofence ? 'En geocerca' : 'Fuera de rango'})`
       ).slice(0, 52),
       col1X + 20,
       row3Y
@@ -957,14 +824,16 @@ export async function exportExecutiveReportToPdf(
   doc.line(marginX, cursorY + 1.5, pageWidth - marginX, cursorY + 1.5);
   cursorY += 4;
 
-  // Table 1 Header
+  // Table 1 Header (aligned with Dashboard & Excel)
   const t1Cols = [
     { label: 'Entrenador', x: marginX + 2.5, align: 'left' as const },
-    { label: 'Sesiones', x: marginX + 78, align: 'center' as const },
-    { label: 'A Tiempo', x: marginX + 98, align: 'center' as const },
-    { label: 'Retrasos', x: marginX + 118, align: 'center' as const },
-    { label: '% Puntual.', x: marginX + 139, align: 'center' as const },
-    { label: 'Horas', x: marginX + 159, align: 'center' as const },
+    { label: 'Sesiones', x: marginX + 62, align: 'center' as const },
+    { label: 'A Tiempo', x: marginX + 79, align: 'center' as const },
+    { label: 'Retrasos', x: marginX + 96, align: 'center' as const },
+    { label: 'No Cerr.', x: marginX + 113, align: 'center' as const },
+    { label: '% Punt.', x: marginX + 130, align: 'center' as const },
+    { label: 'Horas', x: marginX + 146, align: 'center' as const },
+    { label: 'Colab.', x: marginX + 161, align: 'center' as const },
     { label: 'Calificación', x: pageWidth - marginX - 2.5, align: 'right' as const },
   ];
 
@@ -972,14 +841,18 @@ export async function exportExecutiveReportToPdf(
   doc.setDrawColor(203, 213, 225);
   doc.rect(marginX, cursorY, contentWidth, 6.8, 'FD');
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(6.8);
+  doc.setFontSize(6.4);
   doc.setTextColor(51, 65, 85);
   t1Cols.forEach((c) => {
     doc.text(sanitizePdfText(c.label.toUpperCase()), c.x, cursorY + 4.5, { align: c.align });
   });
   cursorY += 6.8;
 
-  if (trainers.length === 0) {
+  const trainerRows = computeTrainerSummariesForReport(records, trainers);
+  const lateTotal = records.filter((r) => r.punctualityStatus === 'con_retraso').length;
+  const nonCompliantTotal = records.filter((r) => r.status === 'incumplido').length;
+
+  if (trainerRows.length === 0) {
     doc.setFillColor(255, 255, 255);
     doc.rect(marginX, cursorY, contentWidth, 7, 'FD');
     doc.setFont('helvetica', 'normal');
@@ -988,53 +861,91 @@ export async function exportExecutiveReportToPdf(
     doc.text('Sin entrenadores registrados.', marginX + 3, cursorY + 4.6);
     cursorY += 7;
   } else {
-    trainers.forEach((tr, idx) => {
+    trainerRows.forEach((tr, idx) => {
       if (cursorY + 7 > pageHeight - 16) {
         doc.addPage();
         cursorY = 14;
       }
-      const trRecs = records.filter((r) => r.trainerId === tr.id);
-      const trTotal = trRecs.length;
-      const trOnTime = trRecs.filter(
-        (r) => r.punctualityStatus === 'a_tiempo' || r.punctualityStatus === 'adelantado'
-      ).length;
-      const trLate = trRecs.filter((r) => r.punctualityStatus === 'con_retraso').length;
-      const trRate = trTotal > 0 ? Math.round((trOnTime / trTotal) * 100) : 100;
-      const trHours = (
-        trRecs.reduce((acc, r) => acc + (r.durationMinutes || 45), 0) / 60
-      ).toFixed(1);
-      const rating = trRate >= 95 ? 'Excelente' : trRate >= 80 ? 'Destacado' : 'Revisión';
 
       doc.setFillColor(idx % 2 === 0 ? 255 : 248, idx % 2 === 0 ? 255 : 250, idx % 2 === 0 ? 255 : 252);
       doc.setDrawColor(226, 232, 240);
       doc.rect(marginX, cursorY, contentWidth, 6.6, 'FD');
 
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(7.4);
+      doc.setFontSize(7.1);
       doc.setTextColor(15, 23, 42);
-      doc.text(sanitizePdfText(tr.name).slice(0, 42), t1Cols[0].x, cursorY + 4.4);
+      doc.text(sanitizePdfText(tr.name).slice(0, 32), t1Cols[0].x, cursorY + 4.4);
 
       doc.setFont('helvetica', 'normal');
-      doc.text(String(trTotal), t1Cols[1].x, cursorY + 4.4, { align: 'center' });
+      doc.text(String(tr.totalSessions), t1Cols[1].x, cursorY + 4.4, { align: 'center' });
 
       doc.setTextColor(21, 128, 61);
       doc.setFont('helvetica', 'bold');
-      doc.text(String(trOnTime), t1Cols[2].x, cursorY + 4.4, { align: 'center' });
+      doc.text(String(tr.punctualTotal), t1Cols[2].x, cursorY + 4.4, { align: 'center' });
 
-      doc.setTextColor(trLate > 0 ? 220 : 100, trLate > 0 ? 38 : 116, trLate > 0 ? 38 : 139);
-      doc.text(String(trLate), t1Cols[3].x, cursorY + 4.4, { align: 'center' });
+      doc.setTextColor(
+        tr.lateCount > 0 ? 220 : 100,
+        tr.lateCount > 0 ? 38 : 116,
+        tr.lateCount > 0 ? 38 : 139
+      );
+      doc.text(String(tr.lateCount), t1Cols[3].x, cursorY + 4.4, { align: 'center' });
+
+      doc.setTextColor(
+        tr.nonCompliantSessions > 0 ? 190 : 100,
+        tr.nonCompliantSessions > 0 ? 18 : 116,
+        tr.nonCompliantSessions > 0 ? 60 : 139
+      );
+      doc.text(String(tr.nonCompliantSessions), t1Cols[4].x, cursorY + 4.4, { align: 'center' });
 
       doc.setTextColor(15, 23, 42);
-      doc.text(`${trRate}%`, t1Cols[4].x, cursorY + 4.4, { align: 'center' });
+      doc.text(`${tr.punctualityRate}%`, t1Cols[5].x, cursorY + 4.4, { align: 'center' });
 
       doc.setFont('helvetica', 'normal');
-      doc.text(`${trHours} h`, t1Cols[5].x, cursorY + 4.4, { align: 'center' });
+      doc.text(`${tr.hoursImparted} h`, t1Cols[6].x, cursorY + 4.4, { align: 'center' });
 
       doc.setFont('helvetica', 'bold');
-      doc.text(sanitizePdfText(rating), t1Cols[6].x, cursorY + 4.4, { align: 'right' });
+      doc.text(String(tr.attendeesTotal), t1Cols[7].x, cursorY + 4.4, { align: 'center' });
+
+      doc.text(sanitizePdfText(tr.rating), t1Cols[8].x, cursorY + 4.4, { align: 'right' });
 
       cursorY += 6.6;
     });
+
+    // Totals row for Table 1
+    if (cursorY + 7 > pageHeight - 16) {
+      doc.addPage();
+      cursorY = 14;
+    }
+    doc.setFillColor(241, 245, 249);
+    doc.setDrawColor(203, 213, 225);
+    doc.rect(marginX, cursorY, contentWidth, 6.8, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.1);
+    doc.setTextColor(15, 23, 42);
+    doc.text('TOTAL / PROMEDIO GENERAL', t1Cols[0].x, cursorY + 4.5);
+    doc.text(String(total), t1Cols[1].x, cursorY + 4.5, { align: 'center' });
+    doc.setTextColor(21, 128, 61);
+    doc.text(String(onTime + early), t1Cols[2].x, cursorY + 4.5, { align: 'center' });
+    doc.setTextColor(lateTotal > 0 ? 220 : 100, lateTotal > 0 ? 38 : 116, lateTotal > 0 ? 38 : 139);
+    doc.text(String(lateTotal), t1Cols[3].x, cursorY + 4.5, { align: 'center' });
+    doc.setTextColor(
+      nonCompliantTotal > 0 ? 190 : 100,
+      nonCompliantTotal > 0 ? 18 : 116,
+      nonCompliantTotal > 0 ? 60 : 139
+    );
+    doc.text(String(nonCompliantTotal), t1Cols[4].x, cursorY + 4.5, { align: 'center' });
+    doc.setTextColor(220, 38, 38);
+    doc.text(`${punctualityRate}%`, t1Cols[5].x, cursorY + 4.5, { align: 'center' });
+    doc.setTextColor(15, 23, 42);
+    doc.text(`${totalHours} h`, t1Cols[6].x, cursorY + 4.5, { align: 'center' });
+    doc.text(String(totalAttendees), t1Cols[7].x, cursorY + 4.5, { align: 'center' });
+    doc.text(
+      sanitizePdfText(evaluateTrainerRatingLabel(punctualityRate, nonCompliantTotal)),
+      t1Cols[8].x,
+      cursorY + 4.5,
+      { align: 'right' }
+    );
+    cursorY += 6.8;
   }
 
   cursorY += 7;
@@ -1055,11 +966,12 @@ export async function exportExecutiveReportToPdf(
 
   const t2Cols = [
     { label: 'Empresa', x: marginX + 2.5, align: 'left' as const },
-    { label: 'Giro', x: marginX + 54, align: 'left' as const },
-    { label: 'Sesiones', x: marginX + 96, align: 'center' as const },
-    { label: 'Pausas', x: marginX + 114, align: 'center' as const },
-    { label: 'Fitness', x: marginX + 131, align: 'center' as const },
-    { label: 'Gimnasio', x: marginX + 149, align: 'center' as const },
+    { label: 'Giro', x: marginX + 48, align: 'left' as const },
+    { label: 'Sedes', x: marginX + 86, align: 'center' as const },
+    { label: 'Sesiones', x: marginX + 102, align: 'center' as const },
+    { label: 'Pausas', x: marginX + 118, align: 'center' as const },
+    { label: 'Fitness', x: marginX + 134, align: 'center' as const },
+    { label: 'Gimnasio', x: marginX + 150, align: 'center' as const },
     { label: 'Masajes', x: marginX + 166, align: 'center' as const },
     { label: 'Colab.', x: pageWidth - marginX - 2.5, align: 'right' as const },
   ];
@@ -1068,14 +980,16 @@ export async function exportExecutiveReportToPdf(
   doc.setDrawColor(203, 213, 225);
   doc.rect(marginX, cursorY, contentWidth, 6.8, 'FD');
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(6.6);
+  doc.setFontSize(6.4);
   doc.setTextColor(51, 65, 85);
   t2Cols.forEach((c) => {
     doc.text(sanitizePdfText(c.label.toUpperCase()), c.x, cursorY + 4.5, { align: c.align });
   });
   cursorY += 6.8;
 
-  if (companies.length === 0) {
+  const companyRows = computeCompanySummariesForReport(records, companies);
+
+  if (companyRows.length === 0) {
     doc.setFillColor(255, 255, 255);
     doc.rect(marginX, cursorY, contentWidth, 7, 'FD');
     doc.setFont('helvetica', 'normal');
@@ -1084,56 +998,84 @@ export async function exportExecutiveReportToPdf(
     doc.text('Sin empresas registradas.', marginX + 3, cursorY + 4.6);
     cursorY += 7;
   } else {
-    companies.forEach((comp, idx) => {
+    let sumSedes = 0;
+    let sumPausas = 0;
+    let sumFitness = 0;
+    let sumGimnasio = 0;
+    let sumMasajes = 0;
+
+    companyRows.forEach((comp, idx) => {
       if (cursorY + 7 > pageHeight - 16) {
         doc.addPage();
         cursorY = 14;
       }
-      const cRecs = records.filter((r) => r.companyId === comp.id);
-      const cTotal = cRecs.length;
-      const cPausas = cRecs.filter(
-        (r) => normalizeActivityType(r.activityType) === 'pausa_activa'
-      ).length;
-      const cFitness = cRecs.filter(
-        (r) => normalizeActivityType(r.activityType) === 'clase_fitness'
-      ).length;
-      const cGimnasio = cRecs.filter(
-        (r) => normalizeActivityType(r.activityType) === 'gimnasio_corporativo'
-      ).length;
-      const cMasajes = cRecs.filter(
-        (r) => normalizeActivityType(r.activityType) === 'masajes'
-      ).length;
-      const cAttendees = cRecs.reduce((acc, r) => acc + (r.attendeesCount || 0), 0);
+
+      sumSedes += comp.sedesCount;
+      sumPausas += comp.pausasCount;
+      sumFitness += comp.fitnessCount;
+      sumGimnasio += comp.gimnasioCount;
+      sumMasajes += comp.masajesCount;
 
       doc.setFillColor(idx % 2 === 0 ? 255 : 248, idx % 2 === 0 ? 255 : 250, idx % 2 === 0 ? 255 : 252);
       doc.setDrawColor(226, 232, 240);
       doc.rect(marginX, cursorY, contentWidth, 6.6, 'FD');
 
       doc.setFont('helvetica', 'bold');
-      doc.setFontSize(7.3);
+      doc.setFontSize(7.1);
       doc.setTextColor(15, 23, 42);
-      doc.text(sanitizePdfText(comp.name).slice(0, 30), t2Cols[0].x, cursorY + 4.4);
+      doc.text(sanitizePdfText(comp.name).slice(0, 26), t2Cols[0].x, cursorY + 4.4);
 
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(71, 85, 105);
-      doc.text(sanitizePdfText(comp.industry || '').slice(0, 24), t2Cols[1].x, cursorY + 4.4);
+      doc.text(sanitizePdfText(comp.industry || '').slice(0, 20), t2Cols[1].x, cursorY + 4.4);
+
+      doc.setTextColor(51, 65, 85);
+      doc.text(String(comp.sedesCount), t2Cols[2].x, cursorY + 4.4, { align: 'center' });
 
       doc.setFont('helvetica', 'bold');
       doc.setTextColor(220, 38, 38);
-      doc.text(String(cTotal), t2Cols[2].x, cursorY + 4.4, { align: 'center' });
+      doc.text(String(comp.totalSessions), t2Cols[3].x, cursorY + 4.4, { align: 'center' });
 
       doc.setFont('helvetica', 'normal');
       doc.setTextColor(15, 23, 42);
-      doc.text(String(cPausas), t2Cols[3].x, cursorY + 4.4, { align: 'center' });
-      doc.text(String(cFitness), t2Cols[4].x, cursorY + 4.4, { align: 'center' });
-      doc.text(String(cGimnasio), t2Cols[5].x, cursorY + 4.4, { align: 'center' });
-      doc.text(String(cMasajes), t2Cols[6].x, cursorY + 4.4, { align: 'center' });
+      doc.text(String(comp.pausasCount), t2Cols[4].x, cursorY + 4.4, { align: 'center' });
+      doc.text(String(comp.fitnessCount), t2Cols[5].x, cursorY + 4.4, { align: 'center' });
+      doc.text(String(comp.gimnasioCount), t2Cols[6].x, cursorY + 4.4, { align: 'center' });
+      doc.text(String(comp.masajesCount), t2Cols[7].x, cursorY + 4.4, { align: 'center' });
 
       doc.setFont('helvetica', 'bold');
-      doc.text(String(cAttendees), t2Cols[7].x, cursorY + 4.4, { align: 'right' });
+      doc.text(String(comp.attendeesTotal), t2Cols[8].x, cursorY + 4.4, { align: 'right' });
 
       cursorY += 6.6;
     });
+
+    // Totals row for Table 2
+    if (cursorY + 7 > pageHeight - 16) {
+      doc.addPage();
+      cursorY = 14;
+    }
+    doc.setFillColor(241, 245, 249);
+    doc.setDrawColor(203, 213, 225);
+    doc.rect(marginX, cursorY, contentWidth, 6.8, 'FD');
+    doc.setFont('helvetica', 'bold');
+    doc.setFontSize(7.1);
+    doc.setTextColor(15, 23, 42);
+    doc.text('TOTAL GENERAL EMPRESAS', t2Cols[0].x, cursorY + 4.5);
+    doc.setFont('helvetica', 'normal');
+    doc.setTextColor(71, 85, 105);
+    doc.text(`${companyRows.length} emp.`, t2Cols[1].x, cursorY + 4.5);
+    doc.setFont('helvetica', 'bold');
+    doc.setTextColor(15, 23, 42);
+    doc.text(String(sumSedes), t2Cols[2].x, cursorY + 4.5, { align: 'center' });
+    doc.setTextColor(220, 38, 38);
+    doc.text(String(total), t2Cols[3].x, cursorY + 4.5, { align: 'center' });
+    doc.setTextColor(15, 23, 42);
+    doc.text(String(sumPausas), t2Cols[4].x, cursorY + 4.5, { align: 'center' });
+    doc.text(String(sumFitness), t2Cols[5].x, cursorY + 4.5, { align: 'center' });
+    doc.text(String(sumGimnasio), t2Cols[6].x, cursorY + 4.5, { align: 'center' });
+    doc.text(String(sumMasajes), t2Cols[7].x, cursorY + 4.5, { align: 'center' });
+    doc.text(String(totalAttendees), t2Cols[8].x, cursorY + 4.5, { align: 'right' });
+    cursorY += 6.8;
   }
 
   cursorY += 7;
@@ -1177,10 +1119,10 @@ export async function exportExecutiveReportToPdf(
   );
 
   doc.setFont('helvetica', 'bold');
-  doc.setFontSize(7.8);
+  doc.setFontSize(7.4);
   doc.setTextColor(15, 23, 42);
   doc.text(
-    sanitizePdfText('Dirección de Bienestar Corporativo'),
+    sanitizePdfText('Lic. Laura Peñaloza - Dirección de Bienestar Corporativo'),
     marginX + 4 + sigWidth / 2,
     cursorY + 14.5,
     { align: 'center' }
@@ -1497,9 +1439,17 @@ export async function exportAssignmentsRoleToPdf(
         doc.text(sanitizePdfText(asg.sedeName).slice(0, 30), cols[2].x, cursorY + 8);
 
         doc.setFont('helvetica', 'normal');
-        doc.setFontSize(6.8);
+        doc.setFontSize(6.6);
         doc.setTextColor(51, 65, 85);
-        doc.text(sanitizePdfText(asg.locationArea).slice(0, 18), cols[3].x, cursorY + 5.8);
+        doc.text(
+          sanitizePdfText(
+            asg.isVirtual
+              ? `Virtual (${asg.virtualPlatform || 'En línea'})`
+              : asg.locationArea
+          ).slice(0, 19),
+          cols[3].x,
+          cursorY + 5.8
+        );
 
         doc.setFont('helvetica', 'bold');
         doc.setFontSize(6.6);

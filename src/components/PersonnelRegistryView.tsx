@@ -69,6 +69,7 @@ import {
   ActivityType,
   ALL_ACTIVITY_TYPES,
   AttendanceRecord,
+  Company,
   FirestoreActivityCatalogRecord,
   FirestoreAssignmentRecord,
   FirestoreClientRecord,
@@ -1631,11 +1632,27 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
     }
   };
 
+  const directoryCompaniesWithSedes = useMemo<Company[]>(
+    () =>
+      companiesList.map((c) => ({
+        id: c.id,
+        name: c.name,
+        taxId: c.taxId,
+        industry: c.industry,
+        logoText: c.logoText,
+        sedes: sedesList.filter((s) => s.companyId === c.id),
+      })),
+    [companiesList, sedesList]
+  );
+
   const handleDownloadDirectoryExcel = () => {
     if (filteredRecords.length === 0) return;
     exportEvidenceRecordsToExcel(filteredRecords, {
+      title: 'Bitácora Oficial de Evidencias — Directorio Cloud Firestore',
       filenamePrefix: 'Directorio_Bitacora_Evidencias',
       periodLabel: evidenceSummaryLabel,
+      companies: directoryCompaniesWithSedes,
+      trainers: trainersList,
     });
   };
 
@@ -4855,6 +4872,8 @@ const PersonnelRegistryWorkspace: React.FC<PersonnelRegistryWorkspaceProps> = ({
         onClose={() => setIsEvidencePdfModalOpen(false)}
         records={filteredRecords}
         filterSummaryLabel={evidenceSummaryLabel}
+        companies={directoryCompaniesWithSedes}
+        trainers={trainersList}
         onInspectPhoto={(rec, slot) => {
           setIsEvidencePdfModalOpen(false);
           setLightboxState({ record: rec, slot });
