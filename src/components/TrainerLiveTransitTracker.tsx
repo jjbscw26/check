@@ -8,7 +8,6 @@ import React, {
   useState,
 } from 'react';
 import {
-  APIProvider,
   AdvancedMarker,
   Map,
   Pin,
@@ -28,6 +27,8 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronUp,
+  Eye,
+  ExternalLink,
 } from 'lucide-react';
 import {
   AttendanceRecord,
@@ -49,10 +50,12 @@ import {
   sanitizeTransitTrackingPayload,
 } from '../utils/transitCalculations';
 import { doesAssignmentApplyToDate, formatLocalYYYYMMDD } from '../utils/assignmentLock';
-
-const GOOGLE_MAPS_API_KEY: string =
-  (import.meta as unknown as { env?: Record<string, string | undefined> }).env
-    ?.VITE_GOOGLE_MAPS_API_KEY || '';
+import {
+  buildGoogleMapsDirectionsUrl,
+  isValidCoordinate,
+  useGoogleMapsDiagnostics,
+} from '../utils/googleMapsConfig';
+import { SchematicRouteRadar, TransitTrackingMapModal } from './TransitTrackingMapModal';
 
 interface ComputedRouteResult {
   distanceMeters: number;
@@ -103,9 +106,10 @@ const LiveRouteOverlay: React.FC<RouteOverlayProps> = ({
   const circleRef = useRef<google.maps.Circle | null>(null);
   const hasFittedOnceRef = useRef<string>('');
 
-  // Render subtle geofence circle around target sede
+  // Render subtle geofence circle around target sede and keep camera synced when no origin yet
   useEffect(() => {
     if (!map || typeof google === 'undefined' || !google.maps?.Circle) return;
+    if (!isValidCoordinate(destination.lat, destination.lng)) return;
 
     if (circleRef.current) {
       circleRef.current.setMap(null);
@@ -124,11 +128,16 @@ const LiveRouteOverlay: React.FC<RouteOverlayProps> = ({
     });
     circleRef.current = circle;
 
+    if (!origin) {
+      map.panTo(destination);
+      map.setZoom(15);
+    }
+
     return () => {
       circle.setMap(null);
       circleRef.current = null;
     };
-  }, [map, destination.lat, destination.lng, geofenceRadiusMeters]);
+  }, [map, destination.lat, destination.lng, geofenceRadiusMeters, Boolean(origin)]);
 
   // Compute route via modern Maps JS SDK `Route.computeRoutes`
   useEffect(() => {
@@ -200,9 +209,20 @@ const LiveRouteOverlay: React.FC<RouteOverlayProps> = ({
         }
 
         const fitKey = `${destination.lat.toFixed(4)},${destination.lng.toFixed(4)}:${travelMode}`;
-        if (primaryRoute.viewport && hasFittedOnceRef.current !== fitKey) {
+        if (hasFittedOnceRef.current !== fitKey) {
           hasFittedOnceRef.current = fitKey;
-          map.fitBounds(primaryRoute.viewport, 44);
+          const distMeters = calculateHaversineDistanceMeters(
+            origin.lat,
+            origin.lng,
+            destination.lat,
+            destination.lng
+          );
+          if (distMeters < 120) {
+            map.panTo(destination);
+            map.setZoom(16);
+          } else if (primaryRoute.viewport) {
+            map.fitBounds(primaryRoute.viewport, 48);
+          }
         }
 
         const rawDistanceMeters = Number(primaryRoute.distanceMeters || 0);
@@ -315,6 +335,9 @@ export const TrainerLiveTransitTracker = forwardRef<
     const [manualSedeId, setManualSedeId] = useState<string>('');
     const [travelMode, setTravelMode] = useState<TransitTravelMode>('DRIVING');
     const [showMapWorkspace, setShowMapWorkspace] = useState<boolean>(false);
+    const [modalTrackingId, setModalTrackingId] = useState<string | null>(null);
+
+    const { hasKey, diagnostic } = useGoogleMapsDiagnostics();
 
     // Sync automatically when trainer loads a physical assignment into the check-in form
     useEffect(() => {
@@ -1163,22 +1186,32 @@ export const TrainerLiveTransitTracker = forwardRef<
               </div>
             )}
 
-            {/* Interactive Google Map */}
-            {GOOGLE_MAPS_API_KEY ? (
-              <div className="w-full h-[300px] sm:h-[340px] rounded-xl overflow-hidden border border-slate-200 relative bg-slate-100">
-                <APIProvider apiKey={GOOGLE_MAPS_API_KEY} language="es" region="MX">
-                  <Map
-                    defaultCenter={{
-                      lat: targetContext.sede.lat,
-                      lng: targetContext.sede.lng,
-                    }}
-                    defaultZoom={14}
-                    mapId="DEMO_MAP_ID"
-                    gestureHandling="cooperative"
-                    internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
-                    className="w-full h-full"
-                  >
-                    {/* Target Corporate Sede Marker */}
+            {/* Interactive Google Map or Production Diagnostic + Schematic Fallback */}
+            {diagnostic && (
+              <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-950 flex items-start gap-2.5">
+                <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+                <div className="space-y-0.5">
+                  <p className="font-bold">{diagnostic.title}</p>
+                  <p className="text-amber-900/90">{diagnostic.description}</p>
+                </div>
+              </div>
+            )}
+
+            {hasKey && !diagnostic ? (
+              <div className="w-full h-[320px] sm:h-[360px] rounded-xl overflow-hidden border border-slate-200 relative bg-slate-100">
+                <Map
+                  id="trainer-live-transit-map"
+                  defaultCenter={{
+                    lat: targetContext.sede.lat,
+                    lng: targetContext.sede.lng,
+                  }}
+                  defaultZoom={14}
+                  mapId="DEMO_MAP_ID"
+                  gestureHandling="cooperative"
+                  internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
+                >
+                  {/* Target Corporate Sede Marker */}
+                  {isValidCoordinate(targetContext.sede.lat, targetContext.sede.lng) && (
                     <AdvancedMarker
                       position={{ lat: targetContext.sede.lat, lng: targetContext.sede.lng }}
                       title={`${targetContext.company.name} — ${targetContext.sede.name}`}
@@ -1190,37 +1223,75 @@ export const TrainerLiveTransitTracker = forwardRef<
                         glyphText="S"
                       />
                     </AdvancedMarker>
+                  )}
 
-                    {/* Trainer Live Position Marker */}
-                    {liveCoords && (
-                      <AdvancedMarker
-                        position={{ lat: liveCoords.lat, lng: liveCoords.lng }}
-                        title={`Tu ubicación (${currentTrainer.name})`}
-                      >
-                        <Pin
-                          background="#0f172a"
-                          borderColor="#334155"
-                          glyphColor="#38bdf8"
-                          glyphText="E"
-                        />
-                      </AdvancedMarker>
-                    )}
+                  {/* Trainer Live Position Marker */}
+                  {liveCoords && isValidCoordinate(liveCoords.lat, liveCoords.lng) && (
+                    <AdvancedMarker
+                      position={{ lat: liveCoords.lat, lng: liveCoords.lng }}
+                      title={`Tu ubicación (${currentTrainer.name})`}
+                    >
+                      <Pin
+                        background="#0f172a"
+                        borderColor="#334155"
+                        glyphColor="#38bdf8"
+                        glyphText="E"
+                      />
+                    </AdvancedMarker>
+                  )}
 
-                    <LiveRouteOverlay
-                      origin={liveCoords ? { lat: liveCoords.lat, lng: liveCoords.lng } : null}
-                      destination={{ lat: targetContext.sede.lat, lng: targetContext.sede.lng }}
-                      geofenceRadiusMeters={targetContext.sede.geofenceRadiusMeters || 150}
-                      travelMode={travelMode}
-                      routeTriggerKey={routeTriggerKey}
-                      onRouteComputed={handleRouteComputed}
-                    />
-                  </Map>
-                </APIProvider>
+                  <LiveRouteOverlay
+                    origin={liveCoords ? { lat: liveCoords.lat, lng: liveCoords.lng } : null}
+                    destination={{ lat: targetContext.sede.lat, lng: targetContext.sede.lng }}
+                    geofenceRadiusMeters={targetContext.sede.geofenceRadiusMeters || 150}
+                    travelMode={travelMode}
+                    routeTriggerKey={routeTriggerKey}
+                    onRouteComputed={handleRouteComputed}
+                  />
+                </Map>
               </div>
+            ) : liveCoords && computedSummary ? (
+              <SchematicRouteRadar
+                trainerName={currentTrainer.name}
+                trainerLat={liveCoords.lat}
+                trainerLng={liveCoords.lng}
+                sedeName={targetContext.sede.name}
+                sedeAddress={targetContext.sede.address}
+                sedeLat={targetContext.sede.lat}
+                sedeLng={targetContext.sede.lng}
+                geofenceRadiusMeters={targetContext.sede.geofenceRadiusMeters || 150}
+                routeDistanceMeters={computedSummary.routeDistanceMeters}
+                estimatedDurationMinutes={computedSummary.durationMinutes}
+                directionsUrl={buildGoogleMapsDirectionsUrl({
+                  originLat: liveCoords.lat,
+                  originLng: liveCoords.lng,
+                  destLat: targetContext.sede.lat,
+                  destLng: targetContext.sede.lng,
+                  travelMode,
+                })}
+              />
             ) : (
-              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 text-xs text-slate-600">
-                Mapa interactivo no disponible (clave de Google Maps no configurada). El cálculo
-                geodésico de distancia y tiempo sigue activo.
+              <div className="p-4 rounded-xl border border-slate-200 bg-slate-50 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs text-slate-600">
+                <span>
+                  {hasKey
+                    ? 'Pulsa «Actualizar GPS» o abre la ruta directa en Google Maps para visualizar el recorrido.'
+                    : 'Mapa interactivo no disponible (clave de Google Maps no configurada). El cálculo geodésico de distancia y tiempo sigue activo.'}
+                </span>
+                <a
+                  href={buildGoogleMapsDirectionsUrl({
+                    originLat: liveCoords?.lat,
+                    originLng: liveCoords?.lng,
+                    destLat: targetContext.sede.lat,
+                    destLng: targetContext.sede.lng,
+                    travelMode,
+                  })}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="min-h-[36px] px-3 py-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white font-bold inline-flex items-center gap-1.5 whitespace-nowrap self-start sm:self-auto"
+                >
+                  <span>Abrir en Google Maps</span>
+                  <ExternalLink className="w-3.5 h-3.5 text-red-400 shrink-0" />
+                </a>
               </div>
             )}
 
@@ -1243,7 +1314,8 @@ export const TrainerLiveTransitTracker = forwardRef<
                         <th className="py-2 px-3 font-medium text-right">Distancia</th>
                         <th className="py-2 px-3 font-medium text-right">Tiempo Est.</th>
                         <th className="py-2 px-3 font-medium text-right">Llegada Est.</th>
-                        <th className="py-2 pl-3 font-medium">Estado</th>
+                        <th className="py-2 px-3 font-medium">Estado</th>
+                        <th className="py-2 pl-3 font-medium text-right">Mapa</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-slate-100">
@@ -1267,7 +1339,7 @@ export const TrainerLiveTransitTracker = forwardRef<
                           <td className="py-2 px-3 text-right font-mono tabular-nums text-slate-800">
                             {item.estimatedArrivalHHMM} hrs
                           </td>
-                          <td className="py-2 pl-3 text-slate-700">
+                          <td className="py-2 px-3 text-slate-700">
                             {item.status === 'en_camino'
                               ? 'En trayecto'
                               : item.status === 'en_geocerca'
@@ -1275,6 +1347,16 @@ export const TrainerLiveTransitTracker = forwardRef<
                                 : item.status === 'llegada_confirmada'
                                   ? 'Llegada confirmada'
                                   : 'Detenido'}
+                          </td>
+                          <td className="py-2 pl-3 text-right whitespace-nowrap">
+                            <button
+                              type="button"
+                              onClick={() => setModalTrackingId(item.id)}
+                              className="px-2.5 py-1 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold inline-flex items-center gap-1 transition cursor-pointer"
+                            >
+                              <Eye className="w-3.5 h-3.5 shrink-0" />
+                              <span>Mapa</span>
+                            </button>
                           </td>
                         </tr>
                       ))}
@@ -1310,6 +1392,11 @@ export const TrainerLiveTransitTracker = forwardRef<
             </p>
           </div>
         )}
+
+        <TransitTrackingMapModal
+          tracking={myRecentTrackings.find((t) => t.id === modalTrackingId) || null}
+          onClose={() => setModalTrackingId(null)}
+        />
       </section>
     );
   }

@@ -83,7 +83,9 @@ import {
   syncWorkspaceDataToFirestore,
   toSafeDocId,
 } from './utils/firestoreDemoSync';
+import { APIProvider } from '@vis.gl/react-google-maps';
 import { sanitizeTransitTrackingPayload } from './utils/transitCalculations';
+import { GOOGLE_MAPS_API_KEY, GMP_DEFAULT_LIBRARIES } from './utils/googleMapsConfig';
 import { deriveCompanyLogoText, generateInitialsAvatarDataUrl } from './utils/personnelValidation';
 import { collectMissingCatalogItemsFromTrainers } from './utils/specialtyDisciplines';
 import { ShieldCheck, CheckCheck } from 'lucide-react';
@@ -1792,7 +1794,7 @@ export default function App() {
     (r) => r.status === 'en_curso' && getSessionAlarmStatus(r, activityCatalog, nowTick).isOverdue
   ).length;
 
-  return (
+  const appShell = (
     <div className="min-h-screen w-full max-w-full overflow-x-hidden bg-slate-50 text-slate-800 flex flex-col selection:bg-red-600 selection:text-white font-sans">
       <div className="print:hidden">
         <Header
@@ -1909,5 +1911,18 @@ export default function App() {
 
       <VirtualClassInviteLandingModal />
     </div>
+  );
+
+  return GOOGLE_MAPS_API_KEY ? (
+    <APIProvider
+      apiKey={GOOGLE_MAPS_API_KEY}
+      libraries={GMP_DEFAULT_LIBRARIES}
+      language="es"
+      region="MX"
+    >
+      {appShell}
+    </APIProvider>
+  ) : (
+    appShell
   );
 }

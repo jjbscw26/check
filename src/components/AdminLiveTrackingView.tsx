@@ -1,6 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  APIProvider,
   AdvancedMarker,
   Map,
   Pin,
@@ -16,6 +15,9 @@ import {
   AlertTriangle,
   Clock,
   MapPin,
+  Maximize2,
+  LocateFixed,
+  ExternalLink,
 } from 'lucide-react';
 import {
   Company,
@@ -24,50 +26,115 @@ import {
   TrainerTransitTracking,
 } from '../types';
 import {
+  calculateHaversineDistanceMeters,
   computePunctualityMarginMinutes,
   formatDistanceMetric,
   formatTravelDuration,
 } from '../utils/transitCalculations';
+import {
+  buildGoogleMapsDirectionsUrl,
+  isValidCoordinate,
+  useGoogleMapsDiagnostics,
+} from '../utils/googleMapsConfig';
+import { SchematicRouteRadar, TransitTrackingMapModal } from './TransitTrackingMapModal';
 
-const GOOGLE_MAPS_API_KEY: string =
-  (import.meta as unknown as { env?: Record<string, string | undefined> }).env
-    ?.VITE_GOOGLE_MAPS_API_KEY || '';
+interface FallbackVenuePin {
+  id: string;
+  companyName: string;
+  sedeName: string;
+  lat: number;
+  lng: number;
+}
 
 interface SelectedTrainerRouteOverlayProps {
   selectedTracking: TrainerTransitTracking | null;
   allVisibleTrackings: TrainerTransitTracking[];
+  fallbackVenuePins: FallbackVenuePin[];
+  focusNonce: number;
 }
 
 const SelectedTrainerRouteOverlay: React.FC<SelectedTrainerRouteOverlayProps> = ({
   selectedTracking,
   allVisibleTrackings,
+  fallbackVenuePins,
+  focusNonce,
 }) => {
   const map = useMap();
   const routesLib = useMapsLibrary('routes');
   const polylinesRef = useRef<google.maps.Polyline[]>([]);
   const circleRef = useRef<google.maps.Circle | null>(null);
 
-  // Fit bounds when selection or list changes
+  // Fit bounds safely when selection, focusNonce, or visible list changes
   useEffect(() => {
     if (!map || typeof google === 'undefined' || !google.maps?.LatLngBounds) return;
 
-    if (selectedTracking) {
+    if (
+      selectedTracking &&
+      isValidCoordinate(selectedTracking.trainerLat, selectedTracking.trainerLng) &&
+      isValidCoordinate(selectedTracking.sedeLat, selectedTracking.sedeLng)
+    ) {
+      const distMeters = calculateHaversineDistanceMeters(
+        selectedTracking.trainerLat,
+        selectedTracking.trainerLng,
+        selectedTracking.sedeLat,
+        selectedTracking.sedeLng
+      );
+
+      if (distMeters < 120) {
+        map.panTo({ lat: selectedTracking.sedeLat, lng: selectedTracking.sedeLng });
+        map.setZoom(16);
+        return;
+      }
+
       const bounds = new google.maps.LatLngBounds();
       bounds.extend({ lat: selectedTracking.trainerLat, lng: selectedTracking.trainerLng });
       bounds.extend({ lat: selectedTracking.sedeLat, lng: selectedTracking.sedeLng });
-      map.fitBounds(bounds, 56);
+      map.fitBounds(bounds, 64);
       return;
     }
 
     if (allVisibleTrackings.length > 0) {
       const bounds = new google.maps.LatLngBounds();
+      let count = 0;
       allVisibleTrackings.forEach((t) => {
-        bounds.extend({ lat: t.trainerLat, lng: t.trainerLng });
-        bounds.extend({ lat: t.sedeLat, lng: t.sedeLng });
+        if (isValidCoordinate(t.trainerLat, t.trainerLng)) {
+          bounds.extend({ lat: t.trainerLat, lng: t.trainerLng });
+          count += 1;
+        }
+        if (isValidCoordinate(t.sedeLat, t.sedeLng)) {
+          bounds.extend({ lat: t.sedeLat, lng: t.sedeLng });
+          count += 1;
+        }
       });
-      map.fitBounds(bounds, 56);
+      if (count >= 2) {
+        map.fitBounds(bounds, 64);
+      }
+      return;
     }
-  }, [map, selectedTracking?.id, allVisibleTrackings.length]);
+
+    if (fallbackVenuePins.length > 0) {
+      if (fallbackVenuePins.length === 1) {
+        map.panTo({ lat: fallbackVenuePins[0].lat, lng: fallbackVenuePins[0].lng });
+        map.setZoom(14);
+        return;
+      }
+      const bounds = new google.maps.LatLngBounds();
+      fallbackVenuePins.forEach((pin) => {
+        bounds.extend({ lat: pin.lat, lng: pin.lng });
+      });
+      map.fitBounds(bounds, 64);
+    }
+  }, [
+    map,
+    selectedTracking?.id,
+    selectedTracking?.trainerLat,
+    selectedTracking?.trainerLng,
+    selectedTracking?.sedeLat,
+    selectedTracking?.sedeLng,
+    allVisibleTrackings.length,
+    fallbackVenuePins.length,
+    focusNonce,
+  ]);
 
   // Draw geofence & route polyline for selected trainer
   useEffect(() => {
@@ -78,7 +145,14 @@ const SelectedTrainerRouteOverlay: React.FC<SelectedTrainerRouteOverlayProps> = 
       circleRef.current = null;
     }
 
-    if (!map || !selectedTracking) return;
+    if (
+      !map ||
+      !selectedTracking ||
+      !isValidCoordinate(selectedTracking.trainerLat, selectedTracking.trainerLng) ||
+      !isValidCoordinate(selectedTracking.sedeLat, selectedTracking.sedeLng)
+    ) {
+      return;
+    }
 
     if (typeof google !== 'undefined' && google.maps?.Circle) {
       circleRef.current = new google.maps.Circle({
@@ -89,14 +163,53 @@ const SelectedTrainerRouteOverlay: React.FC<SelectedTrainerRouteOverlayProps> = 
         strokeOpacity: 0.65,
         strokeWeight: 1.5,
         fillColor: '#ef4444',
-        fillOpacity: 0.10,
+        fillOpacity: 0.1,
         clickable: false,
       });
     }
 
-    if (!routesLib) return;
+    const distMeters = calculateHaversineDistanceMeters(
+      selectedTracking.trainerLat,
+      selectedTracking.trainerLng,
+      selectedTracking.sedeLat,
+      selectedTracking.sedeLng
+    );
+
+    let fallbackConnector: google.maps.Polyline | null = null;
+    if (typeof google !== 'undefined' && google.maps?.Polyline && distMeters >= 15) {
+      fallbackConnector = new google.maps.Polyline({
+        path: [
+          { lat: selectedTracking.trainerLat, lng: selectedTracking.trainerLng },
+          { lat: selectedTracking.sedeLat, lng: selectedTracking.sedeLng },
+        ],
+        geodesic: true,
+        strokeColor: '#dc2626',
+        strokeOpacity: 0.45,
+        strokeWeight: 3,
+        map,
+      });
+    }
+
+    if (!routesLib || distMeters < 15) {
+      return () => {
+        if (fallbackConnector) fallbackConnector.setMap(null);
+        if (circleRef.current) {
+          circleRef.current.setMap(null);
+          circleRef.current = null;
+        }
+      };
+    }
+
     const routeClass = (routesLib as unknown as { Route?: any }).Route;
-    if (!routeClass || typeof routeClass.computeRoutes !== 'function') return;
+    if (!routeClass || typeof routeClass.computeRoutes !== 'function') {
+      return () => {
+        if (fallbackConnector) fallbackConnector.setMap(null);
+        if (circleRef.current) {
+          circleRef.current.setMap(null);
+          circleRef.current = null;
+        }
+      };
+    }
 
     let cancelled = false;
 
@@ -111,6 +224,11 @@ const SelectedTrainerRouteOverlay: React.FC<SelectedTrainerRouteOverlayProps> = 
         if (cancelled) return;
         const primary = res?.routes?.[0];
         if (!primary) return;
+
+        if (fallbackConnector) {
+          fallbackConnector.setMap(null);
+          fallbackConnector = null;
+        }
 
         if (typeof primary.createPolylines === 'function') {
           const created: google.maps.Polyline[] = primary.createPolylines();
@@ -131,6 +249,7 @@ const SelectedTrainerRouteOverlay: React.FC<SelectedTrainerRouteOverlayProps> = 
 
     return () => {
       cancelled = true;
+      if (fallbackConnector) fallbackConnector.setMap(null);
       polylinesRef.current.forEach((p) => p.setMap(null));
       polylinesRef.current = [];
       if (circleRef.current) {
@@ -146,6 +265,7 @@ const SelectedTrainerRouteOverlay: React.FC<SelectedTrainerRouteOverlayProps> = 
     selectedTracking?.trainerLng,
     selectedTracking?.sedeLat,
     selectedTracking?.sedeLng,
+    selectedTracking?.geofenceRadiusMeters,
     selectedTracking?.travelMode,
   ]);
 
@@ -161,6 +281,7 @@ interface AdminLiveTrackingViewProps {
 
 export const AdminLiveTrackingView: React.FC<AdminLiveTrackingViewProps> = ({
   transitTrackings,
+  companies,
   onDeleteTransitTracking,
 }) => {
   const [statusFilter, setStatusFilter] = useState<
@@ -168,7 +289,12 @@ export const AdminLiveTrackingView: React.FC<AdminLiveTrackingViewProps> = ({
   >('todos');
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [modalTrackingId, setModalTrackingId] = useState<string | null>(null);
+  const [focusNonce, setFocusNonce] = useState<number>(0);
   const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+
+  const mapSectionRef = useRef<HTMLDivElement | null>(null);
+  const { hasKey, diagnostic } = useGoogleMapsDiagnostics();
 
   const sortedTrackings = useMemo(() => {
     return [...transitTrackings].sort((a, b) => {
@@ -214,6 +340,29 @@ export const AdminLiveTrackingView: React.FC<AdminLiveTrackingViewProps> = ({
     );
   }, [selectedId, filteredTrackings]);
 
+  const modalTracking = useMemo(() => {
+    if (!modalTrackingId) return null;
+    return transitTrackings.find((t) => t.id === modalTrackingId) || null;
+  }, [modalTrackingId, transitTrackings]);
+
+  const fallbackVenuePins = useMemo<FallbackVenuePin[]>(() => {
+    const list: FallbackVenuePin[] = [];
+    companies.forEach((comp) => {
+      (comp.sedes || []).forEach((sede) => {
+        if (isValidCoordinate(sede.lat, sede.lng)) {
+          list.push({
+            id: `${comp.id}_${sede.id}`,
+            companyName: comp.name,
+            sedeName: sede.name,
+            lat: sede.lat,
+            lng: sede.lng,
+          });
+        }
+      });
+    });
+    return list;
+  }, [companies]);
+
   const metrics = useMemo(() => {
     let enCamino = 0;
     let enSede = 0;
@@ -255,9 +404,34 @@ export const AdminLiveTrackingView: React.FC<AdminLiveTrackingViewProps> = ({
     });
   };
 
-  const defaultCenter = selectedTracking
-    ? { lat: selectedTracking.sedeLat, lng: selectedTracking.sedeLng }
-    : { lat: 19.4326, lng: -99.1332 };
+  const handleSelectRowAndScrollMap = (id: string) => {
+    setSelectedId(id);
+    setFocusNonce((n) => n + 1);
+    mapSectionRef.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  };
+
+  const handleOpenMapModal = (id: string) => {
+    setSelectedId(id);
+    setFocusNonce((n) => n + 1);
+    setModalTrackingId(id);
+  };
+
+  const defaultCenter =
+    selectedTracking && isValidCoordinate(selectedTracking.sedeLat, selectedTracking.sedeLng)
+      ? { lat: selectedTracking.sedeLat, lng: selectedTracking.sedeLng }
+      : fallbackVenuePins[0]
+        ? { lat: fallbackVenuePins[0].lat, lng: fallbackVenuePins[0].lng }
+        : { lat: 19.4326, lng: -99.1332 };
+
+  const selectedDirectionsUrl = selectedTracking
+    ? buildGoogleMapsDirectionsUrl({
+        originLat: selectedTracking.trainerLat,
+        originLng: selectedTracking.trainerLng,
+        destLat: selectedTracking.sedeLat,
+        destLng: selectedTracking.sedeLng,
+        travelMode: selectedTracking.travelMode,
+      })
+    : null;
 
   return (
     <div className="space-y-6">
@@ -301,94 +475,169 @@ export const AdminLiveTrackingView: React.FC<AdminLiveTrackingViewProps> = ({
       </div>
 
       {/* Live Map + Selected Trainer Route Inspector */}
-      <div className="bg-white rounded-2xl border border-slate-200 overflow-hidden">
+      <div
+        ref={mapSectionRef}
+        className="bg-white rounded-2xl border border-slate-200 overflow-hidden"
+      >
         <div className="p-4 sm:p-5 border-b border-slate-200 flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div>
             <h3 className="text-base sm:text-lg font-bold text-slate-900">
               Mapa de Seguimiento en Tiempo Real hacia Sedes
             </h3>
             <p className="text-xs text-slate-500 mt-0.5">
-              Selecciona cualquier entrenador en la tabla o en el mapa para trazar su ruta, distancia restante y hora estimada de llegada.
+              Selecciona cualquier entrenador en la tabla o pulsa «Mapa» para abrir el detalle interactivo de ruta, distancia y ETA.
             </p>
           </div>
 
           {selectedTracking && (
-            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2">
-              <span className="font-bold text-slate-900">{selectedTracking.trainerName}</span>
-              <span aria-hidden="true">·</span>
-              <span>
-                Destino: <strong>{selectedTracking.sedeName}</strong>
-              </span>
-              <span aria-hidden="true">·</span>
-              <span className="font-mono tabular-nums font-semibold text-slate-900">
-                {formatDistanceMetric(selectedTracking.routeDistanceMeters)} ·{' '}
-                {formatTravelDuration(selectedTracking.estimatedDurationMinutes)}
-              </span>
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2.5 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2">
+                <span className="font-bold text-slate-900">{selectedTracking.trainerName}</span>
+                <span aria-hidden="true">·</span>
+                <span>
+                  Destino: <strong>{selectedTracking.sedeName}</strong>
+                </span>
+                <span aria-hidden="true">·</span>
+                <span className="font-mono tabular-nums font-semibold text-slate-900">
+                  {formatDistanceMetric(selectedTracking.routeDistanceMeters)} ·{' '}
+                  {formatTravelDuration(selectedTracking.estimatedDurationMinutes)}
+                </span>
+              </div>
+
+              {hasKey && !diagnostic && (
+                <button
+                  type="button"
+                  onClick={() => setFocusNonce((n) => n + 1)}
+                  className="min-h-[36px] px-3 py-1.5 rounded-xl border border-slate-200 bg-white hover:bg-slate-100 text-slate-700 text-xs font-semibold inline-flex items-center gap-1.5 transition cursor-pointer"
+                  title="Recentrar ruta seleccionada"
+                >
+                  <LocateFixed className="w-3.5 h-3.5 text-slate-600 shrink-0" />
+                  <span>Recentrar</span>
+                </button>
+              )}
+
+              <button
+                type="button"
+                onClick={() => handleOpenMapModal(selectedTracking.id)}
+                className="min-h-[36px] px-3 py-1.5 rounded-xl bg-red-600 hover:bg-red-700 text-white text-xs font-bold inline-flex items-center gap-1.5 transition cursor-pointer"
+                title="Abrir mapa ampliado de seguimiento"
+              >
+                <Maximize2 className="w-3.5 h-3.5 shrink-0" />
+                <span>Ampliar Mapa</span>
+              </button>
             </div>
           )}
         </div>
 
-        <div className="p-4 sm:p-5">
-          {GOOGLE_MAPS_API_KEY ? (
-            <div className="w-full h-[380px] sm:h-[420px] rounded-xl overflow-hidden border border-slate-200 relative bg-slate-100">
-              <APIProvider apiKey={GOOGLE_MAPS_API_KEY} language="es" region="MX">
-                <Map
-                  defaultCenter={defaultCenter}
-                  defaultZoom={12}
-                  mapId="DEMO_MAP_ID"
-                  gestureHandling="cooperative"
-                  internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
-                  className="w-full h-full"
-                >
-                  {filteredTrackings.map((trk) => {
-                    const isSelected = selectedTracking?.id === trk.id;
-                    return (
-                      <React.Fragment key={trk.id}>
-                        <AdvancedMarker
-                          position={{ lat: trk.sedeLat, lng: trk.sedeLng }}
-                          title={`Sede: ${trk.companyName} — ${trk.sedeName}`}
-                          onClick={() => setSelectedId(trk.id)}
-                        >
-                          <Pin
-                            background={isSelected ? '#dc2626' : '#ef4444'}
-                            borderColor="#7f1d1d"
-                            glyphColor="#ffffff"
-                            glyphText="S"
-                          />
-                        </AdvancedMarker>
-
-                        <AdvancedMarker
-                          position={{ lat: trk.trainerLat, lng: trk.trainerLng }}
-                          title={`${trk.trainerName} · ${formatDistanceMetric(trk.routeDistanceMeters)} (${formatTravelDuration(trk.estimatedDurationMinutes)})`}
-                          onClick={() => setSelectedId(trk.id)}
-                        >
-                          <Pin
-                            background={
-                              trk.status === 'en_geocerca' || trk.status === 'llegada_confirmada'
-                                ? '#16a34a'
-                                : isSelected
-                                  ? '#0f172a'
-                                  : '#334155'
-                            }
-                            borderColor="#0f172a"
-                            glyphColor="#ffffff"
-                            glyphText={trk.trainerName.slice(0, 1).toUpperCase()}
-                          />
-                        </AdvancedMarker>
-                      </React.Fragment>
-                    );
-                  })}
-
-                  <SelectedTrainerRouteOverlay
-                    selectedTracking={selectedTracking}
-                    allVisibleTrackings={filteredTrackings}
-                  />
-                </Map>
-              </APIProvider>
+        <div className="p-4 sm:p-5 space-y-3">
+          {diagnostic && (
+            <div className="p-3.5 rounded-xl bg-amber-50 border border-amber-200 text-xs text-amber-950 flex items-start gap-2.5">
+              <AlertTriangle className="w-4 h-4 text-amber-600 shrink-0 mt-0.5" />
+              <div className="space-y-0.5">
+                <p className="font-bold">{diagnostic.title}</p>
+                <p className="text-amber-900/90">{diagnostic.description}</p>
+              </div>
             </div>
+          )}
+
+          {hasKey && !diagnostic ? (
+            <div className="w-full h-[380px] sm:h-[430px] rounded-xl overflow-hidden border border-slate-200 relative bg-slate-100">
+              <Map
+                id="admin-live-tracking-map"
+                defaultCenter={defaultCenter}
+                defaultZoom={12}
+                mapId="DEMO_MAP_ID"
+                gestureHandling="cooperative"
+                internalUsageAttributionIds={['gmp_mcp_codeassist_v1_aistudio']}
+              >
+                {filteredTrackings.length > 0
+                  ? filteredTrackings.map((trk) => {
+                      const isSelected = selectedTracking?.id === trk.id;
+                      const validSede = isValidCoordinate(trk.sedeLat, trk.sedeLng);
+                      const validTrainer = isValidCoordinate(trk.trainerLat, trk.trainerLng);
+                      return (
+                        <React.Fragment key={trk.id}>
+                          {validSede && (
+                            <AdvancedMarker
+                              position={{ lat: trk.sedeLat, lng: trk.sedeLng }}
+                              title={`Sede: ${trk.companyName} — ${trk.sedeName}`}
+                              onClick={() => handleOpenMapModal(trk.id)}
+                            >
+                              <Pin
+                                background={isSelected ? '#dc2626' : '#ef4444'}
+                                borderColor="#7f1d1d"
+                                glyphColor="#ffffff"
+                                glyphText="S"
+                              />
+                            </AdvancedMarker>
+                          )}
+
+                          {validTrainer && (
+                            <AdvancedMarker
+                              position={{ lat: trk.trainerLat, lng: trk.trainerLng }}
+                              title={`${trk.trainerName} · ${formatDistanceMetric(trk.routeDistanceMeters)} (${formatTravelDuration(trk.estimatedDurationMinutes)})`}
+                              onClick={() => handleOpenMapModal(trk.id)}
+                            >
+                              <Pin
+                                background={
+                                  trk.status === 'en_geocerca' ||
+                                  trk.status === 'llegada_confirmada'
+                                    ? '#16a34a'
+                                    : isSelected
+                                      ? '#0f172a'
+                                      : '#334155'
+                                }
+                                borderColor="#0f172a"
+                                glyphColor="#ffffff"
+                                glyphText={trk.trainerName.slice(0, 1).toUpperCase()}
+                              />
+                            </AdvancedMarker>
+                          )}
+                        </React.Fragment>
+                      );
+                    })
+                  : fallbackVenuePins.map((pin) => (
+                      <AdvancedMarker
+                        key={pin.id}
+                        position={{ lat: pin.lat, lng: pin.lng }}
+                        title={`Sede registrada: ${pin.companyName} — ${pin.sedeName}`}
+                      >
+                        <Pin
+                          background="#dc2626"
+                          borderColor="#7f1d1d"
+                          glyphColor="#ffffff"
+                          glyphText="S"
+                        />
+                      </AdvancedMarker>
+                    ))}
+
+                <SelectedTrainerRouteOverlay
+                  selectedTracking={selectedTracking}
+                  allVisibleTrackings={filteredTrackings}
+                  fallbackVenuePins={fallbackVenuePins}
+                  focusNonce={focusNonce}
+                />
+              </Map>
+            </div>
+          ) : selectedTracking && selectedDirectionsUrl ? (
+            <SchematicRouteRadar
+              trainerName={selectedTracking.trainerName}
+              trainerLat={selectedTracking.trainerLat}
+              trainerLng={selectedTracking.trainerLng}
+              sedeName={selectedTracking.sedeName}
+              sedeAddress={selectedTracking.sedeAddress}
+              sedeLat={selectedTracking.sedeLat}
+              sedeLng={selectedTracking.sedeLng}
+              geofenceRadiusMeters={selectedTracking.geofenceRadiusMeters || 150}
+              routeDistanceMeters={selectedTracking.routeDistanceMeters}
+              estimatedDurationMinutes={selectedTracking.estimatedDurationMinutes}
+              directionsUrl={selectedDirectionsUrl}
+            />
           ) : (
             <div className="p-5 rounded-xl border border-slate-200 bg-slate-50 text-xs text-slate-600">
-              Clave de Google Maps no detectada en el entorno. La tabla de seguimiento en tiempo real continúa activa.
+              {hasKey
+                ? 'Cuando un entrenador active su traslado en tiempo real, aquí podrás consultar su trayectoria georreferenciada hacia la sede.'
+                : 'Clave de Google Maps no detectada en el entorno. La tabla de seguimiento en tiempo real continúa activa.'}
             </div>
           )}
         </div>
@@ -432,7 +681,7 @@ export const AdminLiveTrackingView: React.FC<AdminLiveTrackingViewProps> = ({
                   key={tab.id}
                   type="button"
                   onClick={() => setStatusFilter(tab.id)}
-                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition whitespace-nowrap shrink-0 ${
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition whitespace-nowrap shrink-0 cursor-pointer ${
                     statusFilter === tab.id
                       ? 'bg-white text-slate-900 shadow-2xs'
                       : 'text-slate-600 hover:text-slate-900'
@@ -452,7 +701,7 @@ export const AdminLiveTrackingView: React.FC<AdminLiveTrackingViewProps> = ({
               No hay registros de seguimiento para este filtro
             </p>
             <p className="text-xs text-slate-500 max-w-md mx-auto">
-              Cuando un entrenador pulse &ldquo;Iniciar Seguimiento en Tiempo Real&rdquo; desde su portal rumbo a su sede asignada, su distancia, ruta y tiempo estimado aparecerán aquí al instante.
+              Cuando un entrenador pulse &ldquo;Voy en trayecto&rdquo; desde su portal rumbo a su sede asignada, su distancia, ruta y tiempo estimado aparecerán aquí al instante.
             </p>
           </div>
         ) : (
@@ -480,11 +729,18 @@ export const AdminLiveTrackingView: React.FC<AdminLiveTrackingViewProps> = ({
                   );
                   const hasDelayRisk =
                     item.status === 'en_camino' && marginMins !== null && marginMins < 0;
+                  const rowDirectionsUrl = buildGoogleMapsDirectionsUrl({
+                    originLat: item.trainerLat,
+                    originLng: item.trainerLng,
+                    destLat: item.sedeLat,
+                    destLng: item.sedeLng,
+                    travelMode: item.travelMode,
+                  });
 
                   return (
                     <tr
                       key={item.id}
-                      onClick={() => setSelectedId(item.id)}
+                      onClick={() => handleSelectRowAndScrollMap(item.id)}
                       className={`cursor-pointer transition-colors ${
                         isSelected ? 'bg-red-50/50' : 'hover:bg-slate-50'
                       }`}
@@ -590,13 +846,23 @@ export const AdminLiveTrackingView: React.FC<AdminLiveTrackingViewProps> = ({
                         <div className="inline-flex items-center gap-1.5">
                           <button
                             type="button"
-                            onClick={() => setSelectedId(item.id)}
-                            className="px-2.5 py-1 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-700 font-medium inline-flex items-center gap-1 transition whitespace-nowrap"
-                            title="Ver ruta en mapa"
+                            onClick={() => handleOpenMapModal(item.id)}
+                            className="px-2.5 py-1 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold inline-flex items-center gap-1 transition whitespace-nowrap cursor-pointer"
+                            title="Abrir mapa interactivo de seguimiento"
                           >
                             <Eye className="w-3.5 h-3.5 shrink-0" />
                             <span>Mapa</span>
                           </button>
+
+                          <a
+                            href={rowDirectionsUrl}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="p-1.5 rounded-lg border border-slate-200 hover:bg-slate-100 text-slate-600 hover:text-slate-900 transition inline-flex items-center justify-center"
+                            title="Abrir ruta en Google Maps"
+                          >
+                            <ExternalLink className="w-3.5 h-3.5" />
+                          </a>
 
                           {onDeleteTransitTracking &&
                             (confirmDeleteId === item.id ? (
@@ -606,7 +872,7 @@ export const AdminLiveTrackingView: React.FC<AdminLiveTrackingViewProps> = ({
                                   onDeleteTransitTracking(item.id);
                                   setConfirmDeleteId(null);
                                 }}
-                                className="px-2.5 py-1 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold transition whitespace-nowrap"
+                                className="px-2.5 py-1 rounded-lg bg-red-600 hover:bg-red-700 text-white font-semibold transition whitespace-nowrap cursor-pointer"
                               >
                                 Confirmar
                               </button>
@@ -614,7 +880,7 @@ export const AdminLiveTrackingView: React.FC<AdminLiveTrackingViewProps> = ({
                               <button
                                 type="button"
                                 onClick={() => setConfirmDeleteId(item.id)}
-                                className="p-1.5 rounded-lg border border-slate-200 hover:border-red-200 hover:bg-red-50 text-slate-500 hover:text-red-600 transition"
+                                className="p-1.5 rounded-lg border border-slate-200 hover:border-red-200 hover:bg-red-50 text-slate-500 hover:text-red-600 transition cursor-pointer"
                                 title="Eliminar registro"
                               >
                                 <Trash2 className="w-3.5 h-3.5" />
@@ -652,6 +918,12 @@ export const AdminLiveTrackingView: React.FC<AdminLiveTrackingViewProps> = ({
           .
         </div>
       </div>
+
+      {/* Interactive Transit Map Modal (Opened from "Mapa" button or "Ampliar Mapa") */}
+      <TransitTrackingMapModal
+        tracking={modalTracking}
+        onClose={() => setModalTrackingId(null)}
+      />
     </div>
   );
 };
